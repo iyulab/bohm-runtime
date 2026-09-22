@@ -3,10 +3,11 @@
 A local-first application runtime.
 
 An application is described declaratively — its data model, permissions, scheduled jobs and
-notifications — and the runtime executes that description. Generated UI code runs sandboxed rather
-than trusted. Changes to a running application, including those produced from natural-language
-intent, arrive as **change sets**: reviewed units that the runtime applies deterministically and
-never applies unreviewed. Existing data is preserved across those changes.
+notifications — and the runtime executes that description. Generated server-side logic runs in an
+isolated sandbox rather than in-process; generated UI is isolated on the browser side, by the UI
+layer this runtime sits behind. Changes to a running application, including those produced from
+natural-language intent, arrive as **change sets**: reviewed units that the runtime applies
+deterministically and never applies unreviewed. Existing data is preserved across those changes.
 
 The same runtime runs on a workstation or headless on a server, so an application can move between
 the two without being rebuilt.
