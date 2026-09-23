@@ -68,6 +68,13 @@ internal static class AdoptedAppServing
             return;
         }
 
+        if (path.StartsWithSegments("/__bohm/llm"))
+        {
+            var llmApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+            await Llm.LlmProxy.HandleAsync(context, appId, llmApp).ConfigureAwait(false);
+            return;
+        }
+
         if (path != "/" || !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
         {
             response.StatusCode = StatusCodes.Status404NotFound;
@@ -78,7 +85,7 @@ internal static class AdoptedAppServing
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var html = await catalog.ReadHtmlAsync(appId, context.RequestAborted).ConfigureAwait(false);
 
-        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems()), BootJson.Default.Boot);
+        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId), Llm.LlmProviders.All.Select(p => p.Host).ToList()), BootJson.Default.Boot);
         var (body, charset) = ShimInjector.Inject(html, ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal));
 
         response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
@@ -99,7 +106,7 @@ internal static class AdoptedAppServing
         }
     }
 
-    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items);
+    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts);
 }
 
 /// <summary>

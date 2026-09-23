@@ -2,7 +2,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
+using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Control;
@@ -18,6 +20,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals and recent load failures.</description></item>
+/// <item><term><c>GET /__control/llm</c></term><description>AI providers and whether a key is connected (never the key).</description></item>
+/// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
+/// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -89,7 +94,41 @@ internal static class ControlPlane
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["llm"]):
+                var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
+                await WriteAsync(response, LlmProviders.All
+                    .Select(p => new ProviderView(p.Id, p.DisplayName, p.Host, !string.IsNullOrEmpty(vault.Read(p.VaultName))))
+                    .ToList(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["llm", var providerId, "key"]):
+                if (LlmProviders.ById(providerId) is not { } provider)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var keys = context.RequestServices.GetRequiredService<ICredentialVault>();
+                if (request.Method == "DELETE")
+                {
+                    keys.Delete(provider.VaultName);
+                }
+                else
+                {
+                    var key = System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                    if (key.Length == 0)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+
+                    keys.Write(provider.VaultName, key);
+                }
+
+                await WriteAsync(response, new ProviderView(provider.Id, provider.DisplayName, provider.Host, request.Method != "DELETE"), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["drain"]):
@@ -135,7 +174,9 @@ internal static class ControlPlane
 
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size);
 
-    internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors);
+    internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors, IReadOnlyList<string> NeedsKey);
+
+    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected);
 
     internal sealed record DrainResult(bool Quiet);
 }
@@ -145,4 +186,6 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

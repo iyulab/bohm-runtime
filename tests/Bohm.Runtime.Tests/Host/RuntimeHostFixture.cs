@@ -27,10 +27,12 @@ public sealed class RunningHost : IAsyncDisposable
 
     public const string Secret = "per-launch-secret";
 
-    public static async Task<RunningHost> StartAsync(string? dataRoot = null, string? secret = Secret)
+    public static async Task<RunningHost> StartAsync(string? dataRoot = null, string? secret = Secret, Func<RuntimeHostOptions, RuntimeHostOptions>? configure = null)
     {
         dataRoot ??= Directory.CreateTempSubdirectory("bohm-host-").FullName;
-        var app = RuntimeHost.Build(new RuntimeHostOptions { DataRoot = dataRoot, ControlSecret = secret }, b => b.Logging.ClearProviders());
+        // Tests never touch the real credential store.
+        var options = new RuntimeHostOptions { DataRoot = dataRoot, ControlSecret = secret, Vault = new global::Bohm.Runtime.Credentials.MemoryCredentialVault() };
+        var app = RuntimeHost.Build(configure?.Invoke(options) ?? options, b => b.Logging.ClearProviders());
         await app.StartAsync();
         return new RunningHost(app, dataRoot, app.ListeningPort());
     }

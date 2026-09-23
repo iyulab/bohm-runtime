@@ -11,6 +11,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage)
     private const int KeptLoadErrors = 5;
     private readonly Queue<string> _loadErrors = new();
     private readonly Lock _lock = new();
+    private readonly HashSet<string> _neededKeys = new(StringComparer.Ordinal);
 
     public AppStorage Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
@@ -22,6 +23,17 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage)
     public IReadOnlyList<string> RecentLoadErrors
     {
         get { lock (_lock) return _loadErrors.ToList(); }
+    }
+
+    /// <summary>Providers this application tried to use while no key was connected.</summary>
+    public IReadOnlyList<string> NeededKeys
+    {
+        get { lock (_lock) return _neededKeys.Order(StringComparer.Ordinal).ToList(); }
+    }
+
+    public void NeedsKey(string providerId)
+    {
+        lock (_lock) _neededKeys.Add(providerId);
     }
 
     public void AddLoadError(string message)
