@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Bohm.Runtime.Host</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Adoption\shim.js" LogicalName="Bohm.Runtime.Host.shim.js" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Bohm.Runtime\Bohm.Runtime.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Bohm.Runtime.Tests" />
+  </ItemGroup>
+
+</Project>
