@@ -102,6 +102,24 @@ public sealed class UsageLog
         lock (_lock) return _seen.Where(s => s.Item1 == date).Select(s => s.Item2).ToHashSet();
     }
 
+    /// <summary>
+    /// The latest day the application was used — opened, and typed or pointed in, on the same day —
+    /// or <see langword="null"/> if it never was. Opening alone does not count: a restored tab or a
+    /// stray click would make a forgotten application look alive.
+    /// </summary>
+    public DateOnly? LastUsedOn
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _seen.Where(s => s.Item2 == UsageSignal.Input && _seen.Contains((s.Item1, UsageSignal.Opened)))
+                    .Select(s => (DateOnly?)s.Item1)
+                    .Max();
+            }
+        }
+    }
+
     /// <summary>Load failures counted on <paramref name="date"/>.</summary>
     public int LoadErrorsOn(DateOnly date)
     {
