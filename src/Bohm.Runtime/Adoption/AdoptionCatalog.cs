@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Bohm.Runtime.Assets;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
 
@@ -124,6 +125,14 @@ public sealed class AdoptionCatalog
         RequireValidId(id);
         if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
         return AppStorage.OpenAsync(Path.Combine(AppDirectory(id), StorageDirectory), options, cancellationToken);
+    }
+
+    /// <summary>Opens the cache of code application <paramref name="id"/> loads from other hosts.</summary>
+    public AssetCache OpenAssets(string id)
+    {
+        RequireValidId(id);
+        if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
+        return AssetCache.Open(Path.Combine(AppDirectory(id), "assets"));
     }
 
     /// <summary>Opens the local usage record of application <paramref name="id"/>.</summary>

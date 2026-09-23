@@ -70,6 +70,13 @@ internal static class AdoptedAppServing
             return;
         }
 
+        if (path.StartsWithSegments("/__bohm/asset"))
+        {
+            var assetApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+            await AssetServing.ServeCachedAsync(context, assetApp).ConfigureAwait(false);
+            return;
+        }
+
         if (path.StartsWithSegments("/__bohm/llm"))
         {
             var llmApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
@@ -83,7 +90,11 @@ internal static class AdoptedAppServing
             // could on the site it came from) gets nothing, and the person can be told which.
             // (The browser's own favicon request is not the page asking for anything.)
             if (HttpMethods.IsGet(context.Request.Method) && !path.StartsWithSegments("/__bohm") && path != "/favicon.ico")
-                (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).AddMissingFile(path.Value!);
+            {
+                var pathApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+                if (await AssetServing.TryServeByPathAsync(context, pathApp).ConfigureAwait(false)) return;
+                pathApp.AddMissingFile(path.Value!);
+            }
             response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
@@ -94,7 +105,8 @@ internal static class AdoptedAppServing
 
         var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
             Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value), BootJson.Default.Boot);
-        var (body, charset) = ShimInjector.Inject(html, ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal));
+        var (body, charset) = ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets),
+            ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
 
         response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
         {

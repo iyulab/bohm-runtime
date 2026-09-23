@@ -251,6 +251,44 @@ public sealed class BrowserTests : IAsyncLifetime
         Assert.Empty(status.GetProperty("recentLoadErrors").EnumerateArray()); // not reported twice
     }
 
+    [Fact]
+    public async Task Code_from_other_hosts_cached_at_adoption_runs_under_the_policy_and_offline()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var cdn = new Assets.FakeCdn()
+            .File("https://cdn.test/greet.js", "text/javascript", "window.greet = n => 'hello ' + n;")
+            .Redirect("https://esm.test/pkg", "https://cdn2.test/npm/pkg@1/+esm")
+            .File("https://cdn2.test/npm/pkg@1/+esm", "application/javascript", """import{up}from"/npm/dep@1/+esm";export const shout=s=>up(s)+"!";""")
+            .File("https://cdn2.test/npm/dep@1/+esm", "application/javascript", "export const up=s=>s.toUpperCase();")
+            .File("https://cdn.test/style.css", "text/css", "p#styled { color: rgb(1, 2, 3); }");
+        await _host.StopKeepingDataAsync();
+        _host = await RunningHost.StartAsync(_host.DataRoot, configure: o => o with { AssetHttpHandler = () => cdn, FetchAssetsOnAdoption = false });
+        var html = """
+            <!doctype html><title>Uses a CDN</title>
+            <link rel="stylesheet" href="https://cdn.test/style.css">
+            <p id="classic"></p><p id="module"></p><p id="styled">x</p>
+            <script src="https://cdn.test/greet.js"></script>
+            <script>document.getElementById('classic').textContent = greet('bohm');</script>
+            <script type="module">
+              import { shout } from "https://esm.test/pkg";
+              document.getElementById('module').textContent = shout('offline');
+            </script>
+            """;
+        var id = await _host.AdoptAsync(html);
+        using (var fetched = await _host.ControlClient().PostAsync($"/__control/apps/{id}/assets", null))
+            Assert.Equal(4, System.Text.Json.JsonDocument.Parse(await fetched.Content.ReadAsStringAsync()).RootElement.GetProperty("cached").GetArrayLength());
+
+        var page = await OpenAsync(id);
+        await page.WaitForSelectorAsync("#module:has-text('OFFLINE!')");
+
+        Assert.Equal("hello bohm", await page.TextContentAsync("#classic"));
+        Assert.Equal("rgb(1, 2, 3)", await page.EvaluateAsync<string>("getComputedStyle(document.getElementById('styled')).color"));
+        var status = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+        Assert.Empty(status.GetProperty("blocked").EnumerateArray());
+        Assert.Empty(status.GetProperty("missingFiles").EnumerateArray());
+        Assert.Equal(System.Text.Encoding.UTF8.GetBytes(html), await _host.Catalog.ReadHtmlAsync(id)); // the stored document is untouched
+    }
+
     private Task<System.Text.Json.JsonElement> StatusWhenAsync(string id, Func<System.Text.Json.JsonElement, bool> condition) =>
         EventuallyAsync(async () =>
         {
