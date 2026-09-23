@@ -3,3 +3,10 @@
 claudedocs/
 CLAUDE.md
 AGENTS.md
+
+# Build output
+bin/
+obj/
+*.user
+.vs/
+TestResults/
