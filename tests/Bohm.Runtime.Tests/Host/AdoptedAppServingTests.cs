@@ -45,7 +45,7 @@ public sealed partial class AdoptedAppServingTests : IAsyncLifetime
 
         using var response = await _host.ClientForApp(id).GetAsync("/");
 
-        Assert.Equal("default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'",
+        Assert.Equal("default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'; frame-ancestors 'self'",
             Assert.Single(response.Headers.GetValues("Content-Security-Policy")));
         Assert.Equal("no-store", response.Headers.CacheControl!.ToString());
         Assert.Equal("nosniff", Assert.Single(response.Headers.GetValues("X-Content-Type-Options")));
