@@ -60,13 +60,13 @@ public static class RuntimeHost
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
         builder.Services.AddSingleton(options.Vault ?? (OperatingSystem.IsWindows() ? new WindowsCredentialVault() : new MemoryCredentialVault()));
-        // No overall timeout: a streamed answer can legitimately run for minutes.
         var assets = builder.Services.AddHttpClient("assets", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(20);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Bohm-Runtime");
         });
-        if (options.AssetHttpHandler is { } handler) assets.ConfigurePrimaryHttpMessageHandler(handler);
+        assets.ConfigurePrimaryHttpMessageHandler(options.AssetHttpHandler ?? PublicOnlyHandler);
+        // No overall timeout: a streamed answer can legitimately run for minutes.
         builder.Services.AddHttpClient(nameof(Llm.LlmProxy), client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
         builder.Services.AddSingleton<AppSessions>();
@@ -92,6 +92,34 @@ public static class RuntimeHost
         });
         return app;
     }
+
+    /// <summary>
+    /// The network for fetching applications' code: it connects only to public addresses. The
+    /// cache already refuses URLs that name a local address; this also stops a public name that
+    /// resolves to one — including a redirect to such a name — at the moment of connecting.
+    /// </summary>
+    private static SocketsHttpHandler PublicOnlyHandler() => new()
+    {
+        UseCookies = false,
+        MaxAutomaticRedirections = 5,
+        ConnectCallback = async (context, cancellationToken) =>
+        {
+            var addresses = await System.Net.Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken).ConfigureAwait(false);
+            var target = addresses.FirstOrDefault(a => Bohm.Runtime.Assets.AssetCache.IsPublicHttps(new Uri($"https://{(a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? $"[{a}]" : a.ToString())}/")))
+                ?? throw new HttpRequestException($"{context.DnsEndPoint.Host} does not resolve to a public address.");
+            var socket = new System.Net.Sockets.Socket(target.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await socket.ConnectAsync(target, context.DnsEndPoint.Port, cancellationToken).ConfigureAwait(false);
+                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        },
+    };
 
     /// <summary>The port a started host is listening on.</summary>
     public static int ListeningPort(this WebApplication app)

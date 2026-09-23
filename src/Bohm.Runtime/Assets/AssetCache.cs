@@ -194,12 +194,46 @@ public sealed class AssetCache
         return (assets.Count, failures.Count);
     }
 
+    /// <summary>
+    /// Whether <paramref name="url"/> may be requested on an application's behalf: HTTPS to a public
+    /// name or address. A document is untrusted input — fetching whatever it names would let it make
+    /// this computer request addresses on its own network (loopback, private and link-local
+    /// ranges, single-label and <c>.local</c>/<c>.internal</c> names). This checks what is written;
+    /// a public name that resolves to a private address is not caught here.
+    /// </summary>
+    public static bool IsPublicHttps(Uri url)
+    {
+        if (url.Scheme != Uri.UriSchemeHttps) return false;
+        var host = url.IdnHost.TrimEnd('.').ToLowerInvariant();
+        if (System.Net.IPAddress.TryParse(host.Trim('[', ']'), out var address)) return IsPublic(address);
+        return host.Contains('.', StringComparison.Ordinal)
+            && host != "localhost" && !host.EndsWith(".localhost", StringComparison.Ordinal)
+            && !host.EndsWith(".local", StringComparison.Ordinal) && !host.EndsWith(".internal", StringComparison.Ordinal)
+            && !host.EndsWith(".lan", StringComparison.Ordinal) && !host.EndsWith(".home.arpa", StringComparison.Ordinal);
+    }
+
+    private static bool IsPublic(System.Net.IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        if (System.Net.IPAddress.IsLoopback(address) || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast) return false;
+        if (address.Equals(System.Net.IPAddress.Any) || address.Equals(System.Net.IPAddress.IPv6Any)) return false;
+        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return true;
+        var b = address.GetAddressBytes();
+        return !(b[0] == 10 || b[0] == 127 || b[0] == 0 || b[0] >= 224
+            || b[0] == 172 && b[1] >= 16 && b[1] <= 31
+            || b[0] == 192 && b[1] == 168
+            || b[0] == 169 && b[1] == 254
+            || b[0] == 100 && b[1] >= 64 && b[1] <= 127);
+    }
+
     private static async Task<((CachedAsset, byte[])? Asset, string? Failure)> FetchOneAsync(
         HttpClient http, AssetReference reference, TimeProvider clock, AssetCacheLimits limits, CancellationToken cancellationToken)
     {
+        if (!IsPublicHttps(reference.Url)) return (null, "not a public https address");
         try
         {
             using var response = await http.GetAsync(reference.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.RequestMessage?.RequestUri is { } landed && !IsPublicHttps(landed)) return (null, "redirected to a non-public address");
             if (!response.IsSuccessStatusCode) return (null, $"the server answered {(int)response.StatusCode}");
 
             var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
