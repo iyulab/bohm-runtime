@@ -14,8 +14,13 @@ public sealed record RuntimeHostOptions
     /// <summary>Directory holding everything the runtime stores. Chosen by whoever starts the runtime.</summary>
     public required string DataRoot { get; init; }
 
-    /// <summary>Loopback port to listen on; 0 lets the operating system choose a free one.</summary>
-    public int Port { get; init; }
+    /// <summary>
+    /// Loopback port to listen on. <see langword="null"/> (the default) serves the data root on the
+    /// port it was served on last time, choosing and remembering a free one when there is none or it
+    /// is taken — see <see cref="RuntimeHost.StartAsync"/>. <c>0</c> lets the operating system choose
+    /// every time; any other value is used as given.
+    /// </summary>
+    public int? Port { get; init; }
 
     /// <summary>
     /// Secret that control requests must bear. Chosen by whoever starts the runtime, per launch.
@@ -56,7 +61,7 @@ public static class RuntimeHost
     {
         ArgumentNullException.ThrowIfNull(options);
         var builder = WebApplication.CreateSlimBuilder();
-        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
+        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port ?? HostAddress.Read(options.DataRoot) ?? 0));
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
         builder.Services.AddSingleton(options.Vault ?? (OperatingSystem.IsWindows() ? new WindowsCredentialVault() : new MemoryCredentialVault()));
@@ -121,6 +126,50 @@ public static class RuntimeHost
         },
     };
 
+    /// <summary>
+    /// Builds and starts the host. With <see cref="RuntimeHostOptions.Port"/> left unset, the data
+    /// root keeps its address: the remembered port is used again, and only when it is taken does the
+    /// host start on a new one — reported in <see cref="StartedRuntime.PreviousPort"/> so the caller
+    /// can tell the person that the applications' addresses changed.
+    /// </summary>
+    public static async Task<StartedRuntime> StartAsync(RuntimeHostOptions options, Action<WebApplicationBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.Port is not null)
+        {
+            var fixedApp = Build(options, configure);
+            await fixedApp.StartAsync().ConfigureAwait(false);
+            return new StartedRuntime(fixedApp, fixedApp.ListeningPort(), null);
+        }
+
+        var remembered = HostAddress.Read(options.DataRoot);
+        WebApplication? app = null;
+        if (remembered is { } port)
+        {
+            app = Build(options with { Port = port }, configure);
+            try
+            {
+                await app.StartAsync().ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // Taken by something else since last time; start on a new port below.
+                await app.DisposeAsync().ConfigureAwait(false);
+                app = null;
+            }
+        }
+
+        if (app is null)
+        {
+            app = Build(options with { Port = 0 }, configure);
+            await app.StartAsync().ConfigureAwait(false);
+        }
+
+        var listening = app.ListeningPort();
+        if (listening != remembered) HostAddress.Write(options.DataRoot, listening);
+        return new StartedRuntime(app, listening, remembered is { } before && before != listening ? before : null);
+    }
+
     /// <summary>The port a started host is listening on.</summary>
     public static int ListeningPort(this WebApplication app)
     {
@@ -132,3 +181,12 @@ public static class RuntimeHost
     /// <summary>The address an adopted application is served at.</summary>
     public static Uri AppOrigin(string appId, int port) => new($"http://{appId}.localhost:{port}/");
 }
+
+/// <summary>A started runtime host.</summary>
+/// <param name="App">The running host; dispose it to stop.</param>
+/// <param name="Port">The loopback port it listens on.</param>
+/// <param name="PreviousPort">
+/// The port the data root was served on before, when it could not be used again — the
+/// applications' addresses changed. <see langword="null"/> when they did not.
+/// </param>
+public sealed record StartedRuntime(WebApplication App, int Port, int? PreviousPort);

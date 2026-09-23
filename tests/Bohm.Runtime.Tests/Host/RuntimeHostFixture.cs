@@ -25,6 +25,9 @@ public sealed class RunningHost : IAsyncDisposable
     public int Port { get; }
     public AdoptionCatalog Catalog { get; }
 
+    /// <summary>The port the data root was served on before, when it could not be used again.</summary>
+    public int? PreviousPort { get; private init; }
+
     public const string Secret = "per-launch-secret";
 
     public static async Task<RunningHost> StartAsync(string? dataRoot = null, string? secret = Secret, Func<RuntimeHostOptions, RuntimeHostOptions>? configure = null)
@@ -32,9 +35,8 @@ public sealed class RunningHost : IAsyncDisposable
         dataRoot ??= Directory.CreateTempSubdirectory("bohm-host-").FullName;
         // Tests never touch the real credential store.
         var options = new RuntimeHostOptions { DataRoot = dataRoot, ControlSecret = secret, Vault = new global::Bohm.Runtime.Credentials.MemoryCredentialVault() };
-        var app = RuntimeHost.Build(configure?.Invoke(options) ?? options, b => b.Logging.ClearProviders());
-        await app.StartAsync();
-        return new RunningHost(app, dataRoot, app.ListeningPort());
+        var started = await RuntimeHost.StartAsync(configure?.Invoke(options) ?? options, b => b.Logging.ClearProviders());
+        return new RunningHost(started.App, dataRoot, started.Port) { PreviousPort = started.PreviousPort };
     }
 
     public async Task<string> AdoptAsync(string html) => (await Catalog.AdoptAsync(Encoding.UTF8.GetBytes(html))).Id;
