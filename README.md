@@ -27,6 +27,12 @@ Early design — no releases, and the public contract is deliberately not open y
 points, the on-disk project format and the registry protocol are still being shaped, and they will
 be documented once they stabilise. Until then, treat everything here as subject to change.
 
+## Contributing
+
+Contributions are accepted under the Individual Contributor License Agreement in [CLA.md](CLA.md),
+which the dual license requires. A pull request is checked for a signature on record; the
+"Signing" section of that file describes how to add one. Organization members and bots are exempt.
+
 ## License
 
 AGPL-3.0-or-later — see [LICENSE](LICENSE). A commercial license is available for uses that cannot
