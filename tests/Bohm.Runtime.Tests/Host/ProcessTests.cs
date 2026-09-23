@@ -40,6 +40,36 @@ public sealed class ProcessTests : IDisposable
     }
 
     [Fact]
+    public async Task A_relaunch_keeps_the_port_and_the_ready_line_reports_when_it_could_not()
+    {
+        var first = await LaunchAndStopAsync();
+        Assert.Equal(first.Port, (await LaunchAndStopAsync()).Port);
+
+        using var squatter = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, first.Port);
+        squatter.Start();
+        var moved = await LaunchAndStopAsync();
+
+        Assert.NotEqual(first.Port, moved.Port);
+        Assert.Equal(first.Port, moved.PreviousPort);
+        Assert.Null(first.PreviousPort);
+    }
+
+    private async Task<(int Port, int? PreviousPort)> LaunchAndStopAsync()
+    {
+        using var process = Start("s");
+        try
+        {
+            var ready = await ReadReadyAsync(process);
+            return (ready.GetProperty("port").GetInt32(), ready.TryGetProperty("previousPort", out var previous) ? previous.GetInt32() : null);
+        }
+        finally
+        {
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+        }
+    }
+
+    [Fact]
     public async Task Standard_output_carries_only_the_ready_line()
     {
         using var process = Start("s");
@@ -102,12 +132,15 @@ public sealed class ProcessTests : IDisposable
         return process;
     }
 
-    private static async Task<int> ReadReadyPortAsync(Process process)
+    private static async Task<int> ReadReadyPortAsync(Process process) =>
+        (await ReadReadyAsync(process)).GetProperty("port").GetInt32();
+
+    private static async Task<JsonElement> ReadReadyAsync(Process process)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var line = await process.StandardOutput.ReadLineAsync(timeout.Token);
-        var ready = JsonDocument.Parse(line!).RootElement;
+        var ready = JsonDocument.Parse(line!).RootElement.Clone();
         Assert.Equal("ready", ready.GetProperty("event").GetString());
-        return ready.GetProperty("port").GetInt32();
+        return ready;
     }
 }

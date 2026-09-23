@@ -7,11 +7,14 @@ using Bohm.Runtime.Host;
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
 // {"event":"ready","port":<n>} — so the process that started it learns the port it chose.
+// Without --port the data root keeps its port across launches (remembered in host.json); when that
+// port is taken the host starts on a new one and the line says so: {"event":"ready","port":<n>,"previousPort":<m>}.
+// --port 0 lets the operating system choose every time.
 // With --parent-pid the host stops by itself when that process ends, so a companion runtime is
 // never left running after the application that started it crashed or was killed.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>]";
 string? dataRoot = null;
-var port = 0;
+int? port = null;
 int? parentPid = null;
 for (var i = 0; i < args.Length - 1; i++)
 {
@@ -30,9 +33,9 @@ if (dataRoot is null)
 }
 
 // Standard output carries only the protocol line below; every log line goes to standard error.
-await using var app = RuntimeHost.Build(new RuntimeHostOptions { DataRoot = dataRoot, Port = port, ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET") },
+var started = await RuntimeHost.StartAsync(new RuntimeHostOptions { DataRoot = dataRoot, Port = port, ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET") },
     builder => builder.Logging.AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
-await app.StartAsync();
+await using var app = started.App;
 
 if (parentPid is { } pid)
 {
@@ -52,6 +55,8 @@ if (parentPid is { } pid)
     _ = parent.WaitForExitAsync().ContinueWith(_ => app.Lifetime.StopApplication(), TaskScheduler.Default);
 }
 
-Console.WriteLine($$"""{"event":"ready","port":{{app.ListeningPort()}}}""");
+Console.WriteLine(started.PreviousPort is { } previous
+    ? $$"""{"event":"ready","port":{{started.Port}},"previousPort":{{previous}}}"""
+    : $$"""{"event":"ready","port":{{started.Port}}}""");
 await app.WaitForShutdownAsync();
 return 0;
