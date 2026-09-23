@@ -96,7 +96,7 @@ public sealed class AdoptionCatalogTests : IDisposable
 
         var text = await File.ReadAllTextAsync(Path.Combine(_root, "adopted", app.Id, "app.json"));
 
-        Assert.Contains("\"format\": \"bohm.adopted/0\"", text, StringComparison.Ordinal);
+        Assert.Contains("\"format\": \"bohm.adopted/1\"", text, StringComparison.Ordinal);
         Assert.Contains($"\"sha256\": \"{app.Source.Sha256}\"", text, StringComparison.Ordinal);
     }
 
@@ -161,6 +161,111 @@ public sealed class AdoptionCatalogTests : IDisposable
         var newer = await catalog.AdoptAsync(Html);
 
         Assert.Equal([older.Id, newer.Id], (await catalog.ListAsync()).Select(a => a.Id));
+    }
+
+    [Fact]
+    public async Task A_record_written_before_revisions_existed_is_still_listed_as_its_first_revision()
+    {
+        // The shape every application adopted before revisions existed has on disk.
+        const string id = "0123456789abcdef0123456789abcdef";
+        var folder = Path.Combine(_root, "adopted", id);
+        Directory.CreateDirectory(folder);
+        await File.WriteAllBytesAsync(Path.Combine(folder, "app.html"), Html);
+        await File.WriteAllTextAsync(Path.Combine(folder, "app.json"), $$"""
+            {
+              "format": "bohm.adopted/0",
+              "id": "{{id}}",
+              "adoptedAt": "2026-09-23T01:02:03.0000000+00:00",
+              "source": { "sha256": "{{new string('a', 64)}}", "originalPath": "todo.html", "size": {{Html.Length}} },
+              "protection": "none"
+            }
+            """);
+        var catalog = new AdoptionCatalog(_root);
+
+        var app = Assert.Single(await catalog.ListAsync());
+
+        Assert.Equal(id, app.Id);
+        Assert.Equal(1, app.Revision);
+        Assert.Null(app.RevisedAt);
+        Assert.Equal(Html, await catalog.ReadHtmlAsync(id));
+    }
+
+    [Fact]
+    public async Task A_new_revision_keeps_the_application_its_data_and_its_adoption_date()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        var catalog = new AdoptionCatalog(_root, clock);
+        var v1 = await catalog.AdoptAsync(Html, "loans.html");
+        await using var storage = await catalog.OpenStorageAsync(v1.Id);
+        await storage.ApplyAsync([StorageOperation.Set("loan", "3")]);
+        clock.Advance(TimeSpan.FromDays(2));
+        var revisedHtml = Encoding.UTF8.GetBytes("<p>revised</p>");
+
+        var v2 = await catalog.ReviseAsync(v1.Id, revisedHtml, "loans.html", storage);
+
+        Assert.Equal(v1.Id, v2.Id);
+        Assert.Equal(v1.AdoptedAt, v2.AdoptedAt);
+        Assert.Equal(2, v2.Revision);
+        Assert.Equal(clock.GetUtcNow(), v2.RevisedAt);
+        Assert.Equal(revisedHtml.Length, v2.Source.Size);
+        Assert.Equal(revisedHtml, await catalog.ReadHtmlAsync(v1.Id));
+        Assert.Equal("3", storage.GetItems()["loan"]);
+        Assert.Equal(v2, await catalog.GetAsync(v1.Id));
+        Assert.True(await catalog.CanRevertAsync(v1.Id));
+        Assert.False(await catalog.CanRevertAsync((await catalog.AdoptAsync(Html)).Id));
+    }
+
+    [Fact]
+    public async Task Reverting_restores_the_previous_code_and_its_data_and_keeps_what_the_revision_wrote()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var v1 = await catalog.AdoptAsync(Html, "loans.html");
+        await using var storage = await catalog.OpenStorageAsync(v1.Id);
+        await storage.ApplyAsync([StorageOperation.Set("loan", "3")]);
+        await catalog.ReviseAsync(v1.Id, Encoding.UTF8.GetBytes("<p>revised</p>"), "loans.html", storage);
+        await storage.ApplyAsync([StorageOperation.Set("loan", "broken"), StorageOperation.Set("extra", "x")]);
+
+        var back = await catalog.RevertAsync(v1.Id, storage);
+
+        Assert.Equal(v1, back);
+        Assert.Equal(Html, await catalog.ReadHtmlAsync(v1.Id));
+        Assert.Equal(new Dictionary<string, string> { ["loan"] = "3" }, storage.GetItems());
+        Assert.False(await catalog.CanRevertAsync(v1.Id));
+        // What the reverted revision wrote is set aside, not deleted.
+        var undone = Directory.GetFiles(Path.Combine(_root, "adopted", v1.Id, "revisions"), "data-undone.json", SearchOption.AllDirectories);
+        Assert.Contains("broken", await File.ReadAllTextAsync(Assert.Single(undone)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Revisions_are_numbered_onward_and_an_interrupted_revision_is_not_reused()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html);
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        // A revision cut short before its record was written leaves only its folder behind.
+        Directory.CreateDirectory(Path.Combine(_root, "adopted", app.Id, "revisions", "2"));
+
+        var revised = await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v</p>"), null, storage);
+        var reverted = await catalog.RevertAsync(app.Id, storage);
+        var again = await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>w</p>"), null, storage);
+
+        Assert.Equal(1, app.Revision);
+        Assert.Equal(3, revised.Revision);
+        Assert.Equal(1, reverted.Revision);
+        Assert.Equal(4, again.Revision);
+        Assert.Equal(Encoding.UTF8.GetBytes("<p>w</p>"), await catalog.ReadHtmlAsync(app.Id));
+    }
+
+    [Fact]
+    public async Task The_same_bytes_as_the_current_revision_are_not_a_new_revision()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html);
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ReviseAsync(app.Id, Html, null, storage));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.RevertAsync(app.Id, storage));
+        Assert.Equal(app, await catalog.GetAsync(app.Id));
     }
 
     private static void CopyDirectory(string from, string to)

@@ -48,5 +48,18 @@ internal sealed class AppSessions
         return _tabs.TryGetValue(tabId, out var tab) && tab.AppId == appId ? tab : null;
     }
 
+    /// <summary>
+    /// Ends every session and tab of <paramref name="appId"/>. A page loaded before this can no longer
+    /// write — used when the application's code is replaced, so a page still running the old code
+    /// cannot write into data the new code now owns.
+    /// </summary>
+    public void RevokeApp(string appId)
+    {
+        foreach (var (token, app) in _sessions)
+            if (app == appId) _sessions.TryRemove(token, out _);
+        foreach (var (id, tab) in _tabs)
+            if (tab.AppId == appId) _tabs.TryRemove(id, out _);
+    }
+
     private static string NewToken() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
 }

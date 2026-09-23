@@ -11,9 +11,9 @@ namespace Bohm.Runtime.Adoption;
 /// <summary>
 /// The adopted applications under one data root. Each lives in its own folder, which is
 /// everything needed to move it elsewhere:
-/// <c>app.json</c> (the record), <c>app.html</c> (the original bytes, never modified),
-/// <c>storage/</c> (its data, see <see cref="AppStorage"/>) and <c>usage.ndjson</c> (its local
-/// usage record, see <see cref="UsageLog"/>).
+/// <c>app.json</c> (the record), <c>app.html</c> (the adopted bytes, never modified),
+/// <c>storage/</c> (its data, see <see cref="AppStorage"/>), <c>usage.ndjson</c> (its local
+/// usage record, see <see cref="UsageLog"/>) and <c>revisions/</c> (see <see cref="ReviseAsync"/>).
 /// </summary>
 /// <remarks>
 /// The catalog does not decide what to do when the same file — or another version of it — is
@@ -23,7 +23,13 @@ namespace Bohm.Runtime.Adoption;
 public sealed class AdoptionCatalog
 {
     /// <summary>Format identifier written into every <c>app.json</c>. Changes when the record's shape does.</summary>
-    public const string RecordFormat = "bohm.adopted/0";
+    public const string RecordFormat = "bohm.adopted/1";
+
+    /// <summary>The record format before revisions existed. Read as an application at its first revision.</summary>
+    private const string FirstRecordFormat = "bohm.adopted/0";
+
+    /// <summary>Format identifier written into every <c>revisions/&lt;n&gt;/revision.json</c>.</summary>
+    public const string RevisionFormat = "bohm.revision/0";
 
     private const string AdoptedDirectory = "adopted";
     private const string RecordFile = "app.json";
@@ -31,6 +37,10 @@ public sealed class AdoptionCatalog
     private const string StorageDirectory = "storage";
     private const string UsageFile = "usage.ndjson";
     private const string StagingPrefix = ".staging-";
+    private const string RevisionsDirectory = "revisions";
+    private const string RevisionFile = "revision.json";
+    private const string DataBeforeFile = "data-before.json";
+    private const string DataUndoneFile = "data-undone.json";
 
     private static readonly JsonWriterOptions RecordWriter = new() { Indented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -144,12 +154,155 @@ public sealed class AdoptionCatalog
         }
     }
 
-    /// <summary>The adopted bytes of application <paramref name="id"/>, exactly as they were adopted.</summary>
-    public Task<byte[]> ReadHtmlAsync(string id, CancellationToken cancellationToken = default)
+    /// <summary>The bytes of the revision of application <paramref name="id"/> in use, exactly as they were taken in.</summary>
+    public async Task<byte[]> ReadHtmlAsync(string id, CancellationToken cancellationToken = default)
     {
         RequireValidId(id);
-        return File.ReadAllBytesAsync(Path.Combine(AppDirectory(id), HtmlFile), cancellationToken);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        return await File.ReadAllBytesAsync(HtmlPath(app), cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Takes in <paramref name="html"/> as a new revision of application <paramref name="id"/>: the
+    /// same application, with the same data, running new code. Before the code changes, the data is
+    /// saved as it stands, so <see cref="RevertAsync"/> can put code and data back together.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A revision is assembled in a staging folder — its bytes, its record and the saved data — and
+    /// moved to <c>revisions/&lt;n&gt;/</c>; only then is <c>app.json</c> rewritten to point at it.
+    /// Interrupted at any point, the application is left at the revision it was at. Revision numbers
+    /// only grow, and a number whose folder exists is never reused.
+    /// </para>
+    /// <para>
+    /// <paramref name="storage"/> must be this application's open storage — the one writer of its
+    /// files. The caller makes sure no page is still running the code being replaced.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The bytes are the revision already in use.</exception>
+    public async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, AppStorage storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        RequireValidId(id);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        var source = new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length);
+        if (source.Sha256 == app.Source.Sha256) throw new InvalidOperationException("These bytes are the revision already in use.");
+
+        var revisions = Path.Combine(AppDirectory(id), RevisionsDirectory);
+        Directory.CreateDirectory(revisions);
+        // The first revision has no record of its own until it is replaced: its source is the application's.
+        var current = Path.Combine(RevisionFolder(id, app.Revision), RevisionFile);
+        if (!File.Exists(current))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(current)!);
+            await DurableFile.WriteAtomicallyAsync(current, WriteRevision(app.Revision, null, app.RevisedAt, app.Source), cancellationToken).ConfigureAwait(false);
+        }
+
+        var now = _clock.GetUtcNow();
+        var number = Math.Max(app.Revision, HighestRevisionFolder(revisions)) + 1;
+        var staging = Path.Combine(revisions, StagingPrefix + number.ToString(CultureInfo.InvariantCulture));
+        if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+        Directory.CreateDirectory(staging);
+        try
+        {
+            await using (var stream = new FileStream(Path.Combine(staging, HtmlFile), FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await stream.WriteAsync(html, cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+
+            await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RevisionFile), WriteRevision(number, app.Revision, now, source), cancellationToken).ConfigureAwait(false);
+            await storage.SaveSnapshotAsync(Path.Combine(staging, DataBeforeFile), cancellationToken).ConfigureAwait(false);
+            Directory.Move(staging, RevisionFolder(id, number));
+        }
+        catch
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            throw;
+        }
+
+        var revised = app with { Source = source, Revision = number, RevisedAt = now };
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(revised), cancellationToken).ConfigureAwait(false);
+        return revised;
+    }
+
+    /// <summary>
+    /// Puts application <paramref name="id"/> back to the revision it was at before the one in use,
+    /// with the data it had at that moment. What the revision being left wrote is not lost: it is kept
+    /// as <c>revisions/&lt;n&gt;/data-undone.json</c>, and it also becomes a previous snapshot of the storage.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">There is no earlier revision to go back to.</exception>
+    public async Task<AdoptedApp> RevertAsync(string id, AppStorage storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        RequireValidId(id);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        var target = await RevertTargetAsync(app, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("There is no earlier revision to go back to.");
+
+        var folder = RevisionFolder(id, app.Revision);
+        // Written once: a revert interrupted after restoring must not overwrite it with the restored data.
+        var undone = Path.Combine(folder, DataUndoneFile);
+        if (!File.Exists(undone)) await storage.SaveSnapshotAsync(undone, cancellationToken).ConfigureAwait(false);
+        await storage.RestoreAsync(Path.Combine(folder, DataBeforeFile), cancellationToken).ConfigureAwait(false);
+
+        var reverted = app with { Source = target.Source, Revision = target.Revision, RevisedAt = target.TakenInAt };
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(reverted), cancellationToken).ConfigureAwait(false);
+        return reverted;
+    }
+
+    /// <summary>Whether <see cref="RevertAsync"/> has an earlier revision to go back to.</summary>
+    public async Task<bool> CanRevertAsync(string id, CancellationToken cancellationToken = default) =>
+        await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app
+        && await RevertTargetAsync(app, cancellationToken).ConfigureAwait(false) is not null;
+
+    private sealed record RevisionRecord(int Revision, int? Previous, DateTimeOffset? TakenInAt, AdoptionSource Source);
+
+    private async Task<RevisionRecord?> RevertTargetAsync(AdoptedApp app, CancellationToken cancellationToken)
+    {
+        if (app.Revision <= 1) return null;
+        var folder = RevisionFolder(app.Id, app.Revision);
+        if (!File.Exists(Path.Combine(folder, DataBeforeFile))) return null;
+        var current = await ReadRevisionAsync(folder, cancellationToken).ConfigureAwait(false);
+        if (current?.Previous is not { } previous) return null;
+        return await ReadRevisionAsync(RevisionFolder(app.Id, previous), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<RevisionRecord?> ReadRevisionAsync(string folder, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(folder, RevisionFile);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+            var root = document.RootElement;
+            if (root.GetProperty("format").GetString() != RevisionFormat) return null;
+            var previous = root.GetProperty("previous");
+            var takenInAt = root.GetProperty("takenInAt");
+            return new RevisionRecord(
+                root.GetProperty("revision").GetInt32(),
+                previous.ValueKind == JsonValueKind.Null ? null : previous.GetInt32(),
+                takenInAt.ValueKind == JsonValueKind.Null ? null : ParseTime(takenInAt.GetString()!),
+                ReadSource(root.GetProperty("source")));
+        }
+        catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The highest number among the revision folders, including one left by an interrupted revision.</summary>
+    private static int HighestRevisionFolder(string revisions) =>
+        Directory.EnumerateDirectories(revisions)
+            .Select(d => int.TryParse(Path.GetFileName(d), NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
+    private string RevisionFolder(string id, int revision) =>
+        Path.Combine(AppDirectory(id), RevisionsDirectory, revision.ToString(CultureInfo.InvariantCulture));
+
+    private string HtmlPath(AdoptedApp app) =>
+        app.Revision <= 1 ? Path.Combine(AppDirectory(app.Id), HtmlFile) : Path.Combine(RevisionFolder(app.Id, app.Revision), HtmlFile);
 
     /// <summary>Opens the data storage of application <paramref name="id"/>.</summary>
     public Task<AppStorage> OpenStorageAsync(string id, StorageOptions? options = null, CancellationToken cancellationToken = default)
@@ -198,12 +351,9 @@ public sealed class AdoptionCatalog
             writer.WriteString("format", RecordFormat);
             writer.WriteString("id", app.Id);
             writer.WriteString("adoptedAt", app.AdoptedAt.ToString("O", CultureInfo.InvariantCulture));
-            writer.WriteStartObject("source");
-            writer.WriteString("sha256", app.Source.Sha256);
-            if (app.Source.OriginalPath is null) writer.WriteNull("originalPath");
-            else writer.WriteString("originalPath", app.Source.OriginalPath);
-            writer.WriteNumber("size", app.Source.Size);
-            writer.WriteEndObject();
+            writer.WriteNumber("revision", app.Revision);
+            WriteTime(writer, "revisedAt", app.RevisedAt);
+            WriteSource(writer, app.Source);
             writer.WriteString("protection", app.Protection);
             writer.WriteEndObject();
         }
@@ -212,22 +362,66 @@ public sealed class AdoptionCatalog
         return buffer.ToArray();
     }
 
+    private static byte[] WriteRevision(int revision, int? previous, DateTimeOffset? takenInAt, AdoptionSource source)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer, RecordWriter))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("format", RevisionFormat);
+            writer.WriteNumber("revision", revision);
+            if (previous is null) writer.WriteNull("previous");
+            else writer.WriteNumber("previous", previous.Value);
+            WriteTime(writer, "takenInAt", takenInAt);
+            WriteSource(writer, source);
+            writer.WriteEndObject();
+        }
+
+        buffer.WriteByte((byte)'\n');
+        return buffer.ToArray();
+    }
+
+    private static void WriteTime(Utf8JsonWriter writer, string name, DateTimeOffset? time)
+    {
+        if (time is null) writer.WriteNull(name);
+        else writer.WriteString(name, time.Value.ToString("O", CultureInfo.InvariantCulture));
+    }
+
+    private static void WriteSource(Utf8JsonWriter writer, AdoptionSource source)
+    {
+        writer.WriteStartObject("source");
+        writer.WriteString("sha256", source.Sha256);
+        if (source.OriginalPath is null) writer.WriteNull("originalPath");
+        else writer.WriteString("originalPath", source.OriginalPath);
+        writer.WriteNumber("size", source.Size);
+        writer.WriteEndObject();
+    }
+
+    private static AdoptionSource ReadSource(JsonElement source) =>
+        new(source.GetProperty("sha256").GetString()!, source.GetProperty("originalPath").GetString(), source.GetProperty("size").GetInt64());
+
+    private static DateTimeOffset ParseTime(string text) => DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
     private static AdoptedApp? ReadRecord(byte[] bytes)
     {
         try
         {
             using var document = JsonDocument.Parse(bytes);
             var root = document.RootElement;
-            if (root.GetProperty("format").GetString() != RecordFormat) return null;
-            var source = root.GetProperty("source");
-            return new AdoptedApp(
+            var format = root.GetProperty("format").GetString();
+            if (format is not (RecordFormat or FirstRecordFormat)) return null;
+            var app = new AdoptedApp(
                 root.GetProperty("id").GetString()!,
-                DateTimeOffset.Parse(root.GetProperty("adoptedAt").GetString()!, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-                new AdoptionSource(
-                    source.GetProperty("sha256").GetString()!,
-                    source.GetProperty("originalPath").GetString(),
-                    source.GetProperty("size").GetInt64()),
+                ParseTime(root.GetProperty("adoptedAt").GetString()!),
+                ReadSource(root.GetProperty("source")),
                 root.GetProperty("protection").GetString()!);
+            if (format == FirstRecordFormat) return app;
+            var revisedAt = root.GetProperty("revisedAt");
+            return app with
+            {
+                Revision = root.GetProperty("revision").GetInt32(),
+                RevisedAt = revisedAt.ValueKind == JsonValueKind.Null ? null : ParseTime(revisedAt.GetString()!),
+            };
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
         {

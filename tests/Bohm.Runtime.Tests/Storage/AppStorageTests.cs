@@ -27,6 +27,54 @@ public sealed class AppStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task A_saved_snapshot_can_be_restored_and_the_state_it_replaces_is_kept_as_a_version()
+    {
+        var saved = Path.Combine(Path.GetDirectoryName(_directory)!, Path.GetFileName(_directory) + "-saved.json");
+        try
+        {
+            await using (var storage = await AppStorage.OpenAsync(_directory))
+            {
+                await storage.ApplyAsync([StorageOperation.Set("a", "1")]);
+                await storage.SaveSnapshotAsync(saved);
+                await storage.ApplyAsync([StorageOperation.Set("a", "2"), StorageOperation.Set("b", "3")]);
+
+                await storage.RestoreAsync(saved);
+
+                Assert.Equal(new Dictionary<string, string> { ["a"] = "1" }, storage.GetItems());
+                await storage.ApplyAsync([StorageOperation.Set("c", "4")]);
+            }
+
+            await using var reopened = await AppStorage.OpenAsync(_directory);
+            Assert.Equal(new Dictionary<string, string> { ["a"] = "1", ["c"] = "4" }, reopened.GetItems());
+            Assert.Empty(reopened.Recovery);
+            Assert.Contains(Directory.GetFiles(Versions), v => File.ReadAllText(v).Contains("\"b\"", StringComparison.Ordinal));
+        }
+        finally
+        {
+            File.Delete(saved);
+        }
+    }
+
+    [Fact]
+    public async Task An_unreadable_snapshot_is_not_restored()
+    {
+        var saved = Path.Combine(_directory, "..", Path.GetFileName(_directory) + "-bad.json");
+        await File.WriteAllTextAsync(saved, "not json");
+        try
+        {
+            await using var storage = await AppStorage.OpenAsync(_directory);
+            await storage.ApplyAsync([StorageOperation.Set("a", "1")]);
+
+            await Assert.ThrowsAsync<InvalidDataException>(() => storage.RestoreAsync(saved));
+            Assert.Equal("1", storage.GetItems()["a"]);
+        }
+        finally
+        {
+            File.Delete(saved);
+        }
+    }
+
+    [Fact]
     public async Task Acknowledged_operations_survive_reopening()
     {
         await using (var storage = await AppStorage.OpenAsync(_directory))

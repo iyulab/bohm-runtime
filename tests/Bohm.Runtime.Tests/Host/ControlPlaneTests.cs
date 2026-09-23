@@ -121,6 +121,72 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_new_revision_runs_new_code_on_the_same_data_and_the_old_page_can_no_longer_write()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var oldPage = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"}]}""")).Dispose();
+
+        using var revised = await ReviseAsync(id, Page + "<button>반납</button>");
+        var app = JsonDocument.Parse(await revised.Content.ReadAsStringAsync()).RootElement;
+        using var stale = await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":2,"op":"set","key":"loan","value":"old code"}]}""");
+        var newPage = await _host.LoadAsync(id);
+
+        HttpAssert.Status(HttpStatusCode.Created, revised);
+        Assert.Equal(id, app.GetProperty("id").GetString());
+        Assert.Equal(2, app.GetProperty("revision").GetInt32());
+        Assert.True(app.GetProperty("canRevert").GetBoolean());
+        HttpAssert.Status(HttpStatusCode.Forbidden, stale);
+        Assert.Equal("""{"loan":"3"}""", newPage.Items);
+        Assert.Equal(Encoding.UTF8.GetBytes(Page + "<button>반납</button>"), await _host.Catalog.ReadHtmlAsync(id));
+        Assert.Contains("\"event\":\"revised\"", await File.ReadAllTextAsync(Path.Combine(_host.DataRoot, "adopted", id, "usage.ndjson")), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reverting_puts_back_the_previous_code_and_data()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"}]}""")).Dispose();
+        (await ReviseAsync(id, "<p>broken</p>")).Dispose();
+        var broken = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, broken, """{"tab":"TAB","ops":[{"seq":1,"op":"remove","key":"loan"}]}""")).Dispose();
+
+        using var reverted = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/revert", null);
+        var app = JsonDocument.Parse(await reverted.Content.ReadAsStringAsync()).RootElement;
+        using var again = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/revert", null);
+
+        HttpAssert.Status(HttpStatusCode.OK, reverted);
+        Assert.Equal(1, app.GetProperty("revision").GetInt32());
+        Assert.False(app.GetProperty("canRevert").GetBoolean());
+        Assert.Equal("""{"loan":"3"}""", (await _host.LoadAsync(id)).Items);
+        Assert.Equal(Encoding.UTF8.GetBytes(Page), await _host.Catalog.ReadHtmlAsync(id));
+        HttpAssert.Status(HttpStatusCode.Conflict, again);
+    }
+
+    [Fact]
+    public async Task The_same_bytes_or_an_unknown_application_are_not_revised()
+    {
+        var id = await _host.AdoptAsync(Page);
+
+        using var same = await ReviseAsync(id, Page);
+        using var unknown = await ReviseAsync("0123456789abcdef0123456789abcdef", Page);
+        using var empty = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new ByteArrayContent([]));
+
+        HttpAssert.Status(HttpStatusCode.Conflict, same);
+        HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+        HttpAssert.Status(HttpStatusCode.BadRequest, empty);
+        Assert.Equal(1, (await _host.Catalog.GetAsync(id))!.Revision);
+    }
+
+    private Task<HttpResponseMessage> ReviseAsync(string id, string html)
+    {
+        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(html));
+        content.Headers.Add("X-Bohm-Original-Path", Uri.EscapeDataString("다운로드/도서대출.html"));
+        return _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", content);
+    }
+
+    [Fact]
     public async Task Listing_shows_every_adopted_application()
     {
         var a = await _host.AdoptAsync(Page);
