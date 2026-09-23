@@ -101,6 +101,46 @@ public sealed class AssetCacheTests : IDisposable
         Assert.Single(cdn.Requested);
     }
 
+    [Theory]
+    [InlineData("http://cdn.example/lib.js")]
+    [InlineData("https://localhost/lib.js")]
+    [InlineData("https://127.0.0.1/lib.js")]
+    [InlineData("https://10.0.0.5/lib.js")]
+    [InlineData("https://192.168.1.10:8443/lib.js")]
+    [InlineData("https://172.16.0.1/lib.js")]
+    [InlineData("https://169.254.169.254/latest/meta-data")]
+    [InlineData("https://[::1]/lib.js")]
+    [InlineData("https://[fd00::1]/lib.js")]
+    [InlineData("https://intranet.local/lib.js")]
+    [InlineData("https://app.internal/lib.js")]
+    [InlineData("https://printer/lib.js")]
+    public async Task Only_public_https_addresses_are_ever_requested(string url)
+    {
+        // A document is untrusted input: fetching whatever it names would let it make this computer
+        // request addresses on its own network. Such references are refused without a request.
+        var cdn = new FakeCdn().File(url, "text/javascript", "x");
+        var cache = AssetCache.Open(_directory);
+
+        await cache.FetchAsync($"""<script src="{url}"></script>""", new HttpClient(cdn), _clock);
+
+        Assert.Empty(cdn.Requested);
+        Assert.Equal("not a public https address", Assert.Single(cache.Failures).Reason);
+    }
+
+    [Fact]
+    public async Task A_redirect_to_a_local_address_is_not_kept()
+    {
+        var cdn = new FakeCdn()
+            .Redirect("https://cdn.example/lib.js", "https://192.168.0.1/lib.js")
+            .File("https://192.168.0.1/lib.js", "text/javascript", "x");
+        var cache = AssetCache.Open(_directory);
+
+        await cache.FetchAsync("""<script src="https://cdn.example/lib.js"></script>""", new HttpClient(cdn), _clock);
+
+        Assert.Empty(cache.Assets);
+        Assert.Equal("redirected to a non-public address", Assert.Single(cache.Failures).Reason);
+    }
+
     [Fact]
     public async Task Files_larger_than_the_limit_are_refused()
     {
