@@ -20,9 +20,11 @@ internal static class AdoptedAppServing
     /// <summary>
     /// Everything loads from the application's own origin; inline script and style are allowed
     /// because adopted documents are single files that rely on them. Nothing — no fetch, image,
-    /// script, style sheet or form submission — may reach another origin.
+    /// script, style sheet or form submission — may reach another origin. Nor may another origin
+    /// embed the application: a page elsewhere (any browser on this computer can reach the loopback
+    /// address) could otherwise frame it — to trick clicks inside it, or to make it look used.
     /// </summary>
-    public const string ContentSecurityPolicy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'";
+    public const string ContentSecurityPolicy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'; frame-ancestors 'self'";
 
     private const string LocalhostSuffix = ".localhost";
 

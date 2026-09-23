@@ -124,6 +124,33 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_page_elsewhere_cannot_embed_an_application()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("<!doctype html><title>Mine</title><button id='b'>click</button>");
+        var page = await _browser!.NewPageAsync();
+        // A page with no policy of its own, so only the application's policy decides.
+        await page.SetContentAsync($"<iframe src='http://{id}.localhost:{_host.Port}/'></iframe>");
+        await page.WaitForTimeoutAsync(1000);
+
+        var framed = page.Frames.Single(f => f != page.MainFrame);
+        Assert.Null(await framed.QuerySelectorAsync("#b")); // refused: the application never rendered inside it
+    }
+
+    [Fact]
+    public async Task An_application_may_still_frame_its_own_origin()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("<!doctype html><title>Self</title><iframe src='/'></iframe>");
+        var page = await OpenAsync(id);
+        await page.WaitForTimeoutAsync(1000);
+
+        // The same document, rendered inside itself (the browser stops the nesting at some depth).
+        var inner = page.MainFrame.ChildFrames[0];
+        Assert.NotNull(await inner.QuerySelectorAsync("iframe"));
+    }
+
+    [Fact]
     public async Task Data_cannot_leave_the_origin_through_any_request_type()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
