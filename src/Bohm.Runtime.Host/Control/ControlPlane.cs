@@ -1,0 +1,148 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Host.Adoption;
+using Bohm.Runtime.Usage;
+
+namespace Bohm.Runtime.Host.Control;
+
+/// <summary>
+/// The API the process that started the runtime uses to drive it — the desktop shell, or a
+/// headless deployment's configuration. It answers only on the loopback address itself (never on
+/// an application origin) and only to requests bearing the per-launch secret.
+/// </summary>
+/// <remarks>
+/// <list type="table">
+/// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first.</description></item>
+/// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body.</description></item>
+/// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
+/// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals and recent load failures.</description></item>
+/// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
+/// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
+/// </list>
+/// </remarks>
+internal static class ControlPlane
+{
+    public const string PathPrefix = "/__control";
+    public const string OriginalPathHeader = "X-Bohm-Original-Path";
+
+    /// <summary>How long no write may be in progress before the runtime counts as drained.</summary>
+    private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>The longest a drain waits. Past it the caller proceeds and a loss is possible.</summary>
+    private static readonly TimeSpan DrainLimit = TimeSpan.FromSeconds(2);
+
+    public static bool IsControlHost(HttpRequest request) =>
+        request.Host.Host is "127.0.0.1" or "localhost" && request.Path.StartsWithSegments(PathPrefix);
+
+    public static async Task HandleAsync(HttpContext context, string? secret)
+    {
+        var request = context.Request;
+        var response = context.Response;
+        if (secret is null || !Authorized(request, secret))
+        {
+            response.StatusCode = secret is null ? StatusCodes.Status404NotFound : StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
+        var segments = request.Path.Value![PathPrefix.Length..].Trim('/').Split('/');
+        var port = request.Host.Port ?? 80;
+        var cancel = context.RequestAborted;
+
+        switch (request.Method, segments)
+        {
+            case ("GET", ["apps"]):
+                await WriteAsync(response, (await catalog.ListAsync(cancel).ConfigureAwait(false)).Select(a => View(a, port)).ToList(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", "matches"]):
+                var candidate = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                await WriteAsync(response, (await catalog.FindBySourceAsync(candidate, cancel).ConfigureAwait(false)).Select(a => View(a, port)).ToList(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps"]):
+                var html = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                if (html.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var originalPath = request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
+                var adopted = await catalog.AdoptAsync(html, originalPath, cancel).ConfigureAwait(false);
+                response.StatusCode = StatusCodes.Status201Created;
+                await WriteAsync(response, View(adopted, port), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var id, "status"]):
+                if (await catalog.GetAsync(id, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(id).ConfigureAwait(false);
+                var today = app.Usage.Today;
+                var signals = app.Usage.SignalsOn(today);
+                await WriteAsync(response, new AppStatus(
+                    today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                    signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["drain"]):
+                await WriteAsync(response, new DrainResult(await DrainAsync(context, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["shutdown"]):
+                var quiet = await DrainAsync(context, cancel).ConfigureAwait(false);
+                await WriteAsync(response, new DrainResult(quiet), cancel).ConfigureAwait(false);
+                await response.CompleteAsync().ConfigureAwait(false);
+                context.RequestServices.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+                break;
+
+            default:
+                response.StatusCode = StatusCodes.Status404NotFound;
+                break;
+        }
+    }
+
+    private static Task<bool> DrainAsync(HttpContext context, CancellationToken cancellationToken) =>
+        context.RequestServices.GetRequiredService<Activity>().WaitForQuietAsync(Quiet, DrainLimit, cancellationToken);
+
+    private static bool Authorized(HttpRequest request, string secret)
+    {
+        var header = request.Headers.Authorization.ToString();
+        const string scheme = "Bearer ";
+        if (!header.StartsWith(scheme, StringComparison.Ordinal)) return false;
+        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(header[scheme.Length..]), Encoding.UTF8.GetBytes(secret));
+    }
+
+    private static async Task<byte[]> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        await request.Body.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+        return buffer.ToArray();
+    }
+
+    private static AppView View(AdoptedApp app, int port) =>
+        new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size);
+
+    private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
+        response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
+
+    internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size);
+
+    internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors);
+
+    internal sealed record DrainResult(bool Quiet);
+}
+
+[System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
+internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

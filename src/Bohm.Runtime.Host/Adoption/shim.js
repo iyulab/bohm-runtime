@@ -122,6 +122,47 @@
 
   Object.defineProperty(window, "localStorage", { value: proxy, configurable: true, enumerable: true });
 
+  // Usage facts only the page can see: the first input, and failures while loading. Neither
+  // carries anything the person typed; a load failure carries the error message, which the
+  // runtime keeps in memory to show the person and never writes down.
+  function report(kind, message) {
+    fetch("/__bohm/usage", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
+      body: JSON.stringify({ tab: boot.tab, kind: kind, message: message })
+    }).catch(function () { /* usage is best-effort */ });
+  }
+
+  function onFirstInput() {
+    window.removeEventListener("keydown", onFirstInput, true);
+    window.removeEventListener("pointerdown", onFirstInput, true);
+    report("input");
+  }
+  window.addEventListener("keydown", onFirstInput, true);
+  window.addEventListener("pointerdown", onFirstInput, true);
+
+  var loading = true;
+  var loadErrors = 0;
+  function onLoadError(message) {
+    if (!loading || loadErrors >= 5) return;
+    loadErrors++;
+    report("load-error", String(message).slice(0, 500));
+  }
+  // Capturing on window also sees resources that failed to load (a script or style sheet that
+  // could not be fetched), which do not bubble.
+  window.addEventListener("error", function (event) {
+    var target = event.target;
+    if (target && target !== window && (target.src || target.href)) onLoadError("could not load " + (target.src || target.href));
+    else onLoadError(event.message || "error");
+  }, true);
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason;
+    onLoadError(reason && reason.message ? reason.message : String(reason));
+  });
+  window.addEventListener("load", function () { setTimeout(function () { loading = false; }, 1000); });
+
   window.addEventListener("pagehide", flushOnLeave);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") flushOnLeave();

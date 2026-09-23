@@ -25,10 +25,12 @@ public sealed class RunningHost : IAsyncDisposable
     public int Port { get; }
     public AdoptionCatalog Catalog { get; }
 
-    public static async Task<RunningHost> StartAsync(string? dataRoot = null)
+    public const string Secret = "per-launch-secret";
+
+    public static async Task<RunningHost> StartAsync(string? dataRoot = null, string? secret = Secret)
     {
         dataRoot ??= Directory.CreateTempSubdirectory("bohm-host-").FullName;
-        var app = RuntimeHost.Build(new RuntimeHostOptions { DataRoot = dataRoot }, b => b.Logging.ClearProviders());
+        var app = RuntimeHost.Build(new RuntimeHostOptions { DataRoot = dataRoot, ControlSecret = secret }, b => b.Logging.ClearProviders());
         await app.StartAsync();
         return new RunningHost(app, dataRoot, app.ListeningPort());
     }
@@ -47,6 +49,14 @@ public sealed class RunningHost : IAsyncDisposable
     }
 
     public HttpClient ClientForApp(string appId) => ClientFor($"{appId}.localhost");
+
+    /// <summary>A client for the control API, bearing the per-launch secret.</summary>
+    public HttpClient ControlClient(string? secret = Secret)
+    {
+        var client = ClientFor("127.0.0.1");
+        if (secret is not null) client.DefaultRequestHeaders.Authorization = new("Bearer", secret);
+        return client;
+    }
 
     public async ValueTask DisposeAsync()
     {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Bohm.Runtime.Storage;
+using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -26,7 +27,7 @@ internal static partial class StorageEndpoint
             return;
         }
 
-        if (request.Headers[AdoptedAppServing.RequestHeader] != "1" || !IsSameOriginOrAbsent(request))
+        if (!PageRequests.IsFromThePage(request))
         {
             response.StatusCode = StatusCodes.Status403Forbidden;
             return;
@@ -49,8 +50,7 @@ internal static partial class StorageEndpoint
             return;
         }
 
-        var sessions = context.RequestServices.GetRequiredService<AppSessions>();
-        var tab = sessions.Authorize(appId, request.Cookies[AdoptedAppServing.SessionCookie], batch.Tab);
+        var tab = PageRequests.Tab(context, appId, batch.Tab);
         if (tab is null)
         {
             response.StatusCode = StatusCodes.Status403Forbidden;
@@ -58,8 +58,9 @@ internal static partial class StorageEndpoint
         }
 
         var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(StorageEndpoint));
-        var storage = await context.RequestServices.GetRequiredService<OpenStorages>().GetAsync(appId).ConfigureAwait(false);
+        var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
 
+        using var inProgress = context.RequestServices.GetRequiredService<Activity>().Begin();
         await tab.Gate.WaitAsync(context.RequestAborted).ConfigureAwait(false);
         try
         {
@@ -69,8 +70,11 @@ internal static partial class StorageEndpoint
                 if (fresh[0].Sequence != tab.LastSequence + 1)
                     LogSequenceGap(logger, appId, tab.LastSequence, fresh[0].Sequence);
 
-                await storage.ApplyAsync(fresh.Select(o => o.Operation!).ToList(), CancellationToken.None).ConfigureAwait(false);
+                // Not cancelled with the request: once a batch is accepted it is written through, so a
+                // page that stops waiting (a closing window) cannot leave it half-applied.
+                await app.Storage.ApplyAsync(fresh.Select(o => o.Operation!).ToList(), CancellationToken.None).ConfigureAwait(false);
                 tab.LastSequence = fresh[^1].Sequence;
+                app.Usage.Record(UsageSignal.Wrote);
             }
 
             await response.WriteAsJsonAsync(new AckResponse(tab.LastSequence), StorageJson.Default.AckResponse, cancellationToken: context.RequestAborted).ConfigureAwait(false);
@@ -79,12 +83,6 @@ internal static partial class StorageEndpoint
         {
             tab.Gate.Release();
         }
-    }
-
-    private static bool IsSameOriginOrAbsent(HttpRequest request)
-    {
-        var origin = request.Headers.Origin.ToString();
-        return origin.Length == 0 || string.Equals(origin, $"{request.Scheme}://{request.Host}", StringComparison.OrdinalIgnoreCase);
     }
 
     private static (long Sequence, StorageOperation? Operation) ToOperation(WireOperation wire) =>

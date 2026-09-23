@@ -3,14 +3,16 @@ using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Bohm.Runtime.Storage;
+using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Adoption;
 
 /// <summary>
 /// The adopted applications under one data root. Each lives in its own folder, which is
 /// everything needed to move it elsewhere:
-/// <c>app.json</c> (the record), <c>app.html</c> (the original bytes, never modified) and
-/// <c>storage/</c> (its data, see <see cref="AppStorage"/>).
+/// <c>app.json</c> (the record), <c>app.html</c> (the original bytes, never modified),
+/// <c>storage/</c> (its data, see <see cref="AppStorage"/>) and <c>usage.ndjson</c> (its local
+/// usage record, see <see cref="UsageLog"/>).
 /// </summary>
 /// <remarks>
 /// The catalog does not decide what to do when the same file is adopted twice. It reports earlier
@@ -26,6 +28,7 @@ public sealed class AdoptionCatalog
     private const string RecordFile = "app.json";
     private const string HtmlFile = "app.html";
     private const string StorageDirectory = "storage";
+    private const string UsageFile = "usage.ndjson";
     private const string StagingPrefix = ".staging-";
 
     private static readonly JsonWriterOptions RecordWriter = new() { Indented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -121,6 +124,14 @@ public sealed class AdoptionCatalog
         RequireValidId(id);
         if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
         return AppStorage.OpenAsync(Path.Combine(AppDirectory(id), StorageDirectory), options, cancellationToken);
+    }
+
+    /// <summary>Opens the local usage record of application <paramref name="id"/>.</summary>
+    public UsageLog OpenUsage(string id)
+    {
+        RequireValidId(id);
+        if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
+        return UsageLog.Open(Path.Combine(AppDirectory(id), UsageFile), _clock);
     }
 
     /// <summary>
