@@ -196,6 +196,54 @@ public sealed class BrowserTests : IAsyncLifetime
         Assert.Contains(messages, m => m.Contains("Chart", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task An_app_that_asks_for_an_api_key_talks_to_its_provider_without_ever_holding_the_key()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        const string realKey = "sk-real-secret-never-in-the-page";
+        await using var provider = await FakeProvider.StartAsync();
+        await _host.StopKeepingDataAsync();
+        _host = await RunningHost.StartAsync(_host.DataRoot, configure: o => o with
+        {
+            LlmEndpoints = new Dictionary<string, Uri> { ["api.openai.com"] = provider.Address },
+        });
+        (await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(realKey))).Dispose();
+
+        // The common shape of generated AI apps: ask once, remember it, call the provider directly.
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Ask</title>
+            <button id="ask">Ask</button><p id="answer"></p>
+            <script>
+              let key = localStorage.getItem('openai_key');
+              if (!key) { key = prompt('Enter your OpenAI API key'); localStorage.setItem('openai_key', key); }
+              document.getElementById('ask').onclick = async () => {
+                const r = await fetch('https://api.openai.com/v1/chat/completions', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+                  body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] }),
+                });
+                const j = await r.json();
+                document.getElementById('answer').textContent = j.choices[0].message.content;
+              };
+            </script>
+            """);
+
+        var page = await OpenAsync(id);
+        await page.ClickAsync("#ask");
+        await page.WaitForSelectorAsync("#answer:has-text('hello from the provider')");
+
+        Assert.Equal($"Bearer {realKey}", Assert.Single(provider.Received).Headers["Authorization"]);
+        Assert.Equal($"bohm-key-{id}", await page.EvaluateAsync<string>("localStorage.getItem('openai_key')"));
+        await page.CloseAsync();
+        // The runtime still has the journal open for writing, so read with sharing.
+        foreach (var file in Directory.EnumerateFiles(_host.DataRoot, "*", SearchOption.AllDirectories))
+        {
+            await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            Assert.DoesNotContain(realKey, await reader.ReadToEndAsync(), StringComparison.Ordinal);
+        }
+    }
+
     private static async Task<System.Text.Json.JsonElement> EventuallyAsync(Func<Task<System.Text.Json.JsonElement?>> probe)
     {
         for (var attempt = 0; attempt < 25; attempt++)

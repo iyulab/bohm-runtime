@@ -36,6 +36,10 @@ internal sealed class AppSessions
         return id;
     }
 
+    /// <summary>Whether <paramref name="sessionToken"/> is a session of <paramref name="appId"/>.</summary>
+    public bool IsSession(string appId, string? sessionToken) =>
+        sessionToken is not null && _sessions.TryGetValue(sessionToken, out var sessionApp) && sessionApp == appId;
+
     /// <summary>The tab, if both it and the session belong to <paramref name="appId"/>.</summary>
     public Tab? Authorize(string appId, string? sessionToken, string? tabId)
     {

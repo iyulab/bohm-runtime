@@ -1,5 +1,6 @@
 using System.Net;
 using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
 using Bohm.Runtime.Host.Control;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -21,6 +22,18 @@ public sealed record RuntimeHostOptions
     /// Without one, the control API does not exist.
     /// </summary>
     public string? ControlSecret { get; init; }
+
+    /// <summary>
+    /// Where AI provider keys are kept. Defaults to the Windows Credential Manager on Windows and to
+    /// memory elsewhere (a headless deployment supplies its own).
+    /// </summary>
+    public ICredentialVault? Vault { get; init; }
+
+    /// <summary>
+    /// Sends a provider's traffic to another base address instead of the provider itself — a
+    /// company gateway that speaks the same API, or a stand-in during tests. Keyed by provider host.
+    /// </summary>
+    public IReadOnlyDictionary<string, Uri>? LlmEndpoints { get; init; }
 }
 
 /// <summary>
@@ -35,7 +48,12 @@ public static class RuntimeHost
         ArgumentNullException.ThrowIfNull(options);
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
+        builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
+        builder.Services.AddSingleton(options.Vault ?? (OperatingSystem.IsWindows() ? new WindowsCredentialVault() : new MemoryCredentialVault()));
+        // No overall timeout: a streamed answer can legitimately run for minutes.
+        builder.Services.AddHttpClient(nameof(Llm.LlmProxy), client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
         builder.Services.AddSingleton<AppSessions>();
         builder.Services.AddSingleton<OpenApps>();
         builder.Services.AddSingleton(TimeProvider.System);

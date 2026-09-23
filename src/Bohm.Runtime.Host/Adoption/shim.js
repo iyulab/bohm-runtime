@@ -20,9 +20,11 @@
   var inflight = false;
   var timer = 0;
   var retryDelay = 250;
+  // The page may replace fetch (this script does, below); the runtime's own traffic uses the original.
+  var nativeFetch = window.fetch.bind(window);
 
   function post(ops, keepalive) {
-    return fetch(endpoint, {
+    return nativeFetch(endpoint, {
       method: "POST",
       credentials: "same-origin",
       keepalive: keepalive,
@@ -126,7 +128,7 @@
   // carries anything the person typed; a load failure carries the error message, which the
   // runtime keeps in memory to show the person and never writes down.
   function report(kind, message) {
-    fetch("/__bohm/usage", {
+    nativeFetch("/__bohm/usage", {
       method: "POST",
       credentials: "same-origin",
       keepalive: true,
@@ -162,6 +164,41 @@
     onLoadError(reason && reason.message ? reason.message : String(reason));
   });
   window.addEventListener("load", function () { setTimeout(function () { loading = false; }, 1000); });
+
+  // AI provider calls. An application that asks for a provider's API key with prompt() gets a
+  // placeholder instead of a dialog; its requests to a known provider go to the same origin, where
+  // the runtime puts the real key in and relays them. The key itself never enters the page.
+  var llmProvider = /\b(gemini|google ai|anthropic|claude|openai|gpt|openrouter|groq|mistral)\b/i;
+  var keyWord = /api[\s_-]?key/i;
+  var nativePrompt = window.prompt;
+  window.prompt = function (message) {
+    var text = String(message === undefined ? "" : message);
+    if (llmProvider.test(text) && keyWord.test(text) && !/github/i.test(text)) return boot.llmPlaceholder;
+    return nativePrompt.apply(window, arguments);
+  };
+
+  function toProxy(url) {
+    try {
+      var parsed = new URL(url, location.href);
+      if (parsed.protocol === "https:" && boot.llmHosts.indexOf(parsed.hostname.toLowerCase()) >= 0)
+        return location.origin + "/__bohm/llm/" + parsed.hostname.toLowerCase() + parsed.pathname + parsed.search;
+    } catch (e) { /* not a URL; leave it alone */ }
+    return null;
+  }
+
+  window.fetch = function (input, init) {
+    var url = typeof input === "string" ? input : input instanceof URL ? input.href : input && input.url;
+    var proxied = url ? toProxy(url) : null;
+    if (!proxied) return nativeFetch(input, init);
+    return nativeFetch(input instanceof Request ? new Request(proxied, input) : proxied, init);
+  };
+
+  var nativeOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    var proxied = toProxy(String(url));
+    if (proxied) arguments[1] = proxied;
+    return nativeOpen.apply(this, arguments);
+  };
 
   window.addEventListener("pagehide", flushOnLeave);
   document.addEventListener("visibilitychange", function () {
