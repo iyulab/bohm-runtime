@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
-using Bohm.Runtime.Storage;
+using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -15,6 +15,7 @@ internal static class AdoptedAppServing
     public const string SessionCookie = "bohm_session";
     public const string RequestHeader = "X-Bohm-Request";
     public const string StoragePath = "/__bohm/storage";
+    public const string UsagePath = "/__bohm/usage";
 
     /// <summary>
     /// Everything loads from the application's own origin; inline script and style are allowed
@@ -61,6 +62,12 @@ internal static class AdoptedAppServing
             return;
         }
 
+        if (path == UsagePath)
+        {
+            await UsageEndpoint.HandleAsync(context, appId).ConfigureAwait(false);
+            return;
+        }
+
         if (path != "/" || !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
         {
             response.StatusCode = StatusCodes.Status404NotFound;
@@ -68,10 +75,10 @@ internal static class AdoptedAppServing
         }
 
         var sessions = context.RequestServices.GetRequiredService<AppSessions>();
-        var storage = await context.RequestServices.GetRequiredService<OpenStorages>().GetAsync(appId).ConfigureAwait(false);
+        var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var html = await catalog.ReadHtmlAsync(appId, context.RequestAborted).ConfigureAwait(false);
 
-        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), storage.GetItems()), BootJson.Default.Boot);
+        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems()), BootJson.Default.Boot);
         var (body, charset) = ShimInjector.Inject(html, ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal));
 
         response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
@@ -86,7 +93,10 @@ internal static class AdoptedAppServing
         response.ContentType = $"text/html; charset={charset}";
         response.ContentLength = body.Length;
         if (HttpMethods.IsGet(context.Request.Method))
+        {
+            app.Usage.Record(UsageSignal.Opened);
             await response.Body.WriteAsync(body, context.RequestAborted).ConfigureAwait(false);
+        }
     }
 
     internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items);

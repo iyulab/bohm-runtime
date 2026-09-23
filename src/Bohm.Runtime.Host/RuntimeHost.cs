@@ -1,6 +1,7 @@
 using System.Net;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Host.Adoption;
+using Bohm.Runtime.Host.Control;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
@@ -14,6 +15,12 @@ public sealed record RuntimeHostOptions
 
     /// <summary>Loopback port to listen on; 0 lets the operating system choose a free one.</summary>
     public int Port { get; init; }
+
+    /// <summary>
+    /// Secret that control requests must bear. Chosen by whoever starts the runtime, per launch.
+    /// Without one, the control API does not exist.
+    /// </summary>
+    public string? ControlSecret { get; init; }
 }
 
 /// <summary>
@@ -30,7 +37,9 @@ public static class RuntimeHost
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port));
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
         builder.Services.AddSingleton<AppSessions>();
-        builder.Services.AddSingleton<OpenStorages>();
+        builder.Services.AddSingleton<OpenApps>();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<Activity>();
         configure?.Invoke(builder);
 
         var app = builder.Build();
@@ -40,6 +49,9 @@ public static class RuntimeHost
             // including a public name rebound to the loopback address — is not served.
             if (AdoptedAppServing.AppIdOf(context.Request) is { } appId)
                 return AdoptedAppServing.ServeAsync(context, appId);
+
+            if (ControlPlane.IsControlHost(context.Request))
+                return ControlPlane.HandleAsync(context, options.ControlSecret);
 
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return Task.CompletedTask;

@@ -156,6 +156,58 @@ public sealed class BrowserTests : IAsyncLifetime
         Assert.True(violations >= 4, $"expected every attempt to be refused by policy, saw {violations}");
     }
 
+    [Fact]
+    public async Task Opening_typing_and_saving_are_recorded_as_todays_signals()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync(NotesApp);
+
+        var page = await OpenAsync(id);
+        await page.FillAsync("#note", "x");
+        await page.ClickAsync("#save");
+
+        var status = await EventuallyAsync(async () =>
+        {
+            var s = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+            return s.GetProperty("input").GetBoolean() && s.GetProperty("wrote").GetBoolean() ? s : (System.Text.Json.JsonElement?)null;
+        });
+        Assert.True(status.GetProperty("opened").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Failures_while_loading_are_counted_and_described()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Broken</title>
+            <script src="https://cdn.example.com/chart.js"></script>
+            <script>new Chart(document.body, {});</script>
+            """);
+
+        await OpenAsync(id);
+
+        var status = await EventuallyAsync(async () =>
+        {
+            var s = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+            return s.GetProperty("loadErrors").GetInt32() >= 2 ? s : (System.Text.Json.JsonElement?)null;
+        });
+        var messages = status.GetProperty("recentLoadErrors").EnumerateArray().Select(m => m.GetString()!).ToList();
+        Assert.Contains(messages, m => m.Contains("could not load https://cdn.example.com/chart.js", StringComparison.Ordinal));
+        Assert.Contains(messages, m => m.Contains("Chart", StringComparison.Ordinal));
+    }
+
+    private static async Task<System.Text.Json.JsonElement> EventuallyAsync(Func<Task<System.Text.Json.JsonElement?>> probe)
+    {
+        for (var attempt = 0; attempt < 25; attempt++)
+        {
+            if (await probe() is { } result) return result;
+            await Task.Delay(200);
+        }
+
+        Assert.Fail("The condition was not met in time.");
+        return default;
+    }
+
     private async Task<IPage> OpenAsync(string appId)
     {
         var page = await _browser!.NewPageAsync();
