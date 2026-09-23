@@ -56,7 +56,10 @@ internal static class UsageEndpoint
         switch (report.Kind)
         {
             case "input": app.Usage.Record(UsageSignal.Input); break;
-            case "blocked": app.AddBlocked(report.Category!, report.Host!); break;
+            case "blocked":
+                app.AddBlocked(report.Category!, report.Host!);
+                context.RequestServices.GetRequiredService<Egress>().Blocked(appId, report.Host!);
+                break;
             default: app.AddLoadError(report.Message ?? ""); break;
         }
         // 200 with a body rather than 204: an answered-with-204 fetch was observed to keep the

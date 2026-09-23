@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Playwright;
 
 namespace Bohm.Runtime.Tests.Host;
@@ -195,6 +196,11 @@ public sealed class BrowserTests : IAsyncLifetime
         Assert.Contains("Chart", error, StringComparison.Ordinal);
         Assert.EndsWith("(line 3)", error, StringComparison.Ordinal); // as numbered in the adopted file
         Assert.Equal(2, status.GetProperty("loadErrors").GetInt32());
+
+        // The refused connection is in the run's egress record as blocked — and nothing was sent.
+        var egress = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement;
+        Assert.Equal("cdn.example.com", Assert.Single(egress.GetProperty("blocked").EnumerateArray()).GetProperty("host").GetString());
+        Assert.Empty(egress.GetProperty("sent").EnumerateArray());
     }
 
     [Fact]

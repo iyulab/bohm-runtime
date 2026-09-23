@@ -85,6 +85,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Activity>();
         builder.Services.AddSingleton<AssetFetcher>();
+        builder.Services.AddSingleton<Egress>();
         configure?.Invoke(builder);
 
         var app = builder.Build();

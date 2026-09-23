@@ -21,6 +21,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
+/// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers and whether a key is connected (never the key).</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
@@ -114,6 +115,10 @@ internal static class ControlPlane
                 await WriteAsync(response, new AssetsView(
                     fetchedApp.Assets.Assets.Select(a => new AssetView(a.Url, a.Size)).ToList(),
                     fetchedApp.Assets.Failures.Select(f => new AssetView(f.Url, 0, f.Reason)).ToList()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["egress"]):
+                await WriteAsync(response, context.RequestServices.GetRequiredService<Egress>().Snapshot(), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm"]):
@@ -231,6 +236,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
