@@ -17,10 +17,10 @@ internal static partial class ShimInjector
     /// first and can push a late <c>&lt;meta charset&gt;</c> past the 1024 bytes browsers scan, so the
     /// response header has to carry the document's own choice.
     /// </summary>
-    public static (byte[] Body, string Charset) Inject(ReadOnlySpan<byte> document, string script)
+    public static (byte[] Body, string Charset) Inject(ReadOnlySpan<byte> document, string script, string before = "")
     {
-        if (script.Any(c => c > 0x7F)) throw new ArgumentException("The injected script must be ASCII.", nameof(script));
-        var tag = "<script>" + script + "</script>";
+        if (script.Any(c => c > 0x7F) || before.Any(c => c > 0x7F)) throw new ArgumentException("Injected markup must be ASCII.", nameof(script));
+        var tag = before + "<script>" + script + "</script>";
 
         if (document.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE]) || document.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF]))
         {

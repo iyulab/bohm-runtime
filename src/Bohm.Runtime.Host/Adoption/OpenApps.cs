@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Assets;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
 
@@ -11,7 +12,7 @@ namespace Bohm.Runtime.Host.Adoption;
 internal sealed record BlockedResource(string Category, string Host);
 
 /// <summary>An adopted application while the host is running: its storage, its usage record and recent load failures.</summary>
-internal sealed class OpenApp(AppStorage storage, UsageLog usage)
+internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache assets)
 {
     private const int KeptLoadErrors = 5;
     private readonly Queue<string> _loadErrors = new();
@@ -22,6 +23,10 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage)
 
     public AppStorage Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
+    public AssetCache Assets { get; } = assets;
+
+    /// <summary>One asset fetch at a time per application — an adoption's background fetch and an explicit one must not interleave.</summary>
+    public SemaphoreSlim AssetFetch { get; } = new(1, 1);
 
     /// <summary>
     /// The most recent load-failure messages, for showing the person what went wrong. Kept in memory
@@ -118,7 +123,7 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         var storage = await catalog.OpenStorageAsync(appId).ConfigureAwait(false);
         foreach (var repair in storage.Recovery)
             LogRepair(logger, appId, repair.Kind, repair.Detail);
-        return new OpenApp(storage, catalog.OpenUsage(appId));
+        return new OpenApp(storage, catalog.OpenUsage(appId), catalog.OpenAssets(appId));
     }
 
     public async ValueTask DisposeAsync()

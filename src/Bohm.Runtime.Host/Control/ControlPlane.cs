@@ -20,6 +20,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers and whether a key is connected (never the key).</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
@@ -77,6 +78,8 @@ internal static class ControlPlane
 
                 var originalPath = request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
                 var adopted = await catalog.AdoptAsync(html, originalPath, cancel).ConfigureAwait(false);
+                if (context.RequestServices.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
+                    context.RequestServices.GetRequiredService<AssetFetcher>().Start(adopted.Id);
                 response.StatusCode = StatusCodes.Status201Created;
                 await WriteAsync(response, View(adopted, port), cancel).ConfigureAwait(false);
                 break;
@@ -94,7 +97,21 @@ internal static class ControlPlane
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.Assets.Assets.Count), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var assetsFor, "assets"]):
+                if (await catalog.GetAsync(assetsFor, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await context.RequestServices.GetRequiredService<AssetFetcher>().FetchAsync(assetsFor, cancel).ConfigureAwait(false);
+                var fetchedApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(assetsFor).ConfigureAwait(false);
+                await WriteAsync(response, new AssetsView(
+                    fetchedApp.Assets.Assets.Select(a => new AssetView(a.Url, a.Size)).ToList(),
+                    fetchedApp.Assets.Failures.Select(f => new AssetView(f.Url, 0, f.Reason)).ToList()), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm"]):
@@ -179,7 +196,11 @@ internal static class ControlPlane
     /// person is the caller's job, in the person's language.
     /// </summary>
     internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors,
-        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles);
+        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, int CachedAssets);
+
+    internal sealed record AssetView(string Url, long Size, string? Reason = null);
+
+    internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected);
 
@@ -192,6 +213,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

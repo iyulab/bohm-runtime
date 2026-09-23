@@ -34,6 +34,15 @@ public sealed record RuntimeHostOptions
     /// company gateway that speaks the same API, or a stand-in during tests. Keyed by provider host.
     /// </summary>
     public IReadOnlyDictionary<string, Uri>? LlmEndpoints { get; init; }
+
+    /// <summary>
+    /// Whether adopting an application also fetches, in the background, the code it loads from
+    /// other hosts. On by default; the fetch needs the network once, at adoption.
+    /// </summary>
+    public bool FetchAssetsOnAdoption { get; init; } = true;
+
+    /// <summary>Replaces the network for asset fetching — for tests.</summary>
+    public Func<HttpMessageHandler>? AssetHttpHandler { get; init; }
 }
 
 /// <summary>
@@ -52,12 +61,19 @@ public static class RuntimeHost
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
         builder.Services.AddSingleton(options.Vault ?? (OperatingSystem.IsWindows() ? new WindowsCredentialVault() : new MemoryCredentialVault()));
         // No overall timeout: a streamed answer can legitimately run for minutes.
+        var assets = builder.Services.AddHttpClient("assets", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(20);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Bohm-Runtime");
+        });
+        if (options.AssetHttpHandler is { } handler) assets.ConfigurePrimaryHttpMessageHandler(handler);
         builder.Services.AddHttpClient(nameof(Llm.LlmProxy), client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
         builder.Services.AddSingleton<AppSessions>();
         builder.Services.AddSingleton<OpenApps>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Activity>();
+        builder.Services.AddSingleton<AssetFetcher>();
         configure?.Invoke(builder);
 
         var app = builder.Build();
