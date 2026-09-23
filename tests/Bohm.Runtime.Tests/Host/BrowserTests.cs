@@ -175,7 +175,7 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Failures_while_loading_are_counted_and_described()
+    public async Task A_blocked_library_and_the_error_it_causes_are_reported_separately()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
         var id = await _host.AdoptAsync("""
@@ -186,15 +186,77 @@ public sealed class BrowserTests : IAsyncLifetime
 
         await OpenAsync(id);
 
-        var status = await EventuallyAsync(async () =>
+        var status = await StatusWhenAsync(id, s => s.GetProperty("blocked").GetArrayLength() > 0 && s.GetProperty("recentLoadErrors").GetArrayLength() > 0);
+        var blocked = Assert.Single(status.GetProperty("blocked").EnumerateArray());
+        Assert.Equal("library", blocked.GetProperty("category").GetString());
+        Assert.Equal("cdn.example.com", blocked.GetProperty("host").GetString());
+        Assert.True(status.GetProperty("recentLoadErrors").GetArrayLength() == 1, status.ToString());
+        var error = status.GetProperty("recentLoadErrors")[0].GetString()!;
+        Assert.Contains("Chart", error, StringComparison.Ordinal);
+        Assert.EndsWith("(line 3)", error, StringComparison.Ordinal); // as numbered in the adopted file
+        Assert.Equal(2, status.GetProperty("loadErrors").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_module_imported_from_a_cdn_is_named_instead_of_a_bare_error()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Module</title>
+            <script type="module">
+              import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
+              document.body.textContent = typeof GoogleGenerativeAI;
+            </script>
+            """);
+
+        await OpenAsync(id);
+
+        var status = await StatusWhenAsync(id, s => s.GetProperty("blocked").GetArrayLength() > 0);
+        var blocked = Assert.Single(status.GetProperty("blocked").EnumerateArray());
+        Assert.Equal(("library", "esm.run"), (blocked.GetProperty("category").GetString(), blocked.GetProperty("host").GetString()));
+        Assert.DoesNotContain(status.GetProperty("recentLoadErrors").EnumerateArray(), e => e.GetString() == "error");
+    }
+
+    [Fact]
+    public async Task External_data_an_app_handles_itself_is_still_reported()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Schedule</title><p id="out">loading</p>
+            <script>
+              fetch("https://data.example.org/schedule.json").then(r => r.json())
+                .catch(() => { document.getElementById("out").textContent = "could not load the schedule"; });
+            </script>
+            """);
+
+        var page = await OpenAsync(id);
+        await page.WaitForSelectorAsync("#out:has-text('could not load the schedule')");
+
+        var status = await StatusWhenAsync(id, s => s.GetProperty("blocked").GetArrayLength() > 0);
+        var blocked = Assert.Single(status.GetProperty("blocked").EnumerateArray());
+        Assert.Equal(("data", "data.example.org"), (blocked.GetProperty("category").GetString(), blocked.GetProperty("host").GetString()));
+        Assert.Equal(0, status.GetProperty("loadErrors").GetInt32()); // missing data is not a failure to load
+    }
+
+    [Fact]
+    public async Task Files_the_page_expected_next_to_it_are_listed_as_missing()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""<!doctype html><title>Site page</title><p>hi</p><script src="footer.js?v=3"></script>""");
+
+        await OpenAsync(id);
+
+        var status = await StatusWhenAsync(id, s => s.GetProperty("missingFiles").GetArrayLength() > 0);
+        Assert.Equal("/footer.js", Assert.Single(status.GetProperty("missingFiles").EnumerateArray()).GetString());
+        Assert.Empty(status.GetProperty("recentLoadErrors").EnumerateArray()); // not reported twice
+    }
+
+    private Task<System.Text.Json.JsonElement> StatusWhenAsync(string id, Func<System.Text.Json.JsonElement, bool> condition) =>
+        EventuallyAsync(async () =>
         {
             var s = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
-            return s.GetProperty("loadErrors").GetInt32() >= 2 ? s : (System.Text.Json.JsonElement?)null;
+            return condition(s) ? s : null;
         });
-        var messages = status.GetProperty("recentLoadErrors").EnumerateArray().Select(m => m.GetString()!).ToList();
-        Assert.Contains(messages, m => m.Contains("could not load https://cdn.example.com/chart.js", StringComparison.Ordinal));
-        Assert.Contains(messages, m => m.Contains("Chart", StringComparison.Ordinal));
-    }
 
     [Fact]
     public async Task An_app_that_asks_for_an_api_key_talks_to_its_provider_without_ever_holding_the_key()

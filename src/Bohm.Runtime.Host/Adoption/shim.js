@@ -127,13 +127,13 @@
   // Usage facts only the page can see: the first input, and failures while loading. Neither
   // carries anything the person typed; a load failure carries the error message, which the
   // runtime keeps in memory to show the person and never writes down.
-  function report(kind, message) {
+  function report(kind, message, category, host) {
     nativeFetch("/__bohm/usage", {
       method: "POST",
       credentials: "same-origin",
       keepalive: true,
       headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-      body: JSON.stringify({ tab: boot.tab, kind: kind, message: message })
+      body: JSON.stringify({ tab: boot.tab, kind: kind, message: message, category: category, host: host })
     }).catch(function () { /* usage is best-effort */ });
   }
 
@@ -145,19 +145,58 @@
   window.addEventListener("keydown", onFirstInput, true);
   window.addEventListener("pointerdown", onFirstInput, true);
 
-  var loading = true;
-  var loadErrors = 0;
-  function onLoadError(message) {
-    if (!loading || loadErrors >= 5) return;
-    loadErrors++;
-    report("load-error", String(message).slice(0, 500));
+  // What stopped the application, in terms a person can be told. The runtime receives facts only:
+  // which kind of thing was blocked and from which host, or which error was thrown.
+  //  - blocked: the content security policy refused something from another host. A script, style
+  //    sheet, font or module is a "library" the application needs; anything fetched or displayed is
+  //    "data". This also catches an inline module whose import comes from a CDN, which raises no
+  //    useful error of its own.
+  //  - load-error: the application's own code failed while loading.
+  // Files the original site served next to the page (a relative "footer.js") are the host's to
+  // report: it answers those requests itself.
+  var reported = {};
+  var reports = 0;
+  function reportOnce(key, kind, message, category, host) {
+    if (reported[key] || reports >= 20) return;
+    reported[key] = true;
+    reports++;
+    report(kind, message, category, host);
   }
-  // Capturing on window also sees resources that failed to load (a script or style sheet that
-  // could not be fetched), which do not bubble.
+
+  var blockedUrls = {};
+  document.addEventListener("securitypolicyviolation", function (event) {
+    var directive = String(event.effectiveDirective || event.violatedDirective || "");
+    var uri = String(event.blockedURI || "");
+    if (!/^https?:/i.test(uri)) return; // inline, eval: allowed by policy, so not a loss
+    blockedUrls[uri] = true;
+    var host;
+    try { host = new URL(uri).host; } catch (e) { return; }
+    var category = /^(script|style|font|worker|manifest)-src/.test(directive) ? "library"
+      : /^form-action/.test(directive) ? "form" : "data";
+    reportOnce("blocked " + category + " " + host, "blocked", undefined, category, host);
+  });
+
+  var loading = true;
+  function onLoadError(message) {
+    if (!loading || !message) return;
+    reportOnce("error " + message, "load-error", String(message).slice(0, 500));
+  }
+  // Capturing on window also sees resources that failed to load, which do not bubble.
   window.addEventListener("error", function (event) {
     var target = event.target;
-    if (target && target !== window && (target.src || target.href)) onLoadError("could not load " + (target.src || target.href));
-    else onLoadError(event.message || "error");
+    if (target && target !== window) {
+      var url = target.src || target.href;
+      if (!url) return;
+      try { if (new URL(url, location.href).origin === location.origin) return; } catch (e) { return; }
+      // The policy's violation event arrives after the element's error event; wait for it, so a
+      // blocked library is reported once, as blocked.
+      setTimeout(function () { if (!blockedUrls[url]) onLoadError("could not load " + url); }, 250);
+      return;
+    }
+    if (!event.message) return;
+    // Line numbers in the document count this script too; report them as the person's file has them.
+    var line = event.lineno && event.filename === location.href ? event.lineno - boot.lineOffset : event.lineno;
+    onLoadError(event.message + (line > 0 ? " (line " + line + ")" : ""));
   }, true);
   window.addEventListener("unhandledrejection", function (event) {
     var reason = event.reason;

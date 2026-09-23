@@ -33,6 +33,8 @@ internal static class AdoptedAppServing
         return reader.ReadToEnd();
     });
 
+    private static readonly Lazy<int> ShimLineCount = new(() => ShimTemplate.Value.Count(c => c == '\n'));
+
     /// <summary>The application a request is addressed to, from its <c>Host</c> header.</summary>
     public static string? AppIdOf(HttpRequest request)
     {
@@ -77,6 +79,11 @@ internal static class AdoptedAppServing
 
         if (path != "/" || !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
         {
+            // An adopted application is one file. A page that asks for files next to itself (as it
+            // could on the site it came from) gets nothing, and the person can be told which.
+            // (The browser's own favicon request is not the page asking for anything.)
+            if (HttpMethods.IsGet(context.Request.Method) && !path.StartsWithSegments("/__bohm") && path != "/favicon.ico")
+                (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).AddMissingFile(path.Value!);
             response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
@@ -85,7 +92,8 @@ internal static class AdoptedAppServing
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var html = await catalog.ReadHtmlAsync(appId, context.RequestAborted).ConfigureAwait(false);
 
-        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId), Llm.LlmProviders.All.Select(p => p.Host).ToList()), BootJson.Default.Boot);
+        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
+            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value), BootJson.Default.Boot);
         var (body, charset) = ShimInjector.Inject(html, ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal));
 
         response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
@@ -106,7 +114,8 @@ internal static class AdoptedAppServing
         }
     }
 
-    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts);
+    /// <param name="LineOffset">Lines the injected script adds before the document's own first line.</param>
+    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts, int LineOffset);
 }
 
 /// <summary>
