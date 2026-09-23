@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
@@ -105,21 +106,40 @@ internal static partial class AssetServing
 }
 
 /// <summary>Fetches applications' code, in the foreground or in the background after adoption.</summary>
-internal sealed partial class AssetFetcher(IServiceProvider services, ILogger<AssetFetcher> logger)
+/// <remarks>
+/// Background fetches are owned by the host: stopping it cancels them, and disposing waits for them,
+/// so none is left writing into an application's folder — or opening its storage — after the host is gone.
+/// </remarks>
+internal sealed partial class AssetFetcher(IServiceProvider services, IHostApplicationLifetime lifetime, ILogger<AssetFetcher> logger) : IAsyncDisposable
 {
+    private readonly ConcurrentDictionary<Task, byte> _background = new();
+
     /// <summary>Starts fetching in the background; failures are logged, never thrown.</summary>
-    public void Start(string appId) => _ = Task.Run(async () =>
+    public void Start(string appId)
     {
-        try
+        var stopping = lifetime.ApplicationStopping;
+        var task = Task.Run(async () =>
         {
-            var (cached, failed) = await FetchAsync(appId, CancellationToken.None).ConfigureAwait(false);
-            LogFetched(logger, appId, cached, failed);
-        }
-        catch (Exception exception) when (exception is IOException or HttpRequestException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            LogFetchFailed(logger, exception, appId);
-        }
-    });
+            try
+            {
+                var (cached, failed) = await FetchAsync(appId, stopping).ConfigureAwait(false);
+                LogFetched(logger, appId, cached, failed);
+            }
+            catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+            {
+                // The host is stopping; the next adoption or an explicit fetch tries again.
+            }
+            catch (Exception exception) when (exception is IOException or HttpRequestException or UnauthorizedAccessException or InvalidOperationException or ObjectDisposedException)
+            {
+                LogFetchFailed(logger, exception, appId);
+            }
+        }, CancellationToken.None);
+        _background.TryAdd(task, 0);
+        task.ContinueWith(t => _background.TryRemove(t, out _), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    /// <summary>Waits for background fetches, which the host's stopping has already cancelled.</summary>
+    public async ValueTask DisposeAsync() => await Task.WhenAll(_background.Keys).ConfigureAwait(false);
 
     /// <summary>Fetches the code an application refers to. One fetch at a time per application.</summary>
     public async Task<(int Cached, int Failed)> FetchAsync(string appId, CancellationToken cancellationToken)

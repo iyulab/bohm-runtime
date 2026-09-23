@@ -17,7 +17,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <remarks>
 /// <list type="table">
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first.</description></item>
-/// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body.</description></item>
+/// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
@@ -65,7 +65,8 @@ internal static class ControlPlane
 
             case ("POST", ["apps", "matches"]):
                 var candidate = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
-                await WriteAsync(response, (await catalog.FindBySourceAsync(candidate, cancel).ConfigureAwait(false)).Select(a => View(a, port)).ToList(), cancel).ConfigureAwait(false);
+                var matches = await catalog.FindEarlierAdoptionsAsync(candidate, OriginalPath(request), cancel).ConfigureAwait(false);
+                await WriteAsync(response, matches.Select(m => ViewMatch(m, port)).ToList(), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps"]):
@@ -76,8 +77,7 @@ internal static class ControlPlane
                     break;
                 }
 
-                var originalPath = request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
-                var adopted = await catalog.AdoptAsync(html, originalPath, cancel).ConfigureAwait(false);
+                var adopted = await catalog.AdoptAsync(html, OriginalPath(request), cancel).ConfigureAwait(false);
                 if (context.RequestServices.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
                     context.RequestServices.GetRequiredService<AssetFetcher>().Start(adopted.Id);
                 response.StatusCode = StatusCodes.Status201Created;
@@ -183,6 +183,17 @@ internal static class ControlPlane
         return buffer.ToArray();
     }
 
+    private static string? OriginalPath(HttpRequest request) =>
+        request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
+
+    private static MatchView ViewMatch(AdoptionMatch match, int port) =>
+        new(View(match.App, port), match.Kind switch
+        {
+            AdoptionMatchKind.SameBytes => "sameBytes",
+            AdoptionMatchKind.SameOriginalPath => "sameOriginalPath",
+            _ => throw new ArgumentOutOfRangeException(nameof(match)),
+        });
+
     private static AppView View(AdoptedApp app, int port) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size);
 
@@ -190,6 +201,9 @@ internal static class ControlPlane
         response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
 
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size);
+
+    /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
+    internal sealed record MatchView(AppView App, string Match);
 
     /// <summary>
     /// Today's facts about one application. Structured only — turning them into sentences for a
@@ -210,6 +224,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]

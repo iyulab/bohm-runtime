@@ -47,9 +47,45 @@ public sealed class AdoptionCatalogTests : IDisposable
         var first = await catalog.AdoptAsync(Html);
         await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>other</p>"));
 
-        var matches = await catalog.FindBySourceAsync(Html);
+        var match = Assert.Single(await catalog.FindEarlierAdoptionsAsync(Html));
 
-        Assert.Equal(first.Id, Assert.Single(matches).Id);
+        Assert.Equal(first.Id, match.App.Id);
+        Assert.Equal(AdoptionMatchKind.SameBytes, match.Kind);
+    }
+
+    [Fact]
+    public async Task A_revised_file_at_the_same_path_is_reported_as_a_path_match()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var path = Path.Combine(_root, "Downloads", "loans.html");
+        var v1 = await catalog.AdoptAsync(Html, path);
+        await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>unrelated</p>"), Path.Combine(_root, "Downloads", "other.html"));
+
+        var revised = Encoding.UTF8.GetBytes("<p>revised</p>");
+        var matches = await catalog.FindEarlierAdoptionsAsync(revised, path);
+        var none = await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(_root, "Downloads", "new.html"));
+        var noPath = await catalog.FindEarlierAdoptionsAsync(revised);
+
+        var match = Assert.Single(matches);
+        Assert.Equal(v1.Id, match.App.Id);
+        Assert.Equal(AdoptionMatchKind.SameOriginalPath, match.Kind);
+        Assert.Empty(none);
+        Assert.Empty(noPath);
+    }
+
+    [Fact]
+    public async Task Same_bytes_at_the_same_path_is_a_bytes_match_and_paths_are_normalized()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var path = Path.Combine(_root, "Downloads", "loans.html");
+        await catalog.AdoptAsync(Html, path);
+
+        var same = Assert.Single(await catalog.FindEarlierAdoptionsAsync(Html, path));
+        var dotted = Assert.Single(await catalog.FindEarlierAdoptionsAsync(Encoding.UTF8.GetBytes("<p>v2</p>"),
+            Path.Combine(_root, "Downloads", ".", "loans.html")));
+
+        Assert.Equal(AdoptionMatchKind.SameBytes, same.Kind);
+        Assert.Equal(AdoptionMatchKind.SameOriginalPath, dotted.Kind);
     }
 
     [Fact]

@@ -106,9 +106,20 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
 internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps> logger) : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<Task<OpenApp>>> _open = new(StringComparer.Ordinal);
+    private volatile bool _disposed;
 
-    public Task<OpenApp> GetAsync(string appId) =>
-        _open.GetOrAdd(appId, id => new Lazy<Task<OpenApp>>(() => OpenAsync(id))).Value;
+    /// <summary>
+    /// The one open instance of <paramref name="appId"/>. Refuses once the host has closed the
+    /// applications — storage opened after that would never be closed.
+    /// </summary>
+    public Task<OpenApp> GetAsync(string appId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var app = _open.GetOrAdd(appId, id => new Lazy<Task<OpenApp>>(() => OpenAsync(id))).Value;
+        // Disposal may have run between the check and the insertion and missed this entry.
+        if (_disposed) _ = CloseAsync(app);
+        return app;
+    }
 
     /// <summary>The applications opened so far.</summary>
     public async Task<IReadOnlyList<OpenApp>> OpenedAsync()
@@ -128,16 +139,22 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var entry in _open.Values.Where(l => l.IsValueCreated))
+        _disposed = true;
+        foreach (var entry in _open.Values.Where(l => l.IsValueCreated)) await CloseAsync(entry.Value).ConfigureAwait(false);
+    }
+
+    private async Task CloseAsync(Task<OpenApp> opening)
+    {
+        // An application whose opening failed has nothing to close; the failure went to its caller.
+        await ((Task)opening).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        if (!opening.IsCompletedSuccessfully) return;
+        try
         {
-            try
-            {
-                await (await entry.Value.ConfigureAwait(false)).Storage.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                LogCloseFailed(logger, exception);
-            }
+            await opening.Result.Storage.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ObjectDisposedException)
+        {
+            LogCloseFailed(logger, exception);
         }
     }
 
