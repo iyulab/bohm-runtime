@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Bohm.Runtime/Bohm.Runtime.csproj" />
+    <Project Path="src/Bohm.Runtime.Host/Bohm.Runtime.Host.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Bohm.Runtime.Tests/Bohm.Runtime.Tests.csproj" />

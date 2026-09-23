@@ -1,0 +1,129 @@
+// Injected ahead of an adopted application's own markup. It replaces window.localStorage with a
+// synchronous in-memory map seeded from the runtime's snapshot, and forwards every change to the
+// runtime, which journals it durably. The application's own code is not modified.
+//
+// Delivery: at most one request is in flight. Every operation carries a per-tab sequence number
+// and stays "unacknowledged" until the runtime confirms it; the runtime ignores numbers it has
+// already applied, so resending is always safe. When the page is being hidden or unloaded, every
+// unacknowledged operation is resent with keepalive, so a request still in flight cannot be
+// overtaken by a later one.
+//
+// This file must stay ASCII: it is spliced into documents of any ASCII-compatible encoding.
+(function () {
+  "use strict";
+  var boot = __BOHM_BOOT__;
+  var data = new Map(Object.keys(boot.items).map(function (k) { return [k, boot.items[k]]; }));
+  var endpoint = "/__bohm/storage";
+  var seq = 0;
+  var unacked = [];   // sent, awaiting acknowledgement, in sequence order
+  var queue = [];     // recorded, not yet sent
+  var inflight = false;
+  var timer = 0;
+  var retryDelay = 250;
+
+  function post(ops, keepalive) {
+    return fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: keepalive,
+      headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
+      body: JSON.stringify({ tab: boot.tab, ops: ops })
+    }).then(function (response) {
+      if (!response.ok) throw new Error("storage request failed: " + response.status);
+      return response.json();
+    }).then(function (result) {
+      unacked = unacked.filter(function (op) { return op.seq > result.ack; });
+      return result;
+    });
+  }
+
+  // Sends everything not yet acknowledged, one request at a time. On failure the operations stay
+  // unacknowledged and are sent again after a growing delay.
+  function pump() {
+    timer = 0;
+    if (inflight) return;
+    var ops = unacked.concat(queue);
+    if (ops.length === 0) return;
+    unacked = ops;
+    queue = [];
+    inflight = true;
+    var failed = false;
+    post(ops.slice(), false).then(function () {
+      retryDelay = 250;
+    }, function () {
+      failed = true;
+      retryDelay = Math.min(retryDelay * 2, 5000);
+    }).then(function () {
+      inflight = false;
+      if (unacked.length > 0 || queue.length > 0) schedule(failed ? retryDelay : 0);
+    });
+  }
+
+  function schedule(delay) {
+    if (!timer) timer = setTimeout(pump, delay);
+  }
+
+  function flushOnLeave() {
+    var ops = unacked.concat(queue);
+    if (ops.length === 0) return;
+    unacked = ops;
+    queue = [];
+    // Browsers cap keepalive bodies at 64 KiB. A larger final batch goes as a normal request,
+    // which survives a closing window but not an ending process; the host's shutdown ordering
+    // is what covers that case.
+    var keepalive = JSON.stringify(ops).length < 60000;
+    post(ops.slice(), keepalive).catch(function () { /* nothing left to retry with */ });
+  }
+
+  function record(op) {
+    op.seq = ++seq;
+    queue.push(op);
+    schedule(0);
+  }
+
+  var storage = {
+    getItem: function (key) { key = String(key); return data.has(key) ? data.get(key) : null; },
+    setItem: function (key, value) {
+      key = String(key); value = String(value);
+      data.set(key, value);
+      record({ op: "set", key: key, value: value });
+    },
+    removeItem: function (key) {
+      key = String(key);
+      if (!data.has(key)) return;
+      data.delete(key);
+      record({ op: "remove", key: key });
+    },
+    clear: function () {
+      if (data.size === 0) return;
+      data.clear();
+      record({ op: "clear" });
+    },
+    key: function (index) {
+      var keys = Array.from(data.keys());
+      return index >= 0 && index < keys.length ? keys[index] : null;
+    }
+  };
+  // configurable: a Proxy must report every non-configurable own property from ownKeys.
+  Object.defineProperty(storage, "length", { get: function () { return data.size; }, configurable: true });
+
+  // Property-style access (localStorage.foo = "bar", localStorage.foo, delete localStorage.foo,
+  // Object.keys(localStorage)) behaves like the Web Storage API's named properties.
+  var proxy = new Proxy(storage, {
+    get: function (target, name) { return name in target ? target[name] : (typeof name === "string" ? storage.getItem(name) : undefined); },
+    set: function (target, name, value) { storage.setItem(name, value); return true; },
+    has: function (target, name) { return name in target || data.has(String(name)); },
+    deleteProperty: function (target, name) { storage.removeItem(name); return true; },
+    ownKeys: function () { return Array.from(data.keys()); },
+    getOwnPropertyDescriptor: function (target, name) {
+      return data.has(String(name)) ? { value: data.get(String(name)), enumerable: true, configurable: true, writable: true } : undefined;
+    }
+  });
+
+  Object.defineProperty(window, "localStorage", { value: proxy, configurable: true, enumerable: true });
+
+  window.addEventListener("pagehide", flushOnLeave);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") flushOnLeave();
+  });
+})();
