@@ -56,7 +56,28 @@ public sealed class ProcessTests : IDisposable
         }
     }
 
-    private Process Start(string secret)
+    [Fact]
+    public async Task The_runtime_stops_by_itself_when_the_process_that_started_it_ends()
+    {
+        // A stand-in for the shell that ends on its own after a few seconds.
+        using var parent = OperatingSystem.IsWindows()
+            ? Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 4 127.0.0.1 >nul") { UseShellExecute = false, CreateNoWindow = true })!
+            : Process.Start(new ProcessStartInfo("sleep", "3") { UseShellExecute = false })!;
+        using var process = Start("s", parent.Id);
+        try
+        {
+            await ReadReadyPortAsync(process);
+            using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await process.WaitForExitAsync(exited.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+    }
+
+    private Process Start(string secret, int? parentPid = null)
     {
         var host = Path.Combine(AppContext.BaseDirectory, "Bohm.Runtime.Host.dll");
         var info = new ProcessStartInfo("dotnet")
@@ -68,6 +89,12 @@ public sealed class ProcessTests : IDisposable
         info.ArgumentList.Add(host);
         info.ArgumentList.Add("--data-root");
         info.ArgumentList.Add(_dataRoot);
+        if (parentPid is { } pid)
+        {
+            info.ArgumentList.Add("--parent-pid");
+            info.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         info.Environment["BOHM_RUNTIME_SECRET"] = secret;
         var process = Process.Start(info)!;
         process.ErrorDataReceived += (_, _) => { };
