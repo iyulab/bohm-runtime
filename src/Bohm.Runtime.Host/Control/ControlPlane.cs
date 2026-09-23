@@ -16,7 +16,7 @@ namespace Bohm.Runtime.Host.Control;
 /// </summary>
 /// <remarks>
 /// <list type="table">
-/// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first.</description></item>
+/// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
@@ -60,7 +60,9 @@ internal static class ControlPlane
         switch (request.Method, segments)
         {
             case ("GET", ["apps"]):
-                await WriteAsync(response, (await catalog.ListAsync(cancel).ConfigureAwait(false)).Select(a => View(a, port)).ToList(), cancel).ConfigureAwait(false);
+                // The usage record is read from its file: appends reach it at once, and reading it does not open the application.
+                await WriteAsync(response, (await catalog.ListAsync(cancel).ConfigureAwait(false))
+                    .Select(a => View(a, port, catalog.OpenUsage(a.Id).LastUsedOn)).ToList(), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "matches"]):
@@ -194,13 +196,15 @@ internal static class ControlPlane
             _ => throw new ArgumentOutOfRangeException(nameof(match)),
         });
 
-    private static AppView View(AdoptedApp app, int port) =>
-        new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size);
+    private static AppView View(AdoptedApp app, int port, DateOnly? lastUsed = null) =>
+        new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
+            lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
 
     private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
         response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
 
-    internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size);
+    /// <summary>An adopted application. <c>LastUsed</c> (local <c>yyyy-MM-dd</c>) is filled in the listing only.</summary>
+    internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size, string? LastUsed = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
     internal sealed record MatchView(AppView App, string Match);

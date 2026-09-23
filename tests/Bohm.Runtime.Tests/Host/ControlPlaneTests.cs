@@ -174,6 +174,21 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Listing_carries_the_last_day_each_application_was_used()
+    {
+        var used = await _host.AdoptAsync(Page);
+        var neverUsed = await _host.AdoptAsync("<p>b</p>");
+        await File.WriteAllLinesAsync(Path.Combine(_host.DataRoot, "adopted", used, "usage.ndjson"),
+            ["""{"date":"2026-09-10","signal":"opened"}""", """{"date":"2026-09-10","signal":"input"}"""]);
+
+        var list = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/apps")).RootElement.EnumerateArray()
+            .ToDictionary(e => e.GetProperty("id").GetString()!, e => e.GetProperty("lastUsed"));
+
+        Assert.Equal("2026-09-10", list[used].GetString());
+        Assert.Equal(JsonValueKind.Null, list[neverUsed].ValueKind);
+    }
+
+    [Fact]
     public async Task Loading_twice_on_one_day_records_the_signal_once()
     {
         var id = await _host.AdoptAsync(Page);
