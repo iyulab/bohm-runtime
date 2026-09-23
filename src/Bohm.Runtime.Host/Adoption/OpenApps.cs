@@ -28,6 +28,25 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
     /// <summary>One asset fetch at a time per application — an adoption's background fetch and an explicit one must not interleave.</summary>
     public SemaphoreSlim AssetFetch { get; } = new(1, 1);
 
+    /// <summary>One change of revision at a time per application.</summary>
+    public SemaphoreSlim RevisionChange { get; } = new(1, 1);
+
+    /// <summary>
+    /// Forgets what was observed about the code that was running — load failures, blocked resources,
+    /// missing files, keys needed — once another revision takes its place. The usage record stays:
+    /// it belongs to the application, not to a revision.
+    /// </summary>
+    public void ForgetObservations()
+    {
+        lock (_lock)
+        {
+            _loadErrors.Clear();
+            _neededKeys.Clear();
+            _blocked.Clear();
+            _missingFiles.Clear();
+        }
+    }
+
     /// <summary>
     /// The most recent load-failure messages, for showing the person what went wrong. Kept in memory
     /// only: a message can quote the application's own data, so it is never written to disk.

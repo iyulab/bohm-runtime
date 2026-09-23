@@ -19,6 +19,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
@@ -62,14 +64,18 @@ internal static class ControlPlane
         {
             case ("GET", ["apps"]):
                 // The usage record is read from its file: appends reach it at once, and reading it does not open the application.
-                await WriteAsync(response, (await catalog.ListAsync(cancel).ConfigureAwait(false))
-                    .Select(a => View(a, port, catalog.OpenUsage(a.Id).LastUsedOn)).ToList(), cancel).ConfigureAwait(false);
+                var listed = new List<AppView>();
+                foreach (var a in await catalog.ListAsync(cancel).ConfigureAwait(false))
+                    listed.Add(View(a, port, await catalog.CanRevertAsync(a.Id, cancel).ConfigureAwait(false), catalog.OpenUsage(a.Id).LastUsedOn));
+                await WriteAsync(response, listed, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "matches"]):
                 var candidate = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
                 var matches = await catalog.FindEarlierAdoptionsAsync(candidate, OriginalPath(request), cancel).ConfigureAwait(false);
-                await WriteAsync(response, matches.Select(m => ViewMatch(m, port)).ToList(), cancel).ConfigureAwait(false);
+                var views = new List<MatchView>();
+                foreach (var m in matches) views.Add(await ViewMatchAsync(catalog, m, port, cancel).ConfigureAwait(false));
+                await WriteAsync(response, views, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps"]):
@@ -84,7 +90,37 @@ internal static class ControlPlane
                 if (context.RequestServices.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
                     context.RequestServices.GetRequiredService<AssetFetcher>().Start(adopted.Id);
                 response.StatusCode = StatusCodes.Status201Created;
-                await WriteAsync(response, View(adopted, port), cancel).ConfigureAwait(false);
+                await WriteAsync(response, View(adopted, port, canRevert: false), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var revisedId, "revisions"]):
+                if (await catalog.GetAsync(revisedId, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var revisedHtml = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                if (revisedHtml.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var revisedPath = OriginalPath(request);
+                await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
+                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), reverted: false).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var revertedId, "revisions", "revert"]):
+                if (await catalog.GetAsync(revertedId, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await ChangeRevisionAsync(context, revertedId, StatusCodes.Status200OK,
+                    storage => catalog.RevertAsync(revertedId, storage, cancel), reverted: true).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", var id, "status"]):
@@ -172,6 +208,52 @@ internal static class ControlPlane
         }
     }
 
+    /// <summary>
+    /// Replaces the code an application runs, in an order that loses nothing: pages loaded before
+    /// can no longer write, writes already on their way are waited for, and only then is the data
+    /// saved and the code switched. The application's code from other hosts is fetched again
+    /// afterwards, since the new revision may load different code.
+    /// </summary>
+    private static async Task ChangeRevisionAsync(HttpContext context, string appId, int successStatus,
+        Func<Runtime.Storage.AppStorage, Task<AdoptedApp>> change, bool reverted)
+    {
+        var services = context.RequestServices;
+        var response = context.Response;
+        var cancel = context.RequestAborted;
+        var app = await services.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+        await app.RevisionChange.WaitAsync(cancel).ConfigureAwait(false);
+        AdoptedApp changed;
+        try
+        {
+            services.GetRequiredService<AppSessions>().RevokeApp(appId);
+            await DrainAsync(context, cancel).ConfigureAwait(false);
+            try
+            {
+                changed = await change(app.Storage).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // Not a new revision (the same bytes), or nothing to go back to.
+                response.StatusCode = StatusCodes.Status409Conflict;
+                return;
+            }
+
+            app.ForgetObservations();
+            app.Usage.RecordRevision(reverted);
+        }
+        finally
+        {
+            app.RevisionChange.Release();
+        }
+
+        if (services.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
+            services.GetRequiredService<AssetFetcher>().Start(appId);
+        var catalog = services.GetRequiredService<AdoptionCatalog>();
+        response.StatusCode = successStatus;
+        var canRevert = await catalog.CanRevertAsync(appId, cancel).ConfigureAwait(false);
+        await WriteAsync(response, View(changed, context.Request.Host.Port ?? 80, canRevert), cancel).ConfigureAwait(false);
+    }
+
     private static Task<bool> DrainAsync(HttpContext context, CancellationToken cancellationToken) =>
         context.RequestServices.GetRequiredService<Activity>().WaitForQuietAsync(Quiet, DrainLimit, cancellationToken);
 
@@ -193,23 +275,28 @@ internal static class ControlPlane
     private static string? OriginalPath(HttpRequest request) =>
         request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
 
-    private static MatchView ViewMatch(AdoptionMatch match, int port) =>
-        new(View(match.App, port), match.Kind switch
+    private static async Task<MatchView> ViewMatchAsync(AdoptionCatalog catalog, AdoptionMatch match, int port, CancellationToken cancellationToken) =>
+        new(View(match.App, port, await catalog.CanRevertAsync(match.App.Id, cancellationToken).ConfigureAwait(false)), match.Kind switch
         {
             AdoptionMatchKind.SameBytes => "sameBytes",
             AdoptionMatchKind.SameOriginalPath => "sameOriginalPath",
             _ => throw new ArgumentOutOfRangeException(nameof(match)),
         });
 
-    private static AppView View(AdoptedApp app, int port, DateOnly? lastUsed = null) =>
+    private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
-            lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+            app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
 
     private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
         response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
 
-    /// <summary>An adopted application. <c>LastUsed</c> (local <c>yyyy-MM-dd</c>) is filled in the listing only.</summary>
-    internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size, string? LastUsed = null);
+    /// <summary>
+    /// An adopted application. <c>Sha256</c>, <c>OriginalPath</c> and <c>Size</c> describe the revision in use;
+    /// <c>CanRevert</c> says whether there is a previous revision to go back to. <c>LastUsed</c>
+    /// (local <c>yyyy-MM-dd</c>) is filled in the listing only.
+    /// </summary>
+    internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
+        int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
     internal sealed record MatchView(AppView App, string Match);

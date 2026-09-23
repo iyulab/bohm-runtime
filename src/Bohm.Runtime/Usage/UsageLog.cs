@@ -25,7 +25,9 @@ public enum UsageSignal
 /// <remarks>
 /// The file is append-only NDJSON with one line per first occurrence of a signal on a day
 /// (<c>{"date":"2026-09-23","signal":"opened"}</c>) and one line per load failure
-/// (<c>{"date":"2026-09-23","event":"load-error"}</c>). Days are the person's local calendar days.
+/// (<c>{"date":"2026-09-23","event":"load-error"}</c>), and one line each time the person takes in
+/// a new revision or goes back to the previous one (<c>"event":"revised"</c> / <c>"reverted"</c>).
+/// The record belongs to the application, not to a revision. Days are the person's local calendar days.
 /// Recording is best-effort: a usage line is never allowed to fail the operation that caused it.
 /// </remarks>
 public sealed class UsageLog
@@ -94,6 +96,17 @@ public sealed class UsageLog
             _loadErrors[today] = _loadErrors.GetValueOrDefault(today) + 1;
             Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"load-error"}""");
         }
+    }
+
+    /// <summary>
+    /// Records that the person took in a new revision (<c>{"event":"revised"}</c>) or went back to
+    /// the previous one (<c>{"event":"reverted"}</c>). Every occurrence is a line: a revision is a
+    /// deliberate act of keeping the application, a stronger sign of use than any single day's signals.
+    /// </summary>
+    public void RecordRevision(bool reverted)
+    {
+        var today = Today;
+        lock (_lock) Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"{{(reverted ? "reverted" : "revised")}}"}""");
     }
 
     /// <summary>The signals recorded for <paramref name="date"/>.</summary>

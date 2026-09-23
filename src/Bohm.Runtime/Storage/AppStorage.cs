@@ -162,6 +162,56 @@ public sealed class AppStorage : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Writes the current state to <paramref name="path"/> in the snapshot format, outside this
+    /// storage's own files, and returns the sequence number it holds. The file is complete or absent.
+    /// </summary>
+    public async Task<long> SaveSnapshotAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            await DurableFile.WriteAtomicallyAsync(path, StorageFormat.WriteSnapshot(Sequence, _items), cancellationToken).ConfigureAwait(false);
+            return Sequence;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Replaces the current state with the snapshot saved in <paramref name="path"/> by
+    /// <see cref="SaveSnapshotAsync"/>. The state it replaces is not lost: it becomes the previous
+    /// snapshot, kept in <c>versions/</c> like any other. The sequence number moves forward, never back.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file is not a readable snapshot; nothing was changed.</exception>
+    public async Task RestoreAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        if (!StorageFormat.TryReadSnapshot(bytes, out _, out var restored))
+            throw new InvalidDataException($"'{Path.GetFileName(path)}' is not a readable storage snapshot.");
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            // The state being replaced is written down first, so it becomes a version when the restored one is.
+            await CheckpointCoreAsync(cancellationToken).ConfigureAwait(false);
+            _items.Clear();
+            foreach (var (key, value) in restored) _items[key] = value;
+            Sequence++;
+            await CheckpointCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {

@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Host;
 using Microsoft.AspNetCore.Builder;
@@ -9,7 +11,7 @@ using Microsoft.Extensions.Logging;
 namespace Bohm.Runtime.Tests.Host;
 
 /// <summary>A real runtime host on a free loopback port, over a throwaway data root.</summary>
-public sealed class RunningHost : IAsyncDisposable
+public sealed partial class RunningHost : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
@@ -61,6 +63,38 @@ public sealed class RunningHost : IAsyncDisposable
         if (secret is not null) client.DefaultRequestHeaders.Authorization = new("Bearer", secret);
         return client;
     }
+
+    /// <summary>A loaded page of an application: its session cookie, its tab and the items it was given.</summary>
+    public sealed record LoadedPage(string Cookie, string Tab, string Items);
+
+    /// <summary>Loads the application's document as a browser would and returns what the page receives.</summary>
+    public async Task<LoadedPage> LoadAsync(string appId)
+    {
+        using var response = await ClientForApp(appId).GetAsync("/");
+        var body = await response.Content.ReadAsStringAsync();
+        var cookie = Assert.Single(response.Headers.GetValues("Set-Cookie"));
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=strict", cookie, StringComparison.OrdinalIgnoreCase);
+
+        var boot = JsonDocument.Parse(BootData().Match(body).Groups[1].Value).RootElement;
+        return new LoadedPage(cookie[..cookie.IndexOf(';', StringComparison.Ordinal)], boot.GetProperty("tab").GetString()!, boot.GetProperty("items").GetRawText());
+    }
+
+    /// <summary>Sends a storage batch from <paramref name="page"/>; <c>TAB</c> in <paramref name="json"/> is replaced with its tab.</summary>
+    public async Task<HttpResponseMessage> PostStorageAsync(string appId, LoadedPage page, string json, bool header = true, string? origin = null)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/storage")
+        {
+            Content = new StringContent(json.Replace("TAB", page.Tab, StringComparison.Ordinal), Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("Cookie", page.Cookie);
+        if (header) request.Headers.Add("X-Bohm-Request", "1");
+        if (origin is not null) request.Headers.Add("Origin", origin);
+        return await ClientForApp(appId).SendAsync(request);
+    }
+
+    [GeneratedRegex("var boot = (\\{.*?\\});", RegexOptions.Singleline)]
+    private static partial Regex BootData();
 
     public async ValueTask DisposeAsync()
     {
