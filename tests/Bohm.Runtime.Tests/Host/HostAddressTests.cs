@@ -54,6 +54,31 @@ public sealed class HostAddressTests : IDisposable
     }
 
     [Fact]
+    public async Task A_port_released_moments_later_is_still_reused()
+    {
+        // The previous runtime of the same data root may still be stopping when the next one starts.
+        var first = await RunningHost.StartAsync(_dataRoot);
+        var port = first.Port;
+        await first.StopKeepingDataAsync();
+
+        var stopping = new TcpListener(IPAddress.Loopback, port);
+        stopping.Start();
+        var release = Task.Delay(700).ContinueWith(_ => stopping.Stop(), TaskScheduler.Default);
+        var second = await RunningHost.StartAsync(_dataRoot);
+        try
+        {
+            await release;
+            Assert.Equal(port, second.Port);
+            Assert.Null(second.PreviousPort);
+        }
+        finally
+        {
+            await second.StopKeepingDataAsync();
+            stopping.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task An_unreadable_record_is_replaced_by_a_new_port()
     {
         await File.WriteAllTextAsync(Path.Combine(_dataRoot, "host.json"), "{ not json");

@@ -56,6 +56,12 @@ public sealed record RuntimeHostOptions
 /// </summary>
 public static class RuntimeHost
 {
+    /// <summary>How many times the remembered port is tried before a new one is chosen.</summary>
+    private const int RememberedPortAttempts = 5;
+
+    /// <summary>The wait between those attempts — together about two seconds, longer than a normal stop.</summary>
+    private static readonly TimeSpan RememberedPortRetryDelay = TimeSpan.FromMilliseconds(500);
+
     /// <summary>Builds (but does not start) the host.</summary>
     public static WebApplication Build(RuntimeHostOptions options, Action<WebApplicationBuilder>? configure = null)
     {
@@ -146,16 +152,22 @@ public static class RuntimeHost
         WebApplication? app = null;
         if (remembered is { } port)
         {
-            app = Build(options with { Port = port }, configure);
-            try
+            // The likeliest holder of the remembered port is the previous runtime of this same data
+            // root, still stopping after its shell closed or was killed. Give it a moment before
+            // concluding the port is taken for good and moving every application's address.
+            for (var attempt = 0; app is null && attempt < RememberedPortAttempts; attempt++)
             {
-                await app.StartAsync().ConfigureAwait(false);
-            }
-            catch (IOException)
-            {
-                // Taken by something else since last time; start on a new port below.
-                await app.DisposeAsync().ConfigureAwait(false);
-                app = null;
+                if (attempt > 0) await Task.Delay(RememberedPortRetryDelay).ConfigureAwait(false);
+                app = Build(options with { Port = port }, configure);
+                try
+                {
+                    await app.StartAsync().ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    await app.DisposeAsync().ConfigureAwait(false);
+                    app = null;
+                }
             }
         }
 
