@@ -7,7 +7,9 @@ namespace Bohm.Runtime.Host.Adoption;
 /// Receives the two usage facts only the page can observe: <c>POST /__bohm/usage</c> with
 /// <c>{ "tab": "...", "kind": "input" }</c> the first time the person types or points, and
 /// <c>{ "tab": "...", "kind": "load-error", "message": "..." }</c> when the application fails
-/// while loading. Opening and writing are observed by the host itself.
+/// while loading, and <c>{ "tab": "...", "kind": "blocked", "category": "library", "host": "..." }</c>
+/// when the content security policy refused something from another host. Opening and writing
+/// are observed by the host itself.
 /// </summary>
 internal static class UsageEndpoint
 {
@@ -37,7 +39,8 @@ internal static class UsageEndpoint
             report = null;
         }
 
-        if (report is null || report.Kind is not ("input" or "load-error"))
+        if (report is null || report.Kind is not ("input" or "load-error" or "blocked")
+            || report.Kind == "blocked" && (report.Category is not ("library" or "data" or "form") || report.Host is not { Length: > 0 and <= 255 }))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -50,14 +53,18 @@ internal static class UsageEndpoint
         }
 
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
-        if (report.Kind == "input") app.Usage.Record(UsageSignal.Input);
-        else app.AddLoadError(report.Message ?? "");
+        switch (report.Kind)
+        {
+            case "input": app.Usage.Record(UsageSignal.Input); break;
+            case "blocked": app.AddBlocked(report.Category!, report.Host!); break;
+            default: app.AddLoadError(report.Message ?? ""); break;
+        }
         // 200 with a body rather than 204: an answered-with-204 fetch was observed to keep the
         // Chromium-family browser from shutting down cleanly (its close never completed).
         await response.WriteAsync("{}", context.RequestAborted).ConfigureAwait(false);
     }
 
-    internal sealed record Report(string? Tab, string? Kind, string? Message);
+    internal sealed record Report(string? Tab, string? Kind, string? Message, string? Category, string? Host);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

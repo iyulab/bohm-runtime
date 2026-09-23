@@ -5,6 +5,11 @@ using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
+/// <summary>Something from another host that the content security policy refused.</summary>
+/// <param name="Category"><c>library</c> (script, style, font), <c>data</c> (anything fetched or shown) or <c>form</c>.</param>
+/// <param name="Host">The host it would have come from.</param>
+internal sealed record BlockedResource(string Category, string Host);
+
 /// <summary>An adopted application while the host is running: its storage, its usage record and recent load failures.</summary>
 internal sealed class OpenApp(AppStorage storage, UsageLog usage)
 {
@@ -12,6 +17,8 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage)
     private readonly Queue<string> _loadErrors = new();
     private readonly Lock _lock = new();
     private readonly HashSet<string> _neededKeys = new(StringComparer.Ordinal);
+    private readonly List<BlockedResource> _blocked = [];
+    private readonly List<string> _missingFiles = [];
 
     public AppStorage Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
@@ -34,6 +41,45 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage)
     public void NeedsKey(string providerId)
     {
         lock (_lock) _neededKeys.Add(providerId);
+    }
+
+    /// <summary>
+    /// Things from other hosts the content security policy refused, in the order first seen. A
+    /// blocked library usually stops the application; blocked data leaves parts of it empty.
+    /// </summary>
+    public IReadOnlyList<BlockedResource> Blocked
+    {
+        get { lock (_lock) return _blocked.ToList(); }
+    }
+
+    /// <summary>Files the page asked for next to itself that were not part of what was adopted.</summary>
+    public IReadOnlyList<string> MissingFiles
+    {
+        get { lock (_lock) return _missingFiles.ToList(); }
+    }
+
+    public void AddBlocked(string category, string host)
+    {
+        var first = false;
+        lock (_lock)
+        {
+            if (_blocked.Count < 20 && !_blocked.Contains(new BlockedResource(category, host)))
+            {
+                _blocked.Add(new BlockedResource(category, host));
+                first = true;
+            }
+        }
+
+        // A library the application cannot load is a failure to load; missing data is not.
+        if (first && category == "library") Usage.RecordLoadError();
+    }
+
+    public void AddMissingFile(string path)
+    {
+        lock (_lock)
+        {
+            if (_missingFiles.Count < 20 && !_missingFiles.Contains(path)) _missingFiles.Add(path);
+        }
     }
 
     public void AddLoadError(string message)
