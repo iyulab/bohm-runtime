@@ -71,7 +71,27 @@ internal static class LlmProxy
         var path = slash < 0 ? "" : rest[(slash + 1)..];
         var query = QueryHelpers.ParseQuery(request.QueryString.Value);
         if (provider.Style == KeyStyle.Google && query.ContainsKey("key")) query["key"] = key;
-        var target = new Uri(upstreamBase, path + QueryString.Create(query).ToUriComponent());
+        // The path comes from the page, so it is appended, never resolved: relative resolution would
+        // let "//other.host/…" or an absolute URL choose where the key goes.
+        if (path.Contains('\\', StringComparison.Ordinal) || path.Split('/').Any(segment => segment is ".." or "."))
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var target = new UriBuilder(upstreamBase)
+        {
+            Path = upstreamBase.AbsolutePath.TrimEnd('/') + "/" + path.TrimStart('/'),
+            Query = QueryString.Create(query).ToUriComponent().TrimStart('?'),
+        }.Uri;
+
+        // The key is attached only to a request whose destination is the provider (or its configured stand-in).
+        if (!string.Equals(target.Host, upstreamBase.Host, StringComparison.OrdinalIgnoreCase)
+            || target.Port != upstreamBase.Port || target.Scheme != upstreamBase.Scheme)
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
 
         using var upstream = new HttpRequestMessage(new HttpMethod(request.Method), target);
         if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)

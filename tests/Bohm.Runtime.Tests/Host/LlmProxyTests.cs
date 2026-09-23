@@ -130,6 +130,23 @@ public sealed class LlmProxyTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.NotFound, response);
     }
 
+    [Theory]
+    [InlineData("/__bohm/llm/api.openai.com//attacker.example/steal")]
+    [InlineData("/__bohm/llm/api.openai.com/https://attacker.example/steal")]
+    [InlineData("/__bohm/llm/api.openai.com/v1/../../other")]
+    [InlineData("/__bohm/llm/api.openai.com/%2F%2Fattacker.example/steal")]
+    public async Task The_key_is_never_sent_anywhere_but_the_provider(string path)
+    {
+        await ConnectAsync("openai");
+
+        using var response = await SendAsync(HttpMethod.Post, path, "{}", bearer: Placeholder);
+
+        // Refused (400, or 404 when the server normalises the path before it reaches the proxy), or
+        // delivered to the provider itself. An attempt to reach any other host would surface as 502
+        // (the attacker host does not resolve here), which must never happen.
+        Assert.True(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound or HttpStatusCode.OK, $"got {(int)response.StatusCode}");
+    }
+
     [Fact]
     public async Task An_unreachable_provider_is_reported_in_the_providers_shape()
     {
