@@ -64,6 +64,22 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Stopping_right_after_an_adoption_leaves_nothing_open_in_the_data_root()
+    {
+        // Adoption starts a background fetch of the application's code. Stopping the host at once
+        // must cancel and wait for it, so the data root can be removed (no file left open).
+        for (var i = 0; i < 10; i++)
+        {
+            var host = await RunningHost.StartAsync();
+            using (var content = new ByteArrayContent(Encoding.UTF8.GetBytes(Page)))
+            using (var adopted = await host.ControlClient().PostAsync("/__control/apps", content))
+                HttpAssert.Status(HttpStatusCode.Created, adopted);
+            await host.DisposeAsync(); // Deletes the data root; throws if a file is still open.
+            Assert.False(Directory.Exists(host.DataRoot));
+        }
+    }
+
+    [Fact]
     public async Task An_empty_body_is_not_adopted()
     {
         using var response = await _host.ControlClient().PostAsync("/__control/apps", new ByteArrayContent([]));
@@ -80,8 +96,28 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         using var same = await _host.ControlClient().PostAsync("/__control/apps/matches", new ByteArrayContent(Encoding.UTF8.GetBytes(Page)));
         using var other = await _host.ControlClient().PostAsync("/__control/apps/matches", new ByteArrayContent(Encoding.UTF8.GetBytes("<p>other</p>")));
 
-        Assert.Equal(first, JsonDocument.Parse(await same.Content.ReadAsStringAsync()).RootElement[0].GetProperty("id").GetString());
+        var match = JsonDocument.Parse(await same.Content.ReadAsStringAsync()).RootElement[0];
+        Assert.Equal(first, match.GetProperty("app").GetProperty("id").GetString());
+        Assert.Equal("sameBytes", match.GetProperty("match").GetString());
         Assert.Equal(0, JsonDocument.Parse(await other.Content.ReadAsStringAsync()).RootElement.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task A_revised_file_from_the_same_path_is_reported_as_another_version()
+    {
+        const string path = "다운로드/도서대출.html";
+        using var v1 = new ByteArrayContent(Encoding.UTF8.GetBytes(Page));
+        v1.Headers.Add("X-Bohm-Original-Path", Uri.EscapeDataString(path));
+        using var adopted = await _host.ControlClient().PostAsync("/__control/apps", v1);
+        var first = JsonDocument.Parse(await adopted.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+
+        using var v2 = new ByteArrayContent(Encoding.UTF8.GetBytes(Page + "<button>반납</button>"));
+        v2.Headers.Add("X-Bohm-Original-Path", Uri.EscapeDataString(path));
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/matches", v2);
+
+        var match = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement[0];
+        Assert.Equal(first, match.GetProperty("app").GetProperty("id").GetString());
+        Assert.Equal("sameOriginalPath", match.GetProperty("match").GetString());
     }
 
     [Fact]

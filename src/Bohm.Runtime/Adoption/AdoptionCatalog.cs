@@ -16,9 +16,9 @@ namespace Bohm.Runtime.Adoption;
 /// usage record, see <see cref="UsageLog"/>).
 /// </summary>
 /// <remarks>
-/// The catalog does not decide what to do when the same file is adopted twice. It reports earlier
-/// adoptions of the same bytes through <see cref="FindBySourceAsync"/>, and whoever talks to the
-/// person asks them whether to open the existing application or adopt a new one.
+/// The catalog does not decide what to do when the same file — or another version of it — is
+/// adopted again. It reports earlier adoptions through <see cref="FindEarlierAdoptionsAsync"/>, saying
+/// how each one matches, and whoever talks to the person asks them what to do.
 /// </remarks>
 public sealed class AdoptionCatalog
 {
@@ -105,11 +105,43 @@ public sealed class AdoptionCatalog
         return apps;
     }
 
-    /// <summary>Applications previously adopted from exactly these bytes, oldest first.</summary>
-    public async Task<IReadOnlyList<AdoptedApp>> FindBySourceAsync(ReadOnlyMemory<byte> html, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Applications adopted earlier from these bytes, or from a file at the same original path,
+    /// oldest first. An application matching both is reported as <see cref="AdoptionMatchKind.SameBytes"/>.
+    /// </summary>
+    /// <remarks>
+    /// A path match only means «a file at this path was adopted before»: the bytes differ, so it may
+    /// be a revised version of the same application or an unrelated file saved under the same name.
+    /// The catalog does not decide which — it reports, and the person decides.
+    /// </remarks>
+    public async Task<IReadOnlyList<AdoptionMatch>> FindEarlierAdoptionsAsync(ReadOnlyMemory<byte> html, string? originalPath = null, CancellationToken cancellationToken = default)
     {
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(html.Span));
-        return (await ListAsync(cancellationToken).ConfigureAwait(false)).Where(a => a.Source.Sha256 == sha256).ToList();
+        var matches = new List<AdoptionMatch>();
+        foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (app.Source.Sha256 == sha256) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameBytes));
+            else if (SamePath(app.Source.OriginalPath, originalPath)) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
+        }
+
+        return matches;
+    }
+
+    /// <summary>
+    /// Whether two recorded original paths name the same file. Both are normalized; the comparison
+    /// ignores case where the platform's file system usually does.
+    /// </summary>
+    private static bool SamePath(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(Normalize(a), Normalize(b), comparison);
+
+        static string Normalize(string path)
+        {
+            try { return Path.GetFullPath(path); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return path; }
+        }
     }
 
     /// <summary>The adopted bytes of application <paramref name="id"/>, exactly as they were adopted.</summary>
