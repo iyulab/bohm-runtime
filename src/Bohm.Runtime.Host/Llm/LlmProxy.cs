@@ -114,6 +114,8 @@ internal static class LlmProxy
         }
 
         var client = context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy));
+        // Counted when it is sent, whether or not the provider answers: the application's data left.
+        context.RequestServices.GetRequiredService<Egress>().Sent(target.Host);
         HttpResponseMessage answer;
         try
         {

@@ -147,10 +147,16 @@ internal sealed partial class AssetFetcher(IServiceProvider services, IHostAppli
         var app = await services.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var html = await services.GetRequiredService<AdoptionCatalog>().ReadHtmlAsync(appId, cancellationToken).ConfigureAwait(false);
         var http = services.GetRequiredService<IHttpClientFactory>().CreateClient("assets");
+        var clock = services.GetRequiredService<TimeProvider>();
         await app.AssetFetch.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await app.Assets.FetchAsync(Encoding.UTF8.GetString(html), http, services.GetRequiredService<TimeProvider>(), cancellationToken: cancellationToken).ConfigureAwait(false);
+            var started = clock.GetUtcNow();
+            var result = await app.Assets.FetchAsync(Encoding.UTF8.GetString(html), http, clock, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var egress = services.GetRequiredService<Egress>();
+            foreach (var host in app.Assets.Assets.Where(a => a.FetchedAt >= started).GroupBy(a => new Uri(a.Url).Host, StringComparer.OrdinalIgnoreCase))
+                egress.Fetched(host.Key, host.Count());
+            return result;
         }
         finally
         {

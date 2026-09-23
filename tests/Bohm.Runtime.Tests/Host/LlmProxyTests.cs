@@ -75,6 +75,20 @@ public sealed class LlmProxyTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_relayed_request_is_recorded_as_sent_to_where_it_went_and_a_refused_one_is_not()
+    {
+        (await SendAsync(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions", "{}", bearer: Placeholder)).Dispose(); // no key yet
+        await ConnectAsync("openai");
+        (await SendAsync(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions", "{}", bearer: Placeholder)).Dispose();
+        (await SendAsync(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions", "{}", bearer: Placeholder)).Dispose();
+
+        var egress = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement;
+        var sent = Assert.Single(egress.GetProperty("sent").EnumerateArray());
+        Assert.Equal(_provider.Address.Host, sent.GetProperty("host").GetString()); // the stand-in, not the name the app used
+        Assert.Equal(2, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
     public async Task Each_provider_gets_the_key_the_way_it_expects()
     {
         await ConnectAsync("anthropic");
