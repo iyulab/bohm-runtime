@@ -281,6 +281,14 @@
     return nativeOpen.apply(this, arguments);
   };
 
+  // What the host reads just before it closes this page: which tab this is and the last write
+  // sequence the page issued. The host then waits until the runtime has applied that sequence.
+  // Neither writable nor configurable, so the page's own code cannot change what the host reads.
+  Object.defineProperty(window, "__bohm", {
+    value: Object.freeze({ tab: boot.tab, issued: function () { return seq; } }),
+    enumerable: false, writable: false, configurable: false
+  });
+
   window.addEventListener("pagehide", flushOnLeave);
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") flushOnLeave();

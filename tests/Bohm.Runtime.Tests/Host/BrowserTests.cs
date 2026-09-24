@@ -199,6 +199,35 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_host_reads_the_last_issued_write_and_the_page_cannot_change_what_it_reads()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync(NotesApp);
+        var page = await OpenAsync(id);
+        await page.FillAsync("#note", "x");
+        await page.ClickAsync("#save");   // two writes: notes, lastSaved
+
+        var tampered = await page.EvaluateAsync<bool>("""
+            () => {
+              window.__bohm = { tab: 'spoof', issued: () => 999 };
+              try { Object.defineProperty(window, '__bohm', { value: 1 }); } catch { }
+              try { window.__bohm.issued = () => 999; } catch { }
+              return window.__bohm.tab === 'spoof' || window.__bohm.issued() === 999;
+            }
+            """);
+        Assert.False(tampered);
+        Assert.Equal(2, await page.EvaluateAsync<int>("() => window.__bohm.issued()"));
+
+        var tab = await page.EvaluateAsync<string>("() => window.__bohm.tab");
+        using var client = _host.ControlClient();
+        await EventuallyAsync(async cancellation =>
+        {
+            var ack = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/tabs/{tab}", cancellation)).RootElement;
+            return ack.GetProperty("ack").GetInt64() == 2 ? ack : null;
+        });
+    }
+
+    [Fact]
     public async Task A_blocked_library_and_the_error_it_causes_are_reported_separately()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

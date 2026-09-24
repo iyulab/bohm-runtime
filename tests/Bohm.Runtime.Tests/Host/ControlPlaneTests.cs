@@ -16,6 +16,28 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     public async ValueTask DisposeAsync() => await _host.DisposeAsync();
 
     [Fact]
+    public async Task A_loaded_page_reports_the_highest_write_it_has_applied()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
+        var other = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page + "<p>other</p>"))).Id;
+        var page = await _host.LoadAsync(id);
+        using var client = _host.ControlClient();
+
+        Assert.Equal(0, await AckAsync(client, id, page.Tab));
+        (await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"a","value":"1"},{"seq":2,"op":"set","key":"b","value":"2"}]}""")).Dispose();
+        Assert.Equal(2, await AckAsync(client, id, page.Tab));
+
+        // Another application's page, and a page that never existed, are not this application's to report.
+        using var foreign = await client.GetAsync($"/__control/apps/{other}/tabs/{page.Tab}");
+        using var unknown = await client.GetAsync($"/__control/apps/{id}/tabs/0123456789abcdef0123456789abcdef");
+        HttpAssert.Status(HttpStatusCode.NotFound, foreign);
+        HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+
+        static async Task<long> AckAsync(HttpClient client, string app, string tab) =>
+            JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{app}/tabs/{tab}")).RootElement.GetProperty("ack").GetInt64();
+    }
+
+    [Fact]
     public async Task Requests_without_the_secret_are_refused()
     {
         using var none = await _host.ControlClient(secret: null).GetAsync("/__control/apps");

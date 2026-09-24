@@ -48,6 +48,10 @@ internal sealed class AppSessions
         return _tabs.TryGetValue(tabId, out var tab) && tab.AppId == appId ? tab : null;
     }
 
+    /// <summary>The tab, if it exists and belongs to <paramref name="appId"/> — for the host, which holds no session.</summary>
+    public Tab? Find(string appId, string tabId) =>
+        _tabs.TryGetValue(tabId, out var tab) && tab.AppId == appId ? tab : null;
+
     /// <summary>
     /// Ends every session and tab of <paramref name="appId"/>. A page loaded before this can no longer
     /// write — used when the application's code is replaced, so a page still running the old code
