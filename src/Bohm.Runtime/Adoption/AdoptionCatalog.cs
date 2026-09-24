@@ -114,19 +114,41 @@ public sealed class AdoptionCatalog
         return changed;
     }
 
-    /// <summary>All adopted applications, oldest first — archived ones included (see <see cref="AdoptedApp.ArchivedAt"/>). Folders whose record cannot be read are skipped.</summary>
-    public async Task<IReadOnlyList<AdoptedApp>> ListAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// All adopted applications, oldest first — archived ones included (see <see cref="AdoptedApp.ArchivedAt"/>).
+    /// Folders whose record cannot be read are left out; <see cref="ReadListingAsync"/> reports them.
+    /// </summary>
+    public async Task<IReadOnlyList<AdoptedApp>> ListAsync(CancellationToken cancellationToken = default) =>
+        (await ReadListingAsync(cancellationToken).ConfigureAwait(false)).Apps;
+
+    /// <summary>
+    /// All adopted applications, and every application folder whose record could not be read. One
+    /// unreadable folder — a file the operating system cannot open right now, such as one kept only
+    /// in the cloud while offline, or a damaged record — never hides the others, and is never deleted
+    /// or rewritten: its data is still there, and the person needs to be told so.
+    /// </summary>
+    public async Task<CatalogListing> ReadListingAsync(CancellationToken cancellationToken = default)
     {
         var apps = new List<AdoptedApp>();
+        var unreadable = new List<UnreadableApp>();
         foreach (var directory in Directory.EnumerateDirectories(_root))
         {
             var id = Path.GetFileName(directory);
             if (!IsValidId(id)) continue; // Includes staging folders left by an interrupted adoption.
-            if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app) apps.Add(app);
+            try
+            {
+                if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app) apps.Add(app);
+                else unreadable.Add(new UnreadableApp(id, UnreadableApp.Damaged, "The record is missing or not in a known format."));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                unreadable.Add(new UnreadableApp(id, UnreadableApp.CannotOpen, exception.Message));
+            }
         }
 
         apps.Sort((a, b) => a.AdoptedAt != b.AdoptedAt ? a.AdoptedAt.CompareTo(b.AdoptedAt) : string.CompareOrdinal(a.Id, b.Id));
-        return apps;
+        unreadable.Sort((a, b) => string.CompareOrdinal(a.Id, b.Id));
+        return new CatalogListing(apps, unreadable);
     }
 
     /// <summary>

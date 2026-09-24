@@ -17,6 +17,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <remarks>
 /// <list type="table">
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used.</description></item>
+/// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline) or <c>damaged</c>. Nothing in them is changed; one unreadable application never hides the others.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
@@ -69,10 +70,11 @@ internal static class ControlPlane
         {
             case ("GET", ["apps"]):
                 // The usage record is read from its file: appends reach it at once, and reading it does not open the application.
-                var listed = new List<AppView>();
-                foreach (var a in await catalog.ListAsync(cancel).ConfigureAwait(false))
-                    listed.Add(View(a, port, await catalog.CanRevertAsync(a, cancel).ConfigureAwait(false), catalog.OpenUsage(a.Id).LastUsedOn));
-                await WriteAsync(response, listed, cancel).ConfigureAwait(false);
+                await WriteAsync(response, (await ListAsync(catalog, port, cancel).ConfigureAwait(false)).Apps, cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", "unreadable"]):
+                await WriteAsync(response, (await ListAsync(catalog, port, cancel).ConfigureAwait(false)).Unreadable, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "matches"]):
@@ -345,6 +347,30 @@ internal static class ControlPlane
             _ => throw new ArgumentOutOfRangeException(nameof(match)),
         });
 
+    /// <summary>
+    /// The applications to list, and the ones that could not be read. An application whose revisions
+    /// or usage record cannot be opened moves to the unreadable ones rather than failing the whole list.
+    /// </summary>
+    private static async Task<(List<AppView> Apps, List<UnreadableApp> Unreadable)> ListAsync(AdoptionCatalog catalog, int port, CancellationToken cancel)
+    {
+        var listing = await catalog.ReadListingAsync(cancel).ConfigureAwait(false);
+        var apps = new List<AppView>();
+        var unreadable = new List<UnreadableApp>(listing.Unreadable);
+        foreach (var a in listing.Apps)
+        {
+            try
+            {
+                apps.Add(View(a, port, await catalog.CanRevertAsync(a, cancel).ConfigureAwait(false), catalog.OpenUsage(a.Id).LastUsedOn));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                unreadable.Add(new UnreadableApp(a.Id, UnreadableApp.CannotOpen, exception.Message));
+            }
+        }
+
+        return (apps, unreadable);
+    }
+
     private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
             app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt);
@@ -434,6 +460,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(List<UnreadableApp>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageReport))]

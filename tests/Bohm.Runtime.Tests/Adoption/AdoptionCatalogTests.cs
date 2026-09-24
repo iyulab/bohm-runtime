@@ -160,6 +160,32 @@ public sealed class AdoptionCatalogTests : IDisposable
         Assert.Equal(app.Id, Assert.Single(await catalog.ListAsync()).Id);
     }
 
+    [Fact]
+    public async Task An_application_that_cannot_be_read_is_reported_and_never_hides_or_changes_the_others()
+    {
+        // A record the system cannot open right now (held exclusively here — a file kept only in the
+        // cloud while offline fails the same way), and one that is damaged.
+        var catalog = new AdoptionCatalog(_root);
+        var kept = await catalog.AdoptAsync(Html, "kept.html");
+        var held = await catalog.AdoptAsync(Html, "held.html");
+        var damaged = await catalog.AdoptAsync(Html, "damaged.html");
+        var damagedRecord = Path.Combine(_root, "adopted", damaged.Id, "app.json");
+        await File.WriteAllTextAsync(damagedRecord, "{\"format\":\"bohm.adopted/1\",\"id\":");
+        var heldRecord = Path.Combine(_root, "adopted", held.Id, "app.json");
+        var heldBytes = await File.ReadAllBytesAsync(heldRecord);
+
+        CatalogListing listing;
+        using (new FileStream(heldRecord, FileMode.Open, FileAccess.Read, FileShare.None))
+            listing = await catalog.ReadListingAsync();
+
+        Assert.Equal(kept.Id, Assert.Single(listing.Apps).Id);
+        Assert.Equal(new[] { (damaged.Id, UnreadableApp.Damaged), (held.Id, UnreadableApp.CannotOpen) }.OrderBy(u => u.Id, StringComparer.Ordinal),
+            listing.Unreadable.Select(u => (u.Id, u.Kind)));
+        Assert.Equal(heldBytes, await File.ReadAllBytesAsync(heldRecord)); // nothing rewritten
+        Assert.Equal("{\"format\":\"bohm.adopted/1\",\"id\":", await File.ReadAllTextAsync(damagedRecord));
+        Assert.Equal(2, (await catalog.ListAsync()).Count); // once it opens again, it is back
+    }
+
     [Theory]
     [InlineData("..")]
     [InlineData("../../etc")]
