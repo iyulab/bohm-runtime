@@ -38,6 +38,22 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_repair_made_while_loading_is_counted_in_the_application_usage_record()
+    {
+        // A folder copied while a write was in progress: the last journal line is incomplete.
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("kept", "yes")]);
+        await File.AppendAllTextAsync(Path.Combine(_host.DataRoot, "adopted", id, "storage", "journal.ndjson"), "{\"seq\":2,\"op\":\"set\",\"key\":\"lost\",\"va");
+
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.OK, page);
+
+        var days = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement.GetProperty("days");
+        Assert.Equal(1, days.EnumerateArray().Sum(d => d.GetProperty("repaired").GetInt32()));
+    }
+
+    [Fact]
     public async Task A_suspected_loss_is_counted_in_the_application_usage_record()
     {
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;

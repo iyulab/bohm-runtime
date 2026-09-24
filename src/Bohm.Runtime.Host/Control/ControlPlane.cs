@@ -360,7 +360,7 @@ internal static class ControlPlane
             used is [.., var last] ? Iso(last) : null,
             retention.Day,
             System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(retention.State.ToString()),
-            log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors, d.LossSuspected)).ToList(),
+            log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors, d.LossSuspected, d.Repaired)).ToList(),
             log.Revisions.Select(r => new RevisionEventView(Iso(r.Date), r.Reverted ? "reverted" : "revised")).ToList(),
             log.KeyReports.Select(k => new KeyReportView(k.Revision, Iso(k.Date), k.Missing, k.Unread, k.Seeded)).ToList());
     }
@@ -411,7 +411,7 @@ internal static class ControlPlane
 
     internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage);
 
-    internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected);
+    internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected, int Repaired);
 
     internal sealed record RevisionEventView(string Date, string Event);
 

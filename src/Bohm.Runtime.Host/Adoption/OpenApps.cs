@@ -151,9 +151,15 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
     private async Task<OpenApp> OpenAsync(string appId)
     {
         var storage = await catalog.OpenStorageAsync(appId).ConfigureAwait(false);
+        var usage = catalog.OpenUsage(appId);
+        // The detail goes to the log; the usage record counts it, so the person and whoever judges the
+        // record can see that something on disk was set aside — not only someone reading the log.
         foreach (var repair in storage.Recovery)
+        {
             LogRepair(logger, appId, repair.Kind, repair.Detail);
-        return new OpenApp(storage, catalog.OpenUsage(appId), catalog.OpenAssets(appId));
+            usage.RecordRepaired();
+        }
+        return new OpenApp(storage, usage, catalog.OpenAssets(appId));
     }
 
     public async ValueTask DisposeAsync()
