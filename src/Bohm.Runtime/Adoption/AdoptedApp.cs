@@ -14,7 +14,13 @@ namespace Bohm.Runtime.Adoption;
 /// </param>
 /// <param name="Revision">The revision in use: 1 for the adopted file, higher for each revision taken in since.</param>
 /// <param name="RevisedAt">When the revision in use was taken in; <see langword="null"/> for the first.</param>
-public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null);
+/// <param name="ArchivedAt">
+/// When the person put the application away; <see langword="null"/> while it is in use. Archiving
+/// changes nothing but this mark: the code, the data, the revisions and the usage record stay where
+/// they are, so restoring it brings back exactly what was there.
+/// </param>
+public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
+    DateTimeOffset? ArchivedAt = null);
 
 /// <summary>The file a revision of an application was taken in from.</summary>
 /// <param name="Sha256">Lowercase hexadecimal SHA-256 of the adopted bytes.</param>
