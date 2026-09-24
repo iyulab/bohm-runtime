@@ -28,6 +28,30 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task Archiving_marks_the_record_only_and_restoring_brings_back_everything()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, "todo.html");
+        await using (var storage = await catalog.OpenStorageAsync(app.Id))
+            await storage.ApplyAsync([StorageOperation.Set("loans", "7")]);
+        var filesBefore = Directory.GetFiles(Path.Combine(_root, "adopted", app.Id), "*", SearchOption.AllDirectories).Order().ToList();
+
+        var archived = await catalog.SetArchivedAsync(app.Id, archived: true);
+        Assert.NotNull(archived!.ArchivedAt);
+        Assert.Equal(archived, await new AdoptionCatalog(_root).GetAsync(app.Id)); // survives a restart
+        Assert.Contains(await catalog.ListAsync(), a => a.Id == app.Id && a.ArchivedAt is not null);
+        Assert.Equal(archived, await catalog.SetArchivedAsync(app.Id, archived: true)); // again: no change
+        Assert.Equal(filesBefore, Directory.GetFiles(Path.Combine(_root, "adopted", app.Id), "*", SearchOption.AllDirectories).Order().ToList());
+        Assert.Equal(Html, await catalog.ReadHtmlAsync(app.Id));
+
+        var restored = await catalog.SetArchivedAsync(app.Id, archived: false);
+        Assert.Equal(app with { ArchivedAt = null }, restored);
+        await using (var storage = await catalog.OpenStorageAsync(app.Id))
+            Assert.Equal("7", storage.GetItems()["loans"]);
+        Assert.Null(await catalog.SetArchivedAsync("0123456789abcdef0123456789abcdef", archived: true));
+    }
+
+    [Fact]
     public async Task Identifiers_are_valid_dns_labels_and_unique_per_adoption()
     {
         var catalog = new AdoptionCatalog(_root);

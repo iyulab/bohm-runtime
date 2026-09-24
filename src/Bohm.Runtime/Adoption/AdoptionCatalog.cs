@@ -100,7 +100,21 @@ public sealed class AdoptionCatalog
         return ReadRecord(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
     }
 
-    /// <summary>All adopted applications, oldest first. Folders whose record cannot be read are skipped.</summary>
+    /// <summary>
+    /// Puts the application away (<see cref="AdoptedApp.ArchivedAt"/>) or brings it back. Only the
+    /// record changes; nothing is moved or deleted. Returns <see langword="null"/> for an unknown id.
+    /// Archiving an archived application, or restoring one in use, changes nothing.
+    /// </summary>
+    public async Task<AdoptedApp?> SetArchivedAsync(string id, bool archived, CancellationToken cancellationToken = default)
+    {
+        if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
+        if (archived == app.ArchivedAt is not null) return app;
+        var changed = app with { ArchivedAt = archived ? _clock.GetUtcNow() : null };
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(changed), cancellationToken).ConfigureAwait(false);
+        return changed;
+    }
+
+    /// <summary>All adopted applications, oldest first — archived ones included (see <see cref="AdoptedApp.ArchivedAt"/>). Folders whose record cannot be read are skipped.</summary>
     public async Task<IReadOnlyList<AdoptedApp>> ListAsync(CancellationToken cancellationToken = default)
     {
         var apps = new List<AdoptedApp>();
@@ -361,6 +375,7 @@ public sealed class AdoptionCatalog
             WriteTime(writer, "revisedAt", app.RevisedAt);
             WriteSource(writer, app.Source);
             writer.WriteString("protection", app.Protection);
+            if (app.ArchivedAt is not null) WriteTime(writer, "archivedAt", app.ArchivedAt);
             writer.WriteEndObject();
         }
 
@@ -423,10 +438,13 @@ public sealed class AdoptionCatalog
                 root.GetProperty("protection").GetString()!);
             if (format == FirstRecordFormat) return app;
             var revisedAt = root.GetProperty("revisedAt");
+            // Absent in records written before archiving existed — and while the application is in use.
+            var archivedAt = root.TryGetProperty("archivedAt", out var archived) && archived.ValueKind == JsonValueKind.String ? ParseTime(archived.GetString()!) : (DateTimeOffset?)null;
             return app with
             {
                 Revision = root.GetProperty("revision").GetInt32(),
                 RevisedAt = revisedAt.ValueKind == JsonValueKind.Null ? null : ParseTime(revisedAt.GetString()!),
+                ArchivedAt = archivedAt,
             };
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)

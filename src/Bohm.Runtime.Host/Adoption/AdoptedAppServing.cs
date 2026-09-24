@@ -69,7 +69,8 @@ internal static class AdoptedAppServing
     public static async Task ServeAsync(HttpContext context, string appId)
     {
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
-        if (await catalog.GetAsync(appId, context.RequestAborted).ConfigureAwait(false) is null)
+        // An archived application is put away: nothing at its origin is served until it is restored.
+        if (await catalog.GetAsync(appId, context.RequestAborted).ConfigureAwait(false) is not { ArchivedAt: null })
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;

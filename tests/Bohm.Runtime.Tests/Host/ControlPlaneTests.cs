@@ -85,6 +85,33 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_archived_application_is_listed_as_archived_and_not_served_until_restored()
+    {
+        var id = await _host.AdoptAsync(Page);
+        using var client = _host.ControlClient();
+
+        using (var archived = await client.PostAsync($"/__control/apps/{id}/archive", null))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, archived);
+            Assert.Equal(JsonValueKind.String, JsonDocument.Parse(await archived.Content.ReadAsStringAsync()).RootElement.GetProperty("archivedAt").ValueKind);
+        }
+        var listed = JsonDocument.Parse(await client.GetStringAsync("/__control/apps")).RootElement.EnumerateArray().Single(a => a.GetProperty("id").GetString() == id);
+        Assert.Equal(JsonValueKind.String, listed.GetProperty("archivedAt").ValueKind);
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.NotFound, page);
+
+        using (var restored = await client.PostAsync($"/__control/apps/{id}/restore", null))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, restored);
+            Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await restored.Content.ReadAsStringAsync()).RootElement.GetProperty("archivedAt").ValueKind);
+        }
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.OK, page);
+        using (var unknown = await client.PostAsync("/__control/apps/0123456789abcdef0123456789abcdef/archive", null))
+            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+    }
+
+    [Fact]
     public async Task Adopting_returns_the_application_and_its_origin()
     {
         using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(Page));
