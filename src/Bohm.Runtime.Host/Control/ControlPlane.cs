@@ -24,6 +24,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page. A host closing the page compares it with the last sequence the page issued; 404 when the page is not (or no longer) the application's.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/loss-suspected</c></term><description>Records that a closing page of the application went away before its last writes could be confirmed as applied. Counted per day in the usage record.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
@@ -145,6 +146,17 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, new TabView(tab.LastSequence), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var lossOf, "loss-suspected"]):
+                if (await catalog.GetAsync(lossOf, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(lossOf).ConfigureAwait(false)).Usage.RecordLossSuspected();
+                response.StatusCode = StatusCodes.Status204NoContent;
                 break;
 
             case ("GET", ["apps", var id, "status"]):
@@ -336,7 +348,7 @@ internal static class ControlPlane
             used is [.., var last] ? Iso(last) : null,
             retention.Day,
             System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(retention.State.ToString()),
-            log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors)).ToList(),
+            log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors, d.LossSuspected)).ToList(),
             log.Revisions.Select(r => new RevisionEventView(Iso(r.Date), r.Reverted ? "reverted" : "revised")).ToList(),
             log.KeyReports.Select(k => new KeyReportView(k.Revision, Iso(k.Date), k.Missing, k.Unread, k.Seeded)).ToList());
     }
@@ -387,7 +399,7 @@ internal static class ControlPlane
 
     internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage);
 
-    internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors);
+    internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected);
 
     internal sealed record RevisionEventView(string Date, string Event);
 

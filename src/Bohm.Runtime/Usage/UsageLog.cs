@@ -25,7 +25,8 @@ public enum UsageSignal
 /// <remarks>
 /// The file is append-only NDJSON with one line per first occurrence of a signal on a day
 /// (<c>{"date":"2026-09-23","signal":"opened"}</c>) and one line per load failure
-/// (<c>{"date":"2026-09-23","event":"load-error"}</c>), one line each time the person takes in
+/// (<c>{"date":"2026-09-23","event":"load-error"}</c>), one line per closing page whose last writes the
+/// host could not confirm as applied (<c>"event":"loss-suspected"</c>), one line each time the person takes in
 /// a new revision or goes back to the previous one (<c>"event":"revised"</c> / <c>"reverted"</c>), and
 /// one line per page load that reported how the running revision's reads matched the stored data
 /// (<c>{"date":…,"event":"keys","revision":2,"missing":1,"unread":3,"seeded":3}</c> — counts only, never key names).
@@ -41,6 +42,7 @@ public sealed class UsageLog
     private readonly Lock _lock = new();
     private readonly HashSet<(DateOnly, UsageSignal)> _seen = [];
     private readonly Dictionary<DateOnly, int> _loadErrors = [];
+    private readonly Dictionary<DateOnly, int> _lossSuspected = [];
     private readonly List<RevisionEvent> _revisions = [];
     private readonly SortedDictionary<int, KeyReport> _keys = [];
 
@@ -70,6 +72,7 @@ public sealed class UsageLog
                     switch (@event.GetString())
                     {
                         case "load-error": log._loadErrors[date] = log._loadErrors.GetValueOrDefault(date) + 1; break;
+                        case "loss-suspected": log._lossSuspected[date] = log._lossSuspected.GetValueOrDefault(date) + 1; break;
                         case "revised": log._revisions.Add(new RevisionEvent(date, Reverted: false)); break;
                         case "reverted": log._revisions.Add(new RevisionEvent(date, Reverted: true)); break;
                         case "keys" when ReadKeyReport(root, date) is { } keys: log._keys[keys.Revision] = keys; break;
@@ -107,6 +110,20 @@ public sealed class UsageLog
         {
             _loadErrors[today] = _loadErrors.GetValueOrDefault(today) + 1;
             Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"load-error"}""");
+        }
+    }
+
+    /// <summary>
+    /// Counts one closing page whose last writes the host could not confirm as applied before the page
+    /// went away — a possible loss of the last moment's data. The count is the evidence; there is no content.
+    /// </summary>
+    public void RecordLossSuspected()
+    {
+        var today = Today;
+        lock (_lock)
+        {
+            _lossSuspected[today] = _lossSuspected.GetValueOrDefault(today) + 1;
+            Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"loss-suspected"}""");
         }
     }
 
@@ -185,16 +202,16 @@ public sealed class UsageLog
     /// <summary>The first day the application was used, or <see langword="null"/> if it never was.</summary>
     public DateOnly? FirstUsedOn => UsedDays is [var first, ..] ? first : null;
 
-    /// <summary>Every day with anything recorded, in order: its signals and its load failures.</summary>
+    /// <summary>Every day with anything recorded, in order: its signals, its load failures and its suspected losses.</summary>
     public IReadOnlyList<UsageDay> Days
     {
         get
         {
             lock (_lock)
             {
-                return _seen.Select(s => s.Item1).Concat(_loadErrors.Keys).Distinct().Order()
+                return _seen.Select(s => s.Item1).Concat(_loadErrors.Keys).Concat(_lossSuspected.Keys).Distinct().Order()
                     .Select(d => new UsageDay(d, _seen.Contains((d, UsageSignal.Opened)), _seen.Contains((d, UsageSignal.Input)),
-                        _seen.Contains((d, UsageSignal.Wrote)), _loadErrors.GetValueOrDefault(d)))
+                        _seen.Contains((d, UsageSignal.Wrote)), _loadErrors.GetValueOrDefault(d), _lossSuspected.GetValueOrDefault(d)))
                     .ToList();
             }
         }
@@ -247,7 +264,7 @@ public sealed class UsageLog
 }
 
 /// <summary>One day of an application's usage record. Carries no content.</summary>
-public sealed record UsageDay(DateOnly Date, bool Opened, bool Input, bool Wrote, int LoadErrors)
+public sealed record UsageDay(DateOnly Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected = 0)
 {
     /// <summary>Opened, and typed or pointed in, on this day.</summary>
     public bool Used => Opened && Input;

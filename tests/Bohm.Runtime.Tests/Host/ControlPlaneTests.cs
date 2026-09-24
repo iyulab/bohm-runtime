@@ -38,6 +38,21 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_suspected_loss_is_counted_in_the_application_usage_record()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
+        using var client = _host.ControlClient();
+
+        using (var recorded = await client.PostAsync($"/__control/apps/{id}/loss-suspected", null))
+            HttpAssert.Status(HttpStatusCode.NoContent, recorded);
+        using (var unknown = await client.PostAsync("/__control/apps/0123456789abcdef0123456789abcdef/loss-suspected", null))
+            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+
+        var days = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/usage")).RootElement.GetProperty("days");
+        Assert.Equal(1, days.EnumerateArray().Sum(d => d.GetProperty("lossSuspected").GetInt32()));
+    }
+
+    [Fact]
     public async Task Requests_without_the_secret_are_refused()
     {
         using var none = await _host.ControlClient(secret: null).GetAsync("/__control/apps");

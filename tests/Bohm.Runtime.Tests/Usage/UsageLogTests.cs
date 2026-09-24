@@ -61,6 +61,19 @@ public sealed class UsageLogTests : IDisposable
     }
 
     [Fact]
+    public void Suspected_losses_are_counted_per_day_and_read_back()
+    {
+        var log = Open("""{"date":"2026-09-10","signal":"opened"}""", """{"date":"2026-09-12","event":"loss-suspected"}""");
+        log.RecordLossSuspected();
+        log.RecordLossSuspected();
+
+        var reopened = UsageLog.Open(Path.Combine(_dir, "usage.ndjson"));
+        Assert.Equal(1, reopened.Days.Single(d => d.Date == new DateOnly(2026, 9, 12)).LossSuspected);
+        Assert.Equal(2, reopened.Days.Single(d => d.Date == reopened.Today).LossSuspected);
+        Assert.Equal(0, reopened.Days.Single(d => d.Date == new DateOnly(2026, 9, 10)).LossSuspected);
+    }
+
+    [Fact]
     public void Revisions_are_read_back_and_new_ones_are_kept()
     {
         var log = Open("""{"date":"2026-09-10","event":"revised"}""", """{"date":"2026-09-11","event":"reverted"}""");
