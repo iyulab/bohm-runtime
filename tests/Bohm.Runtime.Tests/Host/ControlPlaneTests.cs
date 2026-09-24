@@ -128,6 +128,20 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_usage_report_marks_the_day_an_application_was_put_away()
+    {
+        var kept = await _host.AdoptAsync(Page);
+        var put = await _host.AdoptAsync(Page + "<p>put away</p>");
+        using var client = _host.ControlClient();
+        (await client.PostAsync($"/__control/apps/{put}/archive", null)).Dispose();
+
+        var apps = JsonDocument.Parse(await client.GetStringAsync("/__control/usage-report")).RootElement.GetProperty("apps").EnumerateArray().ToList();
+        var archivedOn = apps.Single(a => a.GetProperty("id").GetString() == put).GetProperty("archivedOn");
+        Assert.Equal(DateOnly.FromDateTime(DateTime.Now).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), archivedOn.GetString());
+        Assert.Equal(JsonValueKind.Null, apps.Single(a => a.GetProperty("id").GetString() == kept).GetProperty("archivedOn").ValueKind);
+    }
+
+    [Fact]
     public async Task Adopting_returns_the_application_and_its_origin()
     {
         using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(Page));

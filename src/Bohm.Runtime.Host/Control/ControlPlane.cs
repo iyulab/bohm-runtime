@@ -206,7 +206,8 @@ internal static class ControlPlane
                 foreach (var a in await catalog.ListAsync(cancel).ConfigureAwait(false))
                 {
                     var usage = UsageOf(catalog.OpenUsage(a.Id));
-                    reported.Add(new ReportedApp(a.Id, Iso(DateOnly.FromDateTime(a.AdoptedAt.ToLocalTime().DateTime)), a.Revision, usage));
+                    reported.Add(new ReportedApp(a.Id, Iso(DateOnly.FromDateTime(a.AdoptedAt.ToLocalTime().DateTime)), a.Revision, usage,
+                        a.ArchivedAt is { } archivedAt ? Iso(DateOnly.FromDateTime(archivedAt.ToLocalTime().DateTime)) : null));
                 }
 
                 await WriteAsync(response, new UsageReport(UsageReport.FormatName, DateTimeOffset.Now, reported), cancel).ConfigureAwait(false);
@@ -409,7 +410,10 @@ internal static class ControlPlane
         public const string FormatName = "bohm.usage-report/0";
     }
 
-    internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage);
+    /// <param name="ArchivedOn">The day the person put the application away, if they did — a day, like
+    /// <c>AdoptedOn</c>, never a time. Someone judging the report reads it next to a lapse: an application
+    /// put away may simply have served its purpose.</param>
+    internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage, string? ArchivedOn = null);
 
     internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected, int Repaired);
 
