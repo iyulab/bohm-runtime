@@ -194,11 +194,7 @@ public sealed class BrowserTests : IAsyncLifetime
         await page.FillAsync("#note", "x");
         await page.ClickAsync("#save");
 
-        var status = await EventuallyAsync(async () =>
-        {
-            var s = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
-            return s.GetProperty("input").GetBoolean() && s.GetProperty("wrote").GetBoolean() ? s : (System.Text.Json.JsonElement?)null;
-        });
+        var status = await StatusWhenAsync(id, s => s.GetProperty("input").GetBoolean() && s.GetProperty("wrote").GetBoolean());
         Assert.True(status.GetProperty("opened").GetBoolean());
     }
 
@@ -323,9 +319,10 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     private Task<System.Text.Json.JsonElement> StatusWhenAsync(string id, Func<System.Text.Json.JsonElement, bool> condition) =>
-        EventuallyAsync(async () =>
+        EventuallyAsync(async cancellation =>
         {
-            var s = System.Text.Json.JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+            using var client = _host.ControlClient();
+            var s = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/status", cancellation)).RootElement;
             return condition(s) ? s : null;
         });
 
@@ -377,16 +374,27 @@ public sealed class BrowserTests : IAsyncLifetime
         }
     }
 
-    private static async Task<System.Text.Json.JsonElement> EventuallyAsync(Func<Task<System.Text.Json.JsonElement?>> probe)
+    /// <summary>
+    /// Polls <paramref name="probe"/> until it yields a value, within one overall deadline. Each attempt is
+    /// cancelled at the deadline too, so a request that hangs fails the test in seconds instead of waiting
+    /// out the HTTP client's own timeout on every attempt.
+    /// </summary>
+    private static async Task<System.Text.Json.JsonElement> EventuallyAsync(Func<CancellationToken, Task<System.Text.Json.JsonElement?>> probe)
     {
-        for (var attempt = 0; attempt < 25; attempt++)
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        try
         {
-            if (await probe() is { } result) return result;
-            await Task.Delay(200);
+            while (true)
+            {
+                if (await probe(deadline.Token) is { } result) return result;
+                await Task.Delay(200, deadline.Token);
+            }
         }
-
-        Assert.Fail("The condition was not met in time.");
-        return default;
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            Assert.Fail("The condition was not met within 20 seconds.");
+            return default;
+        }
     }
 
     private async Task<IPage> OpenAsync(string appId)
