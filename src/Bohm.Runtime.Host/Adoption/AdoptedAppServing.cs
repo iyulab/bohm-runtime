@@ -26,6 +26,26 @@ internal static class AdoptedAppServing
     /// </summary>
     public const string ContentSecurityPolicy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'; frame-ancestors 'self'";
 
+    /// <summary>
+    /// Headers every response from an application's origin carries, next to the policy above.
+    /// <list type="bullet">
+    /// <item>No <c>Referer</c> leaves the application: following a link out would otherwise tell the
+    /// other site the application's local address.</item>
+    /// <item>Only the application's own origin may use its responses. The document carries a
+    /// snapshot of the data inline, and a page elsewhere — another application, or a page in any
+    /// browser on this computer — could otherwise pull it in as an image or script it cannot read
+    /// but can still make the browser load.</item>
+    /// </list>
+    /// No <c>Cross-Origin-Opener-Policy</c>: with <c>same-origin</c>, leaving the page for another
+    /// document swaps its browsing context group, and the writes a page sends as it closes (in
+    /// <c>pagehide</c>) were lost — every time, in the embedded browser. Keeping those writes comes first.
+    /// </summary>
+    public static readonly IReadOnlyList<KeyValuePair<string, string>> IsolationHeaders =
+    [
+        new("Referrer-Policy", "no-referrer"),
+        new("Cross-Origin-Resource-Policy", "same-origin"),
+    ];
+
     private const string LocalhostSuffix = ".localhost";
 
     private static readonly Lazy<string> ShimTemplate = new(() =>
@@ -58,6 +78,7 @@ internal static class AdoptedAppServing
         var response = context.Response;
         response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
         response.Headers.XContentTypeOptions = "nosniff";
+        foreach (var (name, value) in IsolationHeaders) response.Headers[name] = value;
 
         var path = context.Request.Path;
         if (path == StoragePath)
