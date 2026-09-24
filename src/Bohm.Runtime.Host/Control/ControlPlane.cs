@@ -66,7 +66,7 @@ internal static class ControlPlane
                 // The usage record is read from its file: appends reach it at once, and reading it does not open the application.
                 var listed = new List<AppView>();
                 foreach (var a in await catalog.ListAsync(cancel).ConfigureAwait(false))
-                    listed.Add(View(a, port, await catalog.CanRevertAsync(a.Id, cancel).ConfigureAwait(false), catalog.OpenUsage(a.Id).LastUsedOn));
+                    listed.Add(View(a, port, await catalog.CanRevertAsync(a, cancel).ConfigureAwait(false), catalog.OpenUsage(a.Id).LastUsedOn));
                 await WriteAsync(response, listed, cancel).ConfigureAwait(false);
                 break;
 
@@ -209,10 +209,11 @@ internal static class ControlPlane
     }
 
     /// <summary>
-    /// Replaces the code an application runs, in an order that loses nothing: pages loaded before
-    /// can no longer write, writes already on their way are waited for, and only then is the data
-    /// saved and the code switched. The application's code from other hosts is fetched again
-    /// afterwards, since the new revision may load different code.
+    /// Replaces the code an application runs, in an order that loses nothing: writes already on
+    /// their way — typically the last one a page sends as it closes — are waited for and applied
+    /// first; then pages loaded before can no longer write; only then is the data saved and the
+    /// code switched. The application's code from other hosts is fetched again afterwards, since
+    /// the new revision may load different code.
     /// </summary>
     private static async Task ChangeRevisionAsync(HttpContext context, string appId, int successStatus,
         Func<Runtime.Storage.AppStorage, Task<AdoptedApp>> change, bool reverted)
@@ -225,8 +226,9 @@ internal static class ControlPlane
         AdoptedApp changed;
         try
         {
-            services.GetRequiredService<AppSessions>().RevokeApp(appId);
+            // Drain before revoking: a write the closing page sent must land, not be refused as stale.
             await DrainAsync(context, cancel).ConfigureAwait(false);
+            services.GetRequiredService<AppSessions>().RevokeApp(appId);
             try
             {
                 changed = await change(app.Storage).ConfigureAwait(false);
@@ -250,7 +252,7 @@ internal static class ControlPlane
             services.GetRequiredService<AssetFetcher>().Start(appId);
         var catalog = services.GetRequiredService<AdoptionCatalog>();
         response.StatusCode = successStatus;
-        var canRevert = await catalog.CanRevertAsync(appId, cancel).ConfigureAwait(false);
+        var canRevert = await catalog.CanRevertAsync(changed, cancel).ConfigureAwait(false);
         await WriteAsync(response, View(changed, context.Request.Host.Port ?? 80, canRevert), cancel).ConfigureAwait(false);
     }
 
@@ -276,7 +278,7 @@ internal static class ControlPlane
         request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
 
     private static async Task<MatchView> ViewMatchAsync(AdoptionCatalog catalog, AdoptionMatch match, int port, CancellationToken cancellationToken) =>
-        new(View(match.App, port, await catalog.CanRevertAsync(match.App.Id, cancellationToken).ConfigureAwait(false)), match.Kind switch
+        new(View(match.App, port, await catalog.CanRevertAsync(match.App, cancellationToken).ConfigureAwait(false)), match.Kind switch
         {
             AdoptionMatchKind.SameBytes => "sameBytes",
             AdoptionMatchKind.SameOriginalPath => "sameOriginalPath",
