@@ -314,7 +314,8 @@ internal static class ControlPlane
             retention.Day,
             System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(retention.State.ToString()),
             log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors)).ToList(),
-            log.Revisions.Select(r => new RevisionEventView(Iso(r.Date), r.Reverted ? "reverted" : "revised")).ToList());
+            log.Revisions.Select(r => new RevisionEventView(Iso(r.Date), r.Reverted ? "reverted" : "revised")).ToList(),
+            log.KeyReports.Select(k => new KeyReportView(k.Revision, Iso(k.Date), k.Missing, k.Unread, k.Seeded)).ToList());
     }
 
     private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
@@ -341,10 +342,14 @@ internal static class ControlPlane
     /// <summary>
     /// An application's usage record. <c>FirstUsed</c> is day 0 of the retention rule (<c>null</c> until
     /// the first day of use); <c>Day</c> counts from it to <c>Today</c>. <c>Retention</c> is one of
-    /// <c>not-started</c>, <c>too-early</c>, <c>in-window</c>, <c>retained</c>, <c>lapsed</c>.
+    /// <c>not-started</c>, <c>too-early</c>, <c>in-window</c>, <c>retained</c>, <c>lapsed</c>. <c>Keys</c> is the latest
+    /// report per revision of how its pages read the stored data — a revision that asks for keys the data
+    /// lacks while leaving stored keys unread may have changed the data's shape.
     /// </summary>
     internal sealed record UsageView(string Today, string? FirstUsed, string? LastUsed, int? Day, string Retention,
-        IReadOnlyList<UsageDayView> Days, IReadOnlyList<RevisionEventView> Revisions);
+        IReadOnlyList<UsageDayView> Days, IReadOnlyList<RevisionEventView> Revisions, IReadOnlyList<KeyReportView> Keys);
+
+    internal sealed record KeyReportView(int Revision, string Date, int Missing, int Unread, int Seeded);
 
     internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors);
 

@@ -258,6 +258,39 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_page_reports_how_its_reads_matched_the_data_and_usage_shows_it_per_revision()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(id);
+
+        async Task<HttpResponseMessage> Report(string json)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/usage")
+            {
+                Content = new StringContent(json.Replace("TAB", page.Tab, StringComparison.Ordinal), Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Add("Cookie", page.Cookie);
+            request.Headers.Add("X-Bohm-Request", "1");
+            return await _host.ClientForApp(id).SendAsync(request);
+        }
+
+        using (var ok = await Report("""{"tab":"TAB","kind":"keys","missing":1,"unread":2,"seeded":2}"""))
+            HttpAssert.Status(HttpStatusCode.OK, ok);
+        // More unread keys than it was given is not a fact a page can observe.
+        using (var bad = await Report("""{"tab":"TAB","kind":"keys","missing":0,"unread":3,"seeded":2}"""))
+            HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+        using (var missing = await Report("""{"tab":"TAB","kind":"keys","missing":1}"""))
+            HttpAssert.Status(HttpStatusCode.BadRequest, missing);
+
+        var usage = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement;
+        var keys = Assert.Single(usage.GetProperty("keys").EnumerateArray());
+        Assert.Equal(1, keys.GetProperty("revision").GetInt32());
+        Assert.Equal(1, keys.GetProperty("missing").GetInt32());
+        Assert.Equal(2, keys.GetProperty("unread").GetInt32());
+        Assert.Equal(2, keys.GetProperty("seeded").GetInt32());
+    }
+
+    [Fact]
     public async Task Usage_of_an_unknown_application_is_not_found()
     {
         using var response = await _host.ControlClient().GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/usage");

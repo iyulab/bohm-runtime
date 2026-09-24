@@ -83,25 +83,43 @@
     schedule(0);
   }
 
+  // How this page's reads match the data it was given: keys asked for that the data does not have
+  // (and that this page has not written), and given keys never read. A revision whose data shape
+  // changed shows both. Counts only reach the runtime, never key names. Listing the keys counts as
+  // reading them all.
+  var seeded = new Set(data.keys());
+  var readSeeded = new Set();
+  var missingReads = new Set();
+  var written = new Set();
+  function noteRead(key) {
+    if (data.has(key)) { if (seeded.has(key)) readSeeded.add(key); }
+    else if (!written.has(key)) missingReads.add(key);
+  }
+  function noteListed() { seeded.forEach(function (k) { readSeeded.add(k); }); }
+
   var storage = {
-    getItem: function (key) { key = String(key); return data.has(key) ? data.get(key) : null; },
+    getItem: function (key) { key = String(key); noteRead(key); return data.has(key) ? data.get(key) : null; },
     setItem: function (key, value) {
       key = String(key); value = String(value);
+      written.add(key);
       data.set(key, value);
       record({ op: "set", key: key, value: value });
     },
     removeItem: function (key) {
       key = String(key);
+      written.add(key);
       if (!data.has(key)) return;
       data.delete(key);
       record({ op: "remove", key: key });
     },
     clear: function () {
+      data.forEach(function (v, k) { written.add(k); });
       if (data.size === 0) return;
       data.clear();
       record({ op: "clear" });
     },
     key: function (index) {
+      noteListed();
       var keys = Array.from(data.keys());
       return index >= 0 && index < keys.length ? keys[index] : null;
     }
@@ -112,11 +130,18 @@
   // Property-style access (localStorage.foo = "bar", localStorage.foo, delete localStorage.foo,
   // Object.keys(localStorage)) behaves like the Web Storage API's named properties.
   var proxy = new Proxy(storage, {
-    get: function (target, name) { return name in target ? target[name] : (typeof name === "string" ? storage.getItem(name) : undefined); },
+    // A property read counts as reading a stored key, but a missing name is not counted: libraries probe
+    // arbitrary names (toJSON, then) that were never the application's keys.
+    get: function (target, name) {
+      if (name in target) return target[name];
+      if (typeof name !== "string") return undefined;
+      if (!data.has(name)) return null;
+      return storage.getItem(name);
+    },
     set: function (target, name, value) { storage.setItem(name, value); return true; },
     has: function (target, name) { return name in target || data.has(String(name)); },
     deleteProperty: function (target, name) { storage.removeItem(name); return true; },
-    ownKeys: function () { return Array.from(data.keys()); },
+    ownKeys: function () { noteListed(); return Array.from(data.keys()); },
     getOwnPropertyDescriptor: function (target, name) {
       return data.has(String(name)) ? { value: data.get(String(name)), enumerable: true, configurable: true, writable: true } : undefined;
     }
@@ -203,6 +228,23 @@
     onLoadError(reason && reason.message ? reason.message : String(reason));
   });
   window.addEventListener("load", function () { setTimeout(function () { loading = false; }, 1000); });
+
+  // One report per page, a few seconds after load, when the application has read what it needs to
+  // draw itself. Only when there was data to read.
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      if (seeded.size === 0) return;
+      var unread = 0;
+      seeded.forEach(function (k) { if (!readSeeded.has(k)) unread++; });
+      nativeFetch("/__bohm/usage", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
+        body: JSON.stringify({ tab: boot.tab, kind: "keys", missing: missingReads.size, unread: unread, seeded: seeded.size })
+      }).catch(function () { /* usage is best-effort */ });
+    }, 5000);
+  });
 
   // AI provider calls. An application that asks for a provider's API key with prompt() gets a
   // placeholder instead of a dialog; its requests to a known provider go to the same origin, where

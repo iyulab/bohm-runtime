@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Adoption;
@@ -8,8 +9,10 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <c>{ "tab": "...", "kind": "input" }</c> the first time the person types or points, and
 /// <c>{ "tab": "...", "kind": "load-error", "message": "..." }</c> when the application fails
 /// while loading, and <c>{ "tab": "...", "kind": "blocked", "category": "library", "host": "..." }</c>
-/// when the content security policy refused something from another host. Opening and writing
-/// are observed by the host itself.
+/// when the content security policy refused something from another host, and
+/// <c>{ "tab": "...", "kind": "keys", "missing": 1, "unread": 3, "seeded": 3 }</c> once per page load:
+/// how the page's reads matched the data it was given (counts only). Opening and writing are
+/// observed by the host itself.
 /// </summary>
 internal static class UsageEndpoint
 {
@@ -39,8 +42,9 @@ internal static class UsageEndpoint
             report = null;
         }
 
-        if (report is null || report.Kind is not ("input" or "load-error" or "blocked")
-            || report.Kind == "blocked" && (report.Category is not ("library" or "data" or "form") || report.Host is not { Length: > 0 and <= 255 }))
+        if (report is null || report.Kind is not ("input" or "load-error" or "blocked" or "keys")
+            || report.Kind == "blocked" && (report.Category is not ("library" or "data" or "form") || report.Host is not { Length: > 0 and <= 255 })
+            || report.Kind == "keys" && !(Count(report.Missing) && Count(report.Unread) && Count(report.Seeded) && report.Unread <= report.Seeded))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -56,6 +60,11 @@ internal static class UsageEndpoint
         switch (report.Kind)
         {
             case "input": app.Usage.Record(UsageSignal.Input); break;
+            case "keys":
+                // Recorded against the revision serving now; a page of an older revision cannot write any more.
+                if (await context.RequestServices.GetRequiredService<AdoptionCatalog>().GetAsync(appId, context.RequestAborted).ConfigureAwait(false) is { } adopted)
+                    app.Usage.RecordKeys(adopted.Revision, report.Missing!.Value, report.Unread!.Value, report.Seeded!.Value);
+                break;
             case "blocked":
                 app.AddBlocked(report.Category!, report.Host!);
                 context.RequestServices.GetRequiredService<Egress>().Blocked(appId, report.Host!);
@@ -67,7 +76,10 @@ internal static class UsageEndpoint
         await response.WriteAsync("{}", context.RequestAborted).ConfigureAwait(false);
     }
 
-    internal sealed record Report(string? Tab, string? Kind, string? Message, string? Category, string? Host);
+    private static bool Count(int? n) => n is >= 0 and <= 100_000;
+
+    internal sealed record Report(string? Tab, string? Kind, string? Message, string? Category, string? Host,
+        int? Missing = null, int? Unread = null, int? Seeded = null);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

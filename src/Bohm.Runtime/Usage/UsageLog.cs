@@ -25,8 +25,10 @@ public enum UsageSignal
 /// <remarks>
 /// The file is append-only NDJSON with one line per first occurrence of a signal on a day
 /// (<c>{"date":"2026-09-23","signal":"opened"}</c>) and one line per load failure
-/// (<c>{"date":"2026-09-23","event":"load-error"}</c>), and one line each time the person takes in
-/// a new revision or goes back to the previous one (<c>"event":"revised"</c> / <c>"reverted"</c>).
+/// (<c>{"date":"2026-09-23","event":"load-error"}</c>), one line each time the person takes in
+/// a new revision or goes back to the previous one (<c>"event":"revised"</c> / <c>"reverted"</c>), and
+/// one line per page load that reported how the running revision's reads matched the stored data
+/// (<c>{"date":…,"event":"keys","revision":2,"missing":1,"unread":3,"seeded":3}</c> — counts only, never key names).
 /// The record belongs to the application, not to a revision. Days are the person's local calendar days.
 /// Recording is best-effort: a usage line is never allowed to fail the operation that caused it.
 /// </remarks>
@@ -40,6 +42,7 @@ public sealed class UsageLog
     private readonly HashSet<(DateOnly, UsageSignal)> _seen = [];
     private readonly Dictionary<DateOnly, int> _loadErrors = [];
     private readonly List<RevisionEvent> _revisions = [];
+    private readonly SortedDictionary<int, KeyReport> _keys = [];
 
     private UsageLog(string path, TimeProvider clock)
     {
@@ -69,6 +72,7 @@ public sealed class UsageLog
                         case "load-error": log._loadErrors[date] = log._loadErrors.GetValueOrDefault(date) + 1; break;
                         case "revised": log._revisions.Add(new RevisionEvent(date, Reverted: false)); break;
                         case "reverted": log._revisions.Add(new RevisionEvent(date, Reverted: true)); break;
+                        case "keys" when ReadKeyReport(root, date) is { } keys: log._keys[keys.Revision] = keys; break;
                     }
                 }
             }
@@ -119,6 +123,41 @@ public sealed class UsageLog
             _revisions.Add(new RevisionEvent(today, reverted));
             Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"{{(reverted ? "reverted" : "revised")}}"}""");
         }
+    }
+
+    /// <summary>
+    /// Records how a page of revision <paramref name="revision"/> read the stored data: how many
+    /// distinct keys it asked for that the data does not have, and how many of the <paramref name="seeded"/>
+    /// keys it was given it never read. A revision whose keys changed shows both. Only the latest
+    /// report per revision is kept in memory; every report is a line.
+    /// </summary>
+    public void RecordKeys(int revision, int missing, int unread, int seeded)
+    {
+        var report = new KeyReport(Today, revision, missing, unread, seeded);
+        lock (_lock)
+        {
+            _keys[revision] = report;
+            Append($$"""{"date":"{{report.Date:yyyy-MM-dd}}","event":"keys","revision":{{revision}},"missing":{{missing}},"unread":{{unread}},"seeded":{{seeded}}}""");
+        }
+    }
+
+    /// <summary>The latest key report of each revision, in revision order.</summary>
+    public IReadOnlyList<KeyReport> KeyReports
+    {
+        get
+        {
+            lock (_lock) return _keys.Values.ToList();
+        }
+    }
+
+    private static KeyReport? ReadKeyReport(JsonElement root, DateOnly date)
+    {
+        static int? Count(JsonElement root, string name) =>
+            root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) && n >= 0 ? n : null;
+        return Count(root, "revision") is { } revision and >= 1 && Count(root, "missing") is { } missing
+            && Count(root, "unread") is { } unread && Count(root, "seeded") is { } seeded
+            ? new KeyReport(date, revision, missing, unread, seeded)
+            : null;
     }
 
     /// <summary>The signals recorded for <paramref name="date"/>.</summary>
@@ -213,6 +252,12 @@ public sealed record UsageDay(DateOnly Date, bool Opened, bool Input, bool Wrote
     /// <summary>Opened, and typed or pointed in, on this day.</summary>
     public bool Used => Opened && Input;
 }
+
+/// <summary>
+/// How a page of revision <paramref name="Revision"/> read the stored data on <paramref name="Date"/>:
+/// distinct keys asked for that the data lacked, and stored keys (of <paramref name="Seeded"/>) never read.
+/// </summary>
+public sealed record KeyReport(DateOnly Date, int Revision, int Missing, int Unread, int Seeded);
 
 /// <summary>The person took in a new revision on <paramref name="Date"/>, or went back to the previous one.</summary>
 public sealed record RevisionEvent(DateOnly Date, bool Reverted);
