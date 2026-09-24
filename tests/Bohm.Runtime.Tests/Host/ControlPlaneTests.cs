@@ -212,6 +212,60 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Usage_reports_each_day_the_first_day_of_use_and_retention()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        string Day(int back) => today.AddDays(-back).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        // Day 0 was 30 days ago; used again on day 29 — inside the fifth week.
+        File.WriteAllLines(Path.Combine(_host.DataRoot, "adopted", id, "usage.ndjson"),
+        [
+            $$"""{"date":"{{Day(30)}}","signal":"opened"}""",
+            $$"""{"date":"{{Day(30)}}","signal":"input"}""",
+            $$"""{"date":"{{Day(30)}}","signal":"wrote"}""",
+            $$"""{"date":"{{Day(1)}}","signal":"opened"}""",
+            $$"""{"date":"{{Day(1)}}","signal":"input"}""",
+            $$"""{"date":"{{Day(1)}}","event":"load-error"}""",
+            $$"""{"date":"{{Day(1)}}","event":"revised"}""",
+        ]);
+
+        var usage = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement;
+
+        Assert.Equal(Day(0), usage.GetProperty("today").GetString());
+        Assert.Equal(Day(30), usage.GetProperty("firstUsed").GetString());
+        Assert.Equal(Day(1), usage.GetProperty("lastUsed").GetString());
+        Assert.Equal(30, usage.GetProperty("day").GetInt32());
+        Assert.Equal("retained", usage.GetProperty("retention").GetString());
+        var days = usage.GetProperty("days").EnumerateArray().ToList();
+        Assert.Equal(2, days.Count);
+        Assert.True(days[0].GetProperty("wrote").GetBoolean());
+        Assert.Equal(1, days[1].GetProperty("loadErrors").GetInt32());
+        Assert.Equal("revised", usage.GetProperty("revisions")[0].GetProperty("event").GetString());
+        // Only facts — no keys, values or text of the application's data.
+        Assert.DoesNotContain("Stock", usage.GetRawText());
+    }
+
+    [Fact]
+    public async Task Usage_of_an_application_never_used_has_not_started()
+    {
+        var id = await _host.AdoptAsync(Page);
+
+        var usage = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement;
+
+        Assert.Equal("not-started", usage.GetProperty("retention").GetString());
+        Assert.Equal(JsonValueKind.Null, usage.GetProperty("firstUsed").ValueKind);
+        Assert.Empty(usage.GetProperty("days").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Usage_of_an_unknown_application_is_not_found()
+    {
+        using var response = await _host.ControlClient().GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/usage");
+
+        HttpAssert.Status(HttpStatusCode.NotFound, response);
+    }
+
+    [Fact]
     public async Task Status_of_an_unknown_application_is_not_found()
     {
         using var response = await _host.ControlClient().GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/status");
