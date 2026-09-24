@@ -23,6 +23,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page. A host closing the page compares it with the last sequence the page issued; 404 when the page is not (or no longer) the application's.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
@@ -134,6 +135,16 @@ internal static class ControlPlane
 
                 // Read from the file, like the listing: looking at the record does not open the application.
                 await WriteAsync(response, UsageOf(catalog.OpenUsage(usageFor)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var tabOf, "tabs", var tabId]):
+                if (context.RequestServices.GetRequiredService<AppSessions>().Find(tabOf, tabId) is not { } tab)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new TabView(tab.LastSequence), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", var id, "status"]):
@@ -387,6 +398,8 @@ internal static class ControlPlane
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected);
 
     internal sealed record DrainResult(bool Quiet);
+
+    internal sealed record TabView(long Ack);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
@@ -397,6 +410,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TabView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
