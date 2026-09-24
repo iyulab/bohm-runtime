@@ -22,6 +22,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
+/// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
@@ -163,6 +164,17 @@ internal static class ControlPlane
                 await WriteAsync(response, new AssetsView(
                     fetchedApp.Assets.Assets.Select(a => new AssetView(a.Url, a.Size)).ToList(),
                     fetchedApp.Assets.Failures.Select(f => new AssetView(f.Url, 0, f.Reason)).ToList()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["usage-report"]):
+                var reported = new List<ReportedApp>();
+                foreach (var a in await catalog.ListAsync(cancel).ConfigureAwait(false))
+                {
+                    var usage = UsageOf(catalog.OpenUsage(a.Id));
+                    reported.Add(new ReportedApp(a.Id, Iso(DateOnly.FromDateTime(a.AdoptedAt.ToLocalTime().DateTime)), a.Revision, usage));
+                }
+
+                await WriteAsync(response, new UsageReport(UsageReport.FormatName, DateTimeOffset.Now, reported), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["egress"]):
@@ -351,6 +363,19 @@ internal static class ControlPlane
 
     internal sealed record KeyReportView(int Revision, string Date, int Missing, int Unread, int Seeded);
 
+    /// <summary>
+    /// Every application's usage record in one document (<c>bohm.usage-report/0</c>). It identifies
+    /// applications only by their random ids and carries no names, original paths or data — only when
+    /// they were added, which revision runs, and the usage record. <c>GeneratedAt</c> carries the
+    /// local offset so days can be read as the person's days.
+    /// </summary>
+    internal sealed record UsageReport(string Format, DateTimeOffset GeneratedAt, IReadOnlyList<ReportedApp> Apps)
+    {
+        public const string FormatName = "bohm.usage-report/0";
+    }
+
+    internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage);
+
     internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors);
 
     internal sealed record RevisionEventView(string Date, string Event);
@@ -370,6 +395,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
