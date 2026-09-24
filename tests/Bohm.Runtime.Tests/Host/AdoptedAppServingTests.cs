@@ -50,6 +50,23 @@ public sealed class AdoptedAppServingTests : IAsyncLifetime
         Assert.Equal("nosniff", Assert.Single(response.Headers.GetValues("X-Content-Type-Options")));
     }
 
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/missing.js")]
+    [InlineData("/__bohm/storage")]
+    public async Task Every_response_from_the_origin_keeps_its_address_and_its_responses_to_itself(string path)
+    {
+        var id = await _host.AdoptAsync(Page);
+
+        using var response = await _host.ClientForApp(id).GetAsync(path);
+
+        Assert.Equal("no-referrer", Assert.Single(response.Headers.GetValues("Referrer-Policy")));
+        Assert.Equal("same-origin", Assert.Single(response.Headers.GetValues("Cross-Origin-Resource-Policy")));
+        // Would lose the writes a closing page sends (see IsolationHeaders).
+        Assert.False(response.Headers.Contains("Cross-Origin-Opener-Policy"));
+        Assert.Single(response.Headers.GetValues("Content-Security-Policy"));
+    }
+
     [Fact]
     public async Task Stored_data_is_inlined_as_ascii_that_cannot_close_the_script()
     {
