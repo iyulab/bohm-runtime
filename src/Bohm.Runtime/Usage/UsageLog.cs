@@ -39,6 +39,7 @@ public sealed class UsageLog
     private readonly Lock _lock = new();
     private readonly HashSet<(DateOnly, UsageSignal)> _seen = [];
     private readonly Dictionary<DateOnly, int> _loadErrors = [];
+    private readonly List<RevisionEvent> _revisions = [];
 
     private UsageLog(string path, TimeProvider clock)
     {
@@ -61,8 +62,15 @@ public sealed class UsageLog
                 if (!DateOnly.TryParseExact(root.GetProperty("date").GetString(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) continue;
                 if (root.TryGetProperty("signal", out var signal) && Enum.TryParse<UsageSignal>(signal.GetString(), ignoreCase: true, out var parsed))
                     log._seen.Add((date, parsed));
-                else if (root.TryGetProperty("event", out var @event) && @event.GetString() == "load-error")
-                    log._loadErrors[date] = log._loadErrors.GetValueOrDefault(date) + 1;
+                else if (root.TryGetProperty("event", out var @event))
+                {
+                    switch (@event.GetString())
+                    {
+                        case "load-error": log._loadErrors[date] = log._loadErrors.GetValueOrDefault(date) + 1; break;
+                        case "revised": log._revisions.Add(new RevisionEvent(date, Reverted: false)); break;
+                        case "reverted": log._revisions.Add(new RevisionEvent(date, Reverted: true)); break;
+                    }
+                }
             }
             catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException)
             {
@@ -106,13 +114,60 @@ public sealed class UsageLog
     public void RecordRevision(bool reverted)
     {
         var today = Today;
-        lock (_lock) Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"{{(reverted ? "reverted" : "revised")}}"}""");
+        lock (_lock)
+        {
+            _revisions.Add(new RevisionEvent(today, reverted));
+            Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"{{(reverted ? "reverted" : "revised")}}"}""");
+        }
     }
 
     /// <summary>The signals recorded for <paramref name="date"/>.</summary>
     public IReadOnlySet<UsageSignal> SignalsOn(DateOnly date)
     {
         lock (_lock) return _seen.Where(s => s.Item1 == date).Select(s => s.Item2).ToHashSet();
+    }
+
+    /// <summary>
+    /// The days the application was used — opened, and typed or pointed in, on the same day — in
+    /// order. This is the definition every retention figure is computed from.
+    /// </summary>
+    public IReadOnlyList<DateOnly> UsedDays
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _seen.Where(s => s.Item2 == UsageSignal.Input && _seen.Contains((s.Item1, UsageSignal.Opened)))
+                    .Select(s => s.Item1).Order().ToList();
+            }
+        }
+    }
+
+    /// <summary>The first day the application was used, or <see langword="null"/> if it never was.</summary>
+    public DateOnly? FirstUsedOn => UsedDays is [var first, ..] ? first : null;
+
+    /// <summary>Every day with anything recorded, in order: its signals and its load failures.</summary>
+    public IReadOnlyList<UsageDay> Days
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _seen.Select(s => s.Item1).Concat(_loadErrors.Keys).Distinct().Order()
+                    .Select(d => new UsageDay(d, _seen.Contains((d, UsageSignal.Opened)), _seen.Contains((d, UsageSignal.Input)),
+                        _seen.Contains((d, UsageSignal.Wrote)), _loadErrors.GetValueOrDefault(d)))
+                    .ToList();
+            }
+        }
+    }
+
+    /// <summary>Each time the person took in a new revision or went back to the previous one, in order.</summary>
+    public IReadOnlyList<RevisionEvent> Revisions
+    {
+        get
+        {
+            lock (_lock) return _revisions.ToList();
+        }
     }
 
     /// <summary>
@@ -151,3 +206,13 @@ public sealed class UsageLog
         }
     }
 }
+
+/// <summary>One day of an application's usage record. Carries no content.</summary>
+public sealed record UsageDay(DateOnly Date, bool Opened, bool Input, bool Wrote, int LoadErrors)
+{
+    /// <summary>Opened, and typed or pointed in, on this day.</summary>
+    public bool Used => Opened && Input;
+}
+
+/// <summary>The person took in a new revision on <paramref name="Date"/>, or went back to the previous one.</summary>
+public sealed record RevisionEvent(DateOnly Date, bool Reverted);

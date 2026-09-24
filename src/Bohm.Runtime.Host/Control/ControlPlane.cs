@@ -21,6 +21,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
@@ -121,6 +122,17 @@ internal static class ControlPlane
 
                 await ChangeRevisionAsync(context, revertedId, StatusCodes.Status200OK,
                     storage => catalog.RevertAsync(revertedId, storage, cancel), reverted: true).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var usageFor, "usage"]):
+                if (await catalog.GetAsync(usageFor, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // Read from the file, like the listing: looking at the record does not open the application.
+                await WriteAsync(response, UsageOf(catalog.OpenUsage(usageFor)), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", var id, "status"]):
@@ -289,6 +301,22 @@ internal static class ControlPlane
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
             app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
 
+    private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static UsageView UsageOf(UsageLog log)
+    {
+        var used = log.UsedDays;
+        var retention = Retention.Of(used, log.Today);
+        return new UsageView(
+            Iso(log.Today),
+            used is [var first, ..] ? Iso(first) : null,
+            used is [.., var last] ? Iso(last) : null,
+            retention.Day,
+            System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(retention.State.ToString()),
+            log.Days.Select(d => new UsageDayView(Iso(d.Date), d.Opened, d.Input, d.Wrote, d.LoadErrors)).ToList(),
+            log.Revisions.Select(r => new RevisionEventView(Iso(r.Date), r.Reverted ? "reverted" : "revised")).ToList());
+    }
+
     private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
         response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
 
@@ -310,6 +338,18 @@ internal static class ControlPlane
     internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors,
         IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, int CachedAssets);
 
+    /// <summary>
+    /// An application's usage record. <c>FirstUsed</c> is day 0 of the retention rule (<c>null</c> until
+    /// the first day of use); <c>Day</c> counts from it to <c>Today</c>. <c>Retention</c> is one of
+    /// <c>not-started</c>, <c>too-early</c>, <c>in-window</c>, <c>retained</c>, <c>lapsed</c>.
+    /// </summary>
+    internal sealed record UsageView(string Today, string? FirstUsed, string? LastUsed, int? Day, string Retention,
+        IReadOnlyList<UsageDayView> Days, IReadOnlyList<RevisionEventView> Revisions);
+
+    internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors);
+
+    internal sealed record RevisionEventView(string Date, string Event);
+
     internal sealed record AssetView(string Url, long Size, string? Reason = null);
 
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
@@ -324,6 +364,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
