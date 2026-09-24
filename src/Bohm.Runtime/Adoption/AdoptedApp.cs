@@ -43,3 +43,24 @@ public enum AdoptionMatchKind
 
 /// <summary>An earlier adoption reported by <see cref="AdoptionCatalog.FindEarlierAdoptionsAsync"/>.</summary>
 public sealed record AdoptionMatch(AdoptedApp App, AdoptionMatchKind Kind);
+
+/// <summary>What <see cref="AdoptionCatalog.ReadListingAsync"/> found under the data root.</summary>
+/// <param name="Apps">The applications whose record was read, oldest first.</param>
+/// <param name="Unreadable">Application folders whose record could not be read, left exactly as they are.</param>
+public sealed record CatalogListing(IReadOnlyList<AdoptedApp> Apps, IReadOnlyList<UnreadableApp> Unreadable);
+
+/// <summary>An application folder whose record could not be read. Nothing in it was changed.</summary>
+/// <param name="Id">The folder's identifier.</param>
+/// <param name="Kind"><see cref="CannotOpen"/> or <see cref="Damaged"/>.</param>
+/// <param name="Detail">What the operating system or the reader said, for a person helping out — not for display as is.</param>
+public sealed record UnreadableApp(string Id, string Kind, string Detail)
+{
+    /// <summary>
+    /// The operating system could not open the record right now — for example a file kept only in
+    /// the cloud while there is no connection, or one another program holds. It may open later.
+    /// </summary>
+    public const string CannotOpen = "cannotOpen";
+
+    /// <summary>The record is missing or is not in a known format.</summary>
+    public const string Damaged = "damaged";
+}

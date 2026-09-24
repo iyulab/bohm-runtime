@@ -174,6 +174,27 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task One_application_that_cannot_be_opened_does_not_fail_the_list()
+    {
+        var kept = await _host.AdoptAsync(Page);
+        var held = await _host.AdoptAsync(Page + "<p>held</p>");
+        using var client = _host.ControlClient();
+
+        string listed, unreadable;
+        using (new FileStream(Path.Combine(_host.DataRoot, "adopted", held, "app.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            listed = await client.GetStringAsync("/__control/apps");
+            unreadable = await client.GetStringAsync("/__control/apps/unreadable");
+        }
+
+        Assert.Equal([kept], JsonDocument.Parse(listed).RootElement.EnumerateArray().Select(a => a.GetProperty("id").GetString()));
+        var entry = Assert.Single(JsonDocument.Parse(unreadable).RootElement.EnumerateArray().ToList());
+        Assert.Equal(held, entry.GetProperty("id").GetString());
+        Assert.Equal("cannotOpen", entry.GetProperty("kind").GetString());
+        Assert.Equal(0, JsonDocument.Parse(await client.GetStringAsync("/__control/apps/unreadable")).RootElement.GetArrayLength());
+    }
+
+    [Fact]
     public async Task An_empty_body_is_not_adopted()
     {
         using var response = await _host.ControlClient().PostAsync("/__control/apps", new ByteArrayContent([]));
