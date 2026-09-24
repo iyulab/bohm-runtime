@@ -99,6 +99,30 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_write_the_page_makes_in_its_own_pagehide_arrives_when_the_page_navigates_away()
+    {
+        // The host closes a tab by navigating it to about:blank. The page's own pagehide handler runs
+        // after the injected script's (registered first), so its write is recorded after the flush
+        // on leave — it must still go out while the page is leaving, not on a later timer.
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Closes</title>
+            <script>addEventListener('pagehide', () => localStorage.setItem('closes', String(Number(localStorage.getItem('closes') || 0) + 1)));</script>
+            """);
+        const int Times = 10;
+        for (var i = 0; i < Times; i++)
+        {
+            var page = await OpenAsync(id);
+            await page.GotoAsync("about:blank");
+            await page.WaitForTimeoutAsync(300); // the host's margin after the tabs are gone
+            await page.CloseAsync();
+        }
+
+        var check = await OpenAsync(id);
+        Assert.Equal(Times.ToString(System.Globalization.CultureInfo.InvariantCulture), await check.EvaluateAsync<string?>("localStorage.getItem('closes')"));
+    }
+
+    [Fact]
     public async Task Web_storage_semantics_hold_for_common_access_patterns()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
