@@ -71,4 +71,21 @@ public sealed class UsageLogTests : IDisposable
         Assert.True(log.Revisions[1].Reverted);
         Assert.Equal(3, UsageLog.Open(Path.Combine(_dir, "usage.ndjson")).Revisions.Count);
     }
+
+    [Fact]
+    public void The_latest_key_report_of_each_revision_is_kept_and_read_back()
+    {
+        var log = Open(
+            """{"date":"2026-09-10","event":"keys","revision":1,"missing":0,"unread":0,"seeded":2}""",
+            """{"date":"2026-09-11","event":"keys","revision":2,"missing":1,"unread":2,"seeded":2}""",
+            """{"date":"2026-09-11","event":"keys","revision":2,"missing":"x"}""",
+            """{"date":"2026-09-11","event":"keys","revision":0,"missing":1,"unread":0,"seeded":1}""");
+        log.RecordKeys(2, missing: 0, unread: 0, seeded: 2);
+
+        Assert.Equal(2, log.KeyReports.Count);
+        Assert.Equal(new KeyReport(new DateOnly(2026, 9, 10), 1, 0, 0, 2), log.KeyReports[0]);
+        Assert.Equal((2, 0, 0), (log.KeyReports[1].Revision, log.KeyReports[1].Missing, log.KeyReports[1].Unread));
+        var reopened = UsageLog.Open(Path.Combine(_dir, "usage.ndjson"));
+        Assert.Equal(0, reopened.KeyReports[1].Missing);
+    }
 }
