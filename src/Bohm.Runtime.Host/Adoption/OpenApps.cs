@@ -134,7 +134,12 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
     public Task<OpenApp> GetAsync(string appId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var app = _open.GetOrAdd(appId, id => new Lazy<Task<OpenApp>>(() => OpenAsync(id))).Value;
+        var entry = _open.GetOrAdd(appId, id => new Lazy<Task<OpenApp>>(() => OpenAsync(id)));
+        // A failed opening is not kept: its files may open later (a file kept only in the cloud, once
+        // the connection is back), and the application must not stay broken until the host restarts.
+        if (entry.Value.IsFaulted && _open.TryRemove(KeyValuePair.Create(appId, entry)))
+            entry = _open.GetOrAdd(appId, id => new Lazy<Task<OpenApp>>(() => OpenAsync(id)));
+        var app = entry.Value;
         // Disposal may have run between the check and the insertion and missed this entry.
         if (_disposed) _ = CloseAsync(app);
         return app;

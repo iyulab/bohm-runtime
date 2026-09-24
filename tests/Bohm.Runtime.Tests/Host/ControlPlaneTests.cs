@@ -115,6 +115,14 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(JsonValueKind.String, listed.GetProperty("archivedAt").ValueKind);
         using (var page = await _host.ClientForApp(id).GetAsync("/"))
             HttpAssert.Status(HttpStatusCode.NotFound, page);
+        using (var request = new HttpRequestMessage(HttpMethod.Get, "/"))
+        {
+            // A tab that reaches it anyway is told why, in the person's language — not the browser's own error.
+            request.Headers.AcceptLanguage.ParseAdd("ko-KR,ko;q=0.9,en;q=0.8");
+            using var page = await _host.ClientForApp(id).SendAsync(request);
+            HttpAssert.Status(HttpStatusCode.NotFound, page);
+            Assert.Contains("보관돼 있습니다", await page.Content.ReadAsStringAsync());
+        }
 
         using (var restored = await client.PostAsync($"/__control/apps/{id}/restore", null))
         {
@@ -192,6 +200,25 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(held, entry.GetProperty("id").GetString());
         Assert.Equal("cannotOpen", entry.GetProperty("kind").GetString());
         Assert.Equal(0, JsonDocument.Parse(await client.GetStringAsync("/__control/apps/unreadable")).RootElement.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task An_application_whose_files_cannot_be_opened_says_so_and_opens_once_they_can()
+    {
+        // Its data cannot be opened right now (held exclusively here — a file kept only in the cloud
+        // while offline fails the same way). The failure must not stick until the host restarts.
+        var id = await _host.AdoptAsync(Page);
+        var journal = Path.Combine(_host.DataRoot, "adopted", id, "storage", "journal.ndjson");
+        Directory.CreateDirectory(Path.GetDirectoryName(journal)!);
+        using (new FileStream(journal, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            using var page = await _host.ClientForApp(id).GetAsync("/");
+            HttpAssert.Status(HttpStatusCode.ServiceUnavailable, page);
+            Assert.Contains("Nothing was deleted", await page.Content.ReadAsStringAsync());
+        }
+
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.OK, page);
     }
 
     [Fact]
