@@ -69,10 +69,27 @@ internal static class AdoptedAppServing
     public static async Task ServeAsync(HttpContext context, string appId)
     {
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
-        // An archived application is put away: nothing at its origin is served until it is restored.
-        if (await catalog.GetAsync(appId, context.RequestAborted).ConfigureAwait(false) is not { ArchivedAt: null })
+        AdoptedApp? record;
+        try
+        {
+            record = await catalog.GetAsync(appId, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            await UnavailablePage.WriteAsync(context, UnavailablePage.Reason.CannotOpen).ConfigureAwait(false);
+            return;
+        }
+
+        if (record is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        // An archived application is put away: nothing at its origin is served until it is restored.
+        if (record.ArchivedAt is not null)
+        {
+            await UnavailablePage.WriteAsync(context, UnavailablePage.Reason.Archived).ConfigureAwait(false);
             return;
         }
 
@@ -124,8 +141,20 @@ internal static class AdoptedAppServing
         }
 
         var sessions = context.RequestServices.GetRequiredService<AppSessions>();
-        var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
-        var html = await catalog.ReadHtmlAsync(appId, context.RequestAborted).ConfigureAwait(false);
+        OpenApp app;
+        byte[] html;
+        try
+        {
+            app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+            html = await catalog.ReadHtmlAsync(appId, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The headers set above are for the application's page; the notice sets its own.
+            response.Headers.Remove("Content-Security-Policy");
+            await UnavailablePage.WriteAsync(context, UnavailablePage.Reason.CannotOpen).ConfigureAwait(false);
+            return;
+        }
 
         var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
             Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value), BootJson.Default.Boot);
