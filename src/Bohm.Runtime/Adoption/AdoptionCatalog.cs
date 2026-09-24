@@ -253,8 +253,14 @@ public sealed class AdoptionCatalog
 
     /// <summary>Whether <see cref="RevertAsync"/> has an earlier revision to go back to.</summary>
     public async Task<bool> CanRevertAsync(string id, CancellationToken cancellationToken = default) =>
-        await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app
-        && await RevertTargetAsync(app, cancellationToken).ConfigureAwait(false) is not null;
+        await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app && await CanRevertAsync(app, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Whether <see cref="RevertAsync"/> has an earlier revision to go back to, for a record already read.</summary>
+    public async Task<bool> CanRevertAsync(AdoptedApp app, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        return await RevertTargetAsync(app, cancellationToken).ConfigureAwait(false) is not null;
+    }
 
     private sealed record RevisionRecord(int Revision, int? Previous, DateTimeOffset? TakenInAt, AdoptionSource Source);
 
