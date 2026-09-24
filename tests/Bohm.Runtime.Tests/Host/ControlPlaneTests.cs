@@ -291,6 +291,27 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_usage_report_has_every_application_by_id_and_nothing_that_names_or_holds_its_data()
+    {
+        var a = await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes("<!doctype html><title>Payroll</title>"), @"C:\Users\someone\Desktop\payroll-2026.html");
+        var b = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(a.Id);
+        using (var write = await _host.PostStorageAsync(a.Id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"salary-kim","value":"secret-4200"}]}"""))
+            HttpAssert.Status(HttpStatusCode.OK, write);
+
+        var text = await _host.ControlClient().GetStringAsync("/__control/usage-report");
+        var report = JsonDocument.Parse(text).RootElement;
+
+        Assert.Equal("bohm.usage-report/0", report.GetProperty("format").GetString());
+        Assert.Equal([a.Id, b], report.GetProperty("apps").EnumerateArray().Select(e => e.GetProperty("id").GetString()));
+        var first = report.GetProperty("apps")[0];
+        Assert.Equal(1, first.GetProperty("revision").GetInt32());
+        Assert.True(first.GetProperty("usage").GetProperty("days")[0].GetProperty("wrote").GetBoolean());
+        foreach (var leak in new[] { "payroll", "someone", "Desktop", "salary", "secret", "Payroll", "Stock" })
+            Assert.DoesNotContain(leak, text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Usage_of_an_unknown_application_is_not_found()
     {
         using var response = await _host.ControlClient().GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/usage");
