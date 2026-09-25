@@ -36,9 +36,10 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
-/// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded, and whether it was fixed at start.</description></item>
+/// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
+/// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -326,6 +327,18 @@ internal static class ControlPlane
                 await WriteAsync(response, LocalModelViewOf(context.RequestServices.GetRequiredService<LocalModel>()), cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["llm", "local-model", "load"]):
+                var toLoad = context.RequestServices.GetRequiredService<LocalModel>();
+                if (!toLoad.StartLoading())
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                response.StatusCode = StatusCodes.Status202Accepted;
+                await WriteAsync(response, LocalModelViewOf(toLoad), cancel).ConfigureAwait(false);
+                break;
+
             case ("PUT" or "DELETE", ["llm", "local-model"]):
                 var localModel = context.RequestServices.GetRequiredService<LocalModel>();
                 var chosen = request.Method == "DELETE" ? null : Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
@@ -593,10 +606,11 @@ internal static class ControlPlane
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
     private static LocalModelView LocalModelViewOf(LocalModel local) =>
-        new(local.Current?.ModelPath, local.Loaded, local.Fixed);
+        new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastError);
 
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
-    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed);
+    /// <param name="Error">Why the last load failed, or <see langword="null"/>.</param>
+    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, string? Error);
 
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
