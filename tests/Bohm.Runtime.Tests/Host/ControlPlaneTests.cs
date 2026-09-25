@@ -285,6 +285,58 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_write_refused_because_the_code_was_replaced_is_counted_as_a_suspected_loss()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var oldPage = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"}]}""")).Dispose();
+        (await ReviseAsync(id, Page + "<button>반납</button>")).Dispose();
+
+        // A resend of what was already applied loses nothing; a write made after the replacement does.
+        using var resent = await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"}]}""");
+        Assert.Equal(0, await LossSuspectedAsync(id));
+        using var late = await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"},{"seq":2,"op":"set","key":"closes","value":"1"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.Forbidden, resent);
+        HttpAssert.Status(HttpStatusCode.Forbidden, late);
+        Assert.Equal(1, await LossSuspectedAsync(id));
+    }
+
+    [Fact]
+    public async Task A_write_under_an_unknown_tab_is_refused_without_counting_a_loss()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(id);
+
+        using var response = await _host.PostStorageAsync(id, page, """{"tab":"0123456789abcdef0123456789abcdef","ops":[{"seq":1,"op":"set","key":"a","value":"1"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.Forbidden, response);
+        Assert.Equal(0, await LossSuspectedAsync(id));
+    }
+
+    [Fact]
+    public async Task A_page_reports_the_last_write_it_issued_even_when_that_write_has_not_arrived()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(id);
+        using var client = _host.ControlClient();
+
+        (await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"a","value":"1"}],"issued":1}""")).Dispose();
+        // The page wrote a second time while leaving, and that request never arrived; the report sent after it did.
+        using var report = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[],"issued":2,"left":true}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, report);
+        var view = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/tabs/{page.Tab}")).RootElement;
+        Assert.Equal(1, view.GetProperty("ack").GetInt64());
+        Assert.Equal(2, view.GetProperty("issued").GetInt64());
+        Assert.True(view.GetProperty("left").GetBoolean());
+    }
+
+    private async Task<int> LossSuspectedAsync(string id) =>
+        JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement
+            .GetProperty("days").EnumerateArray().Sum(d => d.GetProperty("lossSuspected").GetInt32());
+
+    [Fact]
     public async Task Reverting_puts_back_the_previous_code_and_data()
     {
         var id = await _host.AdoptAsync(Page);

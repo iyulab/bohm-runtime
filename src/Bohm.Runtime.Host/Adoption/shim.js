@@ -29,7 +29,7 @@
       credentials: "same-origin",
       keepalive: keepalive,
       headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-      body: JSON.stringify({ tab: boot.tab, ops: ops })
+      body: JSON.stringify({ tab: boot.tab, ops: ops, issued: seq })
     }).then(function (response) {
       if (!response.ok) throw new Error("storage request failed: " + response.status);
       return response.json();
@@ -294,11 +294,37 @@
     return nativeOpen.apply(this, arguments);
   };
 
+  // The last sequence this page issued, sent once the page has finished leaving. Every request
+  // already carries the page's current sequence, but a write made while leaving may still be in
+  // transit (or lost) when the host checks; this report is what lets the runtime know a write it
+  // has not received exists, so the host can tell "all applied" from "something never arrived".
+  var reporting = false;
+  function reportIssued() {
+    nativeFetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
+      body: JSON.stringify({ tab: boot.tab, ops: [], issued: seq, left: true })
+    }).catch(function () { /* the host counts a report that never arrives as unconfirmed */ });
+  }
+
   // What the host reads just before it closes this page: which tab this is and the last write
   // sequence the page issued. The host then waits until the runtime has applied that sequence.
+  // arm() is called by the host at the same moment: the listener it adds is registered after every
+  // listener the page's own code added while it ran, so it runs after the page's own pagehide
+  // writes and reports the sequence they reached.
   // Neither writable nor configurable, so the page's own code cannot change what the host reads.
   Object.defineProperty(window, "__bohm", {
-    value: Object.freeze({ tab: boot.tab, issued: function () { return seq; } }),
+    value: Object.freeze({
+      tab: boot.tab,
+      issued: function () { return seq; },
+      arm: function () {
+        if (reporting) return;
+        reporting = true;
+        window.addEventListener("pagehide", reportIssued);
+      }
+    }),
     enumerable: false, writable: false, configurable: false
   });
 
