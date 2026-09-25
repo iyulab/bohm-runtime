@@ -49,8 +49,8 @@ public sealed record RuntimeHostOptions
 
     /// <summary>
     /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).
-    /// Named, nothing is looked up or downloaded; <see langword="null"/>: it is fetched on first use,
-    /// which needs the internet. Not used when <see cref="LocalModel"/> fixes the model.
+    /// Nothing is looked up or downloaded; <see langword="null"/>: a chosen model cannot be loaded (its
+    /// state says why). Not used when <see cref="LocalModel"/> fixes the model.
     /// </summary>
     public string? LlamaServerPath { get; init; }
 
