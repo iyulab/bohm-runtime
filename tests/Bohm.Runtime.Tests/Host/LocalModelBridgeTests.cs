@@ -283,6 +283,35 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Without_an_installed_server_a_model_does_not_load_and_nothing_is_fetched()
+    {
+        // No llama-server installed with this copy: the model library would otherwise download one.
+        // The load fails at once, before the library is asked, and says what is missing.
+        var model = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gguf");
+        await File.WriteAllTextAsync(model, "not really a model", TestContext.Current.CancellationToken);
+        try
+        {
+            await using var host = await RunningHost.StartAsync();
+            using var client = host.ControlClient();
+            (await client.PutAsync("/__control/llm/local-model", new StringContent(model))).Dispose();
+
+            (await client.PostAsync("/__control/llm/local-model/load", null)).Dispose();
+
+            var failed = await EventuallyAsync(async () =>
+            {
+                var view = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+                return view.GetProperty("loading").GetBoolean() ? null : view;
+            }, TimeSpan.FromSeconds(5));
+            Assert.False(failed.GetProperty("loaded").GetBoolean());
+            Assert.Contains("llama-server", failed.GetProperty("error").GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(model);
+        }
+    }
+
+    [Fact]
     public async Task A_real_model_loaded_ahead_of_use_is_running_before_the_first_request()
     {
         var model = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");

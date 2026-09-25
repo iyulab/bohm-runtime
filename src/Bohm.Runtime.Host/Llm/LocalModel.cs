@@ -18,8 +18,8 @@ public sealed record LocalModelOptions
     public required string ModelPath { get; init; }
 
     /// <summary>
-    /// The llama-server executable that runs the model. When it is set, nothing is looked up or
-    /// downloaded; without it the server is fetched on first use, which needs the internet.
+    /// The llama-server executable that runs the model. Nothing is looked up or downloaded: without
+    /// it (or when it is not there) the model cannot be loaded, and the reason says so.
     /// </summary>
     public string? ServerPath { get; init; }
 
@@ -149,15 +149,17 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             var settings = Current ?? throw new LocalModelUnavailableException("No model on this computer is chosen.");
             if (!File.Exists(settings.ModelPath))
                 throw Failed(new LocalModelUnavailableException($"The model file {Path.GetFileName(settings.ModelPath)} is not there."));
+            // Without a server named here the model library would fetch one from the internet on first
+            // use; nothing on this path may leave the computer, so a missing server is a failure instead.
+            if (settings.ServerPath is null || !File.Exists(settings.ServerPath))
+                throw Failed(new LocalModelUnavailableException("The program that runs models on this computer (llama-server) is not installed with this copy."));
 
             var generatorOptions = new GeneratorOptions
             {
                 // Only what is on this computer: a missing model fails instead of being downloaded.
                 DisableAutoDownload = true,
                 MaxContextLength = settings.ContextLength,
-                ServerUpdateOptions = settings.ServerPath is { } server
-                    ? new LlamaServerUpdateOptions { ServerBinaryPath = server, AutoDownloadUpdates = false }
-                    : null,
+                ServerUpdateOptions = new LlamaServerUpdateOptions { ServerBinaryPath = settings.ServerPath, AutoDownloadUpdates = false },
             };
             try
             {
