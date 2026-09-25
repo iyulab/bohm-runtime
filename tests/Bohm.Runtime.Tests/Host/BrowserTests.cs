@@ -273,6 +273,42 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_page_armed_by_the_host_reports_its_last_write_after_its_own_pagehide_even_if_that_write_is_lost()
+    {
+        // The host arms the page just before it navigates it away. The report then goes out after the
+        // page's own pagehide listener (registered earlier), so it covers the write that listener made.
+        // Here that write's request is dropped: only the report can tell the runtime it existed.
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Closes</title>
+            <script>addEventListener('pagehide', () => localStorage.setItem('closes', '1'));</script>
+            """);
+        var page = await _browser!.NewPageAsync();
+        // Runs before the injected script, so the fetch that script keeps for itself is this one: a
+        // request carrying the pagehide write fails without leaving the page (routing does not see
+        // keepalive requests sent while a page unloads).
+        await page.AddInitScriptAsync("""
+            const send = window.fetch;
+            window.fetch = (url, init) => init && typeof init.body === 'string' && init.body.includes('"closes"')
+              ? Promise.reject(new TypeError('dropped'))
+              : send(url, init);
+            """);
+        await page.GotoAsync($"http://{id}.localhost:{_host.Port}/");
+        var tab = await page.EvaluateAsync<string>("() => { window.__bohm.arm(); return window.__bohm.tab; }");
+
+        await page.GotoAsync("about:blank");
+
+        using var client = _host.ControlClient();
+        var view = await EventuallyAsync(async cancellation =>
+        {
+            var v = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/tabs/{tab}", cancellation)).RootElement;
+            return v.GetProperty("left").GetBoolean() ? v : (JsonElement?)null;
+        });
+        Assert.Equal(1, view.GetProperty("issued").GetInt64());
+        Assert.Equal(0, view.GetProperty("ack").GetInt64());
+    }
+
+    [Fact]
     public async Task A_blocked_library_and_the_error_it_causes_are_reported_separately()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

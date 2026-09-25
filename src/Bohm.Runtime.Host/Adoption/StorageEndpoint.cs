@@ -6,7 +6,9 @@ namespace Bohm.Runtime.Host.Adoption;
 
 /// <summary>
 /// Receives storage operations from the injected script: <c>POST /__bohm/storage</c> with
-/// <c>{ "tab": "...", "ops": [ { "seq": 1, "op": "set", "key": "...", "value": "..." }, ... ] }</c>,
+/// <c>{ "tab": "...", "ops": [ { "seq": 1, "op": "set", "key": "...", "value": "..." }, ... ], "issued": n }</c>
+/// (<c>issued</c>: the last sequence the page has issued so far; a batch with no operations only reports it, and
+/// <c>"left": true</c> marks the report a page sends once it has left, after which it issues nothing more),
 /// answered with <c>{ "ack": n }</c> — the highest sequence number from that tab now on disk.
 /// </summary>
 /// <remarks>
@@ -50,20 +52,32 @@ internal static partial class StorageEndpoint
             return;
         }
 
+        var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(StorageEndpoint));
         var tab = PageRequests.Tab(context, appId, batch.Tab);
         if (tab is null)
         {
+            // A page of this application whose code was replaced (or reverted) while it was still
+            // writing: its write is refused — the new code owns the data now — but it was a write
+            // the user made, so it is counted where a host's unconfirmed close is counted.
+            if (context.RequestServices.GetRequiredService<AppSessions>().Retired(appId, batch.Tab) is { } retired
+                && operations.Any(o => o.Sequence > retired.LastSequence))
+            {
+                LogRefusedAfterRevision(logger, appId);
+                (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.RecordLossSuspected();
+            }
+
             response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
 
-        var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(StorageEndpoint));
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
 
         using var inProgress = context.RequestServices.GetRequiredService<Activity>().Begin();
         await tab.Gate.WaitAsync(context.RequestAborted).ConfigureAwait(false);
         try
         {
+            if (batch.Left == true) tab.Left = true;
+            tab.Issued = Math.Max(tab.Issued, Math.Max(batch.Issued ?? 0, operations.Count > 0 ? operations.Max(o => o.Sequence) : 0));
             var fresh = operations.Where(o => o.Sequence > tab.LastSequence).OrderBy(o => o.Sequence).ToList();
             if (fresh.Count > 0)
             {
@@ -94,10 +108,13 @@ internal static partial class StorageEndpoint
             _ => null,
         } is { } operation && wire.Seq > 0 ? operation : null);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "A page of {AppId} running replaced code wrote after the replacement; the write was refused and counted as a possible loss.")]
+    private static partial void LogRefusedAfterRevision(ILogger logger, string appId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Storage operations from a tab of {AppId} skipped from sequence {Last} to {First}; operations may have been lost in transit.")]
     private static partial void LogSequenceGap(ILogger logger, string appId, long last, long first);
 
-    internal sealed record Batch(string? Tab, List<WireOperation>? Ops);
+    internal sealed record Batch(string? Tab, List<WireOperation>? Ops, long? Issued = null, bool? Left = null);
 
     internal sealed record WireOperation(long Seq, string? Op, string? Key, string? Value);
 
