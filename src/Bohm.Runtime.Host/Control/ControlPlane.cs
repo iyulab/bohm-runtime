@@ -23,6 +23,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
+/// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
@@ -103,6 +104,34 @@ internal static class ControlPlane
                     context.RequestServices.GetRequiredService<AssetFetcher>().Start(adopted.Id);
                 response.StatusCode = StatusCodes.Status201Created;
                 await WriteAsync(response, View(adopted, port, canRevert: false), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", "import"]):
+                var source = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (!Path.IsPathFullyQualified(source))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                AdoptedApp imported;
+                try
+                {
+                    imported = await catalog.ImportAsync(source, cancel).ConfigureAwait(false);
+                }
+                catch (InvalidDataException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+                catch (InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                response.StatusCode = StatusCodes.Status201Created;
+                await WriteAsync(response, View(imported, port, await catalog.CanRevertAsync(imported, cancel).ConfigureAwait(false), catalog.OpenUsage(imported.Id).LastUsedOn), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var revisedId, "revisions"]):

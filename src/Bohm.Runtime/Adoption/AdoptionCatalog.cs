@@ -200,6 +200,49 @@ public sealed class AdoptionCatalog
         return app;
     }
 
+    /// <summary>
+    /// Takes in an application folder exported by <see cref="ExportAsync"/> — from this computer or
+    /// another — as it is: same application, same identity, same data, revisions and usage record.
+    /// The folder's own name is not used; its <c>app.json</c> says which application it is. The source
+    /// folder is only read.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The folder is not an application folder (no readable <c>app.json</c> and <c>app.html</c>).</exception>
+    /// <exception cref="InvalidOperationException">This application is already here — nothing is replaced.</exception>
+    public async Task<AdoptedApp> ImportAsync(string folder, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(folder);
+        folder = Path.GetFullPath(folder);
+        var recordPath = Path.Combine(folder, RecordFile);
+        if (!Directory.Exists(folder) || !File.Exists(recordPath) || !File.Exists(Path.Combine(folder, HtmlFile)))
+            throw new InvalidDataException("Not an application folder.");
+        AdoptedApp? app;
+        try
+        {
+            app = ReadRecord(await File.ReadAllBytesAsync(recordPath, cancellationToken).ConfigureAwait(false));
+        }
+        catch (JsonException e)
+        {
+            throw new InvalidDataException("The application record cannot be read.", e);
+        }
+
+        if (app is null || !IsValidId(app.Id)) throw new InvalidDataException("The application record is not in a known format.");
+        if (Directory.Exists(AppDirectory(app.Id))) throw new InvalidOperationException("This application is already here.");
+
+        var staging = Path.Combine(_root, StagingPrefix + app.Id);
+        try
+        {
+            await CopyFolderAsync(folder, staging, cancellationToken).ConfigureAwait(false);
+            Directory.Move(staging, AppDirectory(app.Id));
+        }
+        catch
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            throw;
+        }
+
+        return app;
+    }
+
     private static async Task CopyFolderAsync(string from, string to, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(to);
@@ -225,7 +268,8 @@ public sealed class AdoptionCatalog
         foreach (var folder in Directory.EnumerateDirectories(_removed))
         {
             var path = Path.Combine(folder, RemovedFile);
-            if (!IsValidId(Path.GetFileName(folder)) || !File.Exists(path)) continue;
+            // An application removed and later taken in again is in use: its kept record is not reported twice.
+            if (!IsValidId(Path.GetFileName(folder)) || !File.Exists(path) || Directory.Exists(AppDirectory(Path.GetFileName(folder)))) continue;
             try
             {
                 if (ReadRemoved(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)) is { } app) list.Add(app);
