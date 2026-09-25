@@ -287,7 +287,11 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
         };
         request.Headers.Add("Cookie", Assert.Single(load.Headers.GetValues("Set-Cookie")).Split(';')[0]);
 
-        using var response = await host.ClientForApp(app).SendAsync(request, TestContext.Current.CancellationToken);
+        // A cold first load (model not in the file cache, a freshly copied server scanned on first start) has taken
+        // over HttpClient's 100 s default here; the product path waits without a limit, so the test does too, up to a bound.
+        using var client = host.ClientForApp(app);
+        client.Timeout = TimeSpan.FromMinutes(5);
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         var content = Assert.Single(JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("choices").EnumerateArray())
