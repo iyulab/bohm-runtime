@@ -22,6 +22,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
@@ -143,6 +144,37 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, View(marked, port, await catalog.CanRevertAsync(marked, cancel).ConfigureAwait(false), catalog.OpenUsage(marked.Id).LastUsedOn), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var exportId, "export"]):
+                var target = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (!Path.IsPathFullyQualified(target))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                AdoptedApp? exported;
+                try
+                {
+                    var open = await catalog.GetAsync(exportId, cancel).ConfigureAwait(false) is { ArchivedAt: null }
+                        ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(exportId).ConfigureAwait(false)
+                        : null;
+                    exported = await catalog.ExportAsync(exportId, target, open?.Storage, cancel).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                if (exported is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new ExportedView(exported.Id, Path.GetFullPath(target)), cancel).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var removeId]):
@@ -504,6 +536,8 @@ internal static class ControlPlane
 
     internal sealed record RemovedView(string Id, DateTimeOffset RemovedAt);
 
+    internal sealed record ExportedView(string Id, string Path);
+
     private static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
         {
@@ -563,5 +597,6 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

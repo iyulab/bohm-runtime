@@ -165,6 +165,58 @@ public sealed class AdoptionCatalog
         return removed;
     }
 
+    /// <summary>
+    /// Copies the application's folder, as it is, to <paramref name="target"/> — a new folder the
+    /// caller names. The folder is the exchange format: everything that makes the application —
+    /// record, adopted bytes, data, revisions, fetched code, usage record — with nothing added or
+    /// converted. Pass the open storage, if any, so its journal is folded into the snapshot first and
+    /// the copy's data reads without replaying operations. The original is not changed.
+    /// </summary>
+    /// <returns>The application, or <see langword="null"/> for an unknown id.</returns>
+    /// <exception cref="IOException"><paramref name="target"/> already exists, or its parent does not.</exception>
+    /// <remarks>The copy is made under a temporary name beside the target and renamed at the end, so a half-made copy is never where the person looks.</remarks>
+    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(target);
+        if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
+        target = Path.GetFullPath(target);
+        var parent = Path.GetDirectoryName(target);
+        if (parent is null || !Directory.Exists(parent)) throw new IOException("The folder to export into does not exist.");
+        if (Directory.Exists(target) || File.Exists(target)) throw new IOException("Something with that name is already there.");
+
+        if (openStorage is not null) await openStorage.CheckpointAsync(cancellationToken).ConfigureAwait(false);
+        var partial = target + ".partial-" + Guid.NewGuid().ToString("n")[..8];
+        try
+        {
+            await CopyFolderAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
+            Directory.Move(partial, target);
+        }
+        catch
+        {
+            if (Directory.Exists(partial)) Directory.Delete(partial, recursive: true);
+            throw;
+        }
+
+        return app;
+    }
+
+    private static async Task CopyFolderAsync(string from, string to, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(to);
+        foreach (var file in Directory.EnumerateFiles(from))
+        {
+            // Opened for reading while the runtime may still append (the usage record, a journal):
+            // share write so the copy never blocks or breaks the application.
+            await using var source = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            await using var destination = new FileStream(Path.Combine(to, Path.GetFileName(file)), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+            destination.Flush(flushToDisk: true);
+        }
+
+        foreach (var folder in Directory.EnumerateDirectories(from))
+            await CopyFolderAsync(folder, Path.Combine(to, Path.GetFileName(folder)), cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>Applications removed for good, oldest removal first, with what was kept of them.</summary>
     public async Task<IReadOnlyList<RemovedApp>> ListRemovedAsync(CancellationToken cancellationToken = default)
     {
