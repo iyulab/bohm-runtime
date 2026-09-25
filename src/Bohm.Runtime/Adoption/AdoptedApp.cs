@@ -64,3 +64,6 @@ public sealed record UnreadableApp(string Id, string Kind, string Detail)
     /// <summary>The record is missing or is not in a known format.</summary>
     public const string Damaged = "damaged";
 }
+
+/// <summary>An application removed for good, as far as it is remembered: when it came, how far it was revised, and when it was put away and removed.</summary>
+public sealed record RemovedApp(string Id, DateTimeOffset AdoptedAt, int Revision, DateTimeOffset? ArchivedAt, DateTimeOffset RemovedAt);

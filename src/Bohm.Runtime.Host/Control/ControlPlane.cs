@@ -22,6 +22,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
+/// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
@@ -144,6 +145,29 @@ internal static class ControlPlane
                 await WriteAsync(response, View(marked, port, await catalog.CanRevertAsync(marked, cancel).ConfigureAwait(false), catalog.OpenUsage(marked.Id).LastUsedOn), cancel).ConfigureAwait(false);
                 break;
 
+            case ("DELETE", ["apps", var removeId]):
+                RemovedApp? removed;
+                try
+                {
+                    if (await catalog.GetAsync(removeId, cancel).ConfigureAwait(false) is { ArchivedAt: not null })
+                        await context.RequestServices.GetRequiredService<OpenApps>().CloseAsync(removeId).ConfigureAwait(false);
+                    removed = await catalog.RemoveAsync(removeId, DiscardOf(context.RequestServices.GetRequiredService<RuntimeHostOptions>()), cancel).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                if (removed is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new RemovedView(removed.Id, removed.RemovedAt), cancel).ConfigureAwait(false);
+                break;
+
             case ("GET", ["apps", var usageFor, "usage"]):
                 if (await catalog.GetAsync(usageFor, cancel).ConfigureAwait(false) is null)
                 {
@@ -213,6 +237,13 @@ internal static class ControlPlane
                     var usage = UsageOf(catalog.OpenUsage(a.Id));
                     reported.Add(new ReportedApp(a.Id, Iso(DateOnly.FromDateTime(a.AdoptedAt.ToLocalTime().DateTime)), a.Revision, usage,
                         a.ArchivedAt is { } archivedAt ? Iso(DateOnly.FromDateTime(archivedAt.ToLocalTime().DateTime)) : null));
+                }
+
+                foreach (var r in await catalog.ListRemovedAsync(cancel).ConfigureAwait(false))
+                {
+                    reported.Add(new ReportedApp(r.Id, Iso(DateOnly.FromDateTime(r.AdoptedAt.ToLocalTime().DateTime)), r.Revision, UsageOf(catalog.OpenRemovedUsage(r.Id)),
+                        r.ArchivedAt is { } removedArchivedAt ? Iso(DateOnly.FromDateTime(removedArchivedAt.ToLocalTime().DateTime)) : null,
+                        Iso(DateOnly.FromDateTime(r.RemovedAt.ToLocalTime().DateTime))));
                 }
 
                 await WriteAsync(response, new UsageReport(UsageReport.FormatName, DateTimeOffset.Now, reported), cancel).ConfigureAwait(false);
@@ -468,7 +499,27 @@ internal static class ControlPlane
     /// <param name="ArchivedOn">The day the person put the application away, if they did — a day, like
     /// <c>AdoptedOn</c>, never a time. Someone judging the report reads it next to a lapse: an application
     /// put away may simply have served its purpose.</param>
-    internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage, string? ArchivedOn = null);
+    /// <param name="RemovedOn">The day the person removed the application for good, if they did. Its usage record is kept for this report.</param>
+    internal sealed record ReportedApp(string Id, string AdoptedOn, int Revision, UsageView Usage, string? ArchivedOn = null, string? RemovedOn = null);
+
+    internal sealed record RemovedView(string Id, DateTimeOffset RemovedAt);
+
+    private static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
+        options.Discard ?? ((folder, _) =>
+        {
+            if (Bohm.Runtime.Files.RecycleBin.Available)
+            {
+                Bohm.Runtime.Files.RecycleBin.Send(folder);
+            }
+            else
+            {
+                var discarded = Path.Combine(options.DataRoot, "discarded");
+                Directory.CreateDirectory(discarded);
+                Directory.Move(folder, Path.Combine(discarded, Path.GetFileName(folder)));
+            }
+
+            return Task.CompletedTask;
+        });
 
     internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected, int Repaired);
 
@@ -511,5 +562,6 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

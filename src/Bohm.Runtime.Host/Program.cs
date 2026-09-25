@@ -15,6 +15,8 @@ using Bohm.Runtime.Host;
 // --llama-server names the executable that runs a model chosen on this computer; without it, one
 // shipped next to this executable (llama-server\llama-server.exe) is used when present, so a model
 // runs with nothing downloaded.
+// BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
+// the recycle bin, so an automated check does not fill the person's recycle bin.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]";
 string? dataRoot = null;
 int? port = null;
@@ -47,6 +49,14 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     Port = port,
     ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
+    Discard = Environment.GetEnvironmentVariable("BOHM_DISCARD_DIR") is { Length: > 0 } discardDir
+        ? (folder, _) =>
+        {
+            Directory.CreateDirectory(discardDir);
+            Directory.Move(folder, Path.Combine(discardDir, Path.GetFileName(folder)));
+            return Task.CompletedTask;
+        }
+        : null,
 },
     builder => builder.Logging.AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
 await using var app = started.App;

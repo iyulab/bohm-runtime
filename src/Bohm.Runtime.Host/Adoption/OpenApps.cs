@@ -145,6 +145,16 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         return app;
     }
 
+    /// <summary>
+    /// Closes <paramref name="appId"/>'s open instance, if there is one, so its files are no longer
+    /// held — before its folder leaves the catalog. The application must not be served meanwhile
+    /// (an archived application is not).
+    /// </summary>
+    public async Task CloseAsync(string appId)
+    {
+        if (_open.TryRemove(appId, out var entry) && entry.IsValueCreated) await CloseAsync(entry.Value).ConfigureAwait(false);
+    }
+
     /// <summary>The applications opened so far.</summary>
     public async Task<IReadOnlyList<OpenApp>> OpenedAsync()
     {
