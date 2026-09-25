@@ -33,6 +33,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
+/// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded, and whether it was fixed at start.</description></item>
+/// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
+/// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -225,6 +228,31 @@ internal static class ControlPlane
                 await WriteAsync(response, LlmProviders.All
                     .Select(p => ProviderViewOf(p, !string.IsNullOrEmpty(vault.Read(p.VaultName)), local))
                     .ToList(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["llm", "local-model"]):
+                await WriteAsync(response, LocalModelViewOf(context.RequestServices.GetRequiredService<LocalModel>()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["llm", "local-model"]):
+                var localModel = context.RequestServices.GetRequiredService<LocalModel>();
+                var chosen = request.Method == "DELETE" ? null : Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                try
+                {
+                    await localModel.ChooseAsync(chosen, cancel).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+                catch (ArgumentException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                await WriteAsync(response, LocalModelViewOf(localModel), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", var providerId, "key"]):
@@ -450,6 +478,12 @@ internal static class ControlPlane
 
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
+    private static LocalModelView LocalModelViewOf(LocalModel local) =>
+        new(local.Current?.ModelPath, local.Loaded, local.Fixed);
+
+    /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
+    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed);
+
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
             !connected && local.Configured && OpenAIChatBridge.Handles(provider, "POST", "chat/completions"));
@@ -476,5 +510,6 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

@@ -134,7 +134,10 @@ internal static class OpenAIChatBridge
             var answer = await model.GetResponseAsync(request.Messages, request.Options, cancel).ConfigureAwait(false);
             response.StatusCode = StatusCodes.Status200OK;
             response.ContentType = "application/json";
-            await response.Body.WriteAsync(ModelReaderWriter.Write(answer.AsOpenAIChatCompletion(), ModelReaderWriterOptions.Json, OpenAI.OpenAIContext.Default).ToMemory(), cancel).ConfigureAwait(false);
+            answer.ResponseId ??= NewId();
+            answer.CreatedAt ??= DateTimeOffset.UtcNow;
+            var completion = ModelReaderWriter.Write(answer.AsOpenAIChatCompletion(), ModelReaderWriterOptions.Json, OpenAI.OpenAIContext.Default);
+            await response.Body.WriteAsync(Encoding.UTF8.GetBytes(AsProviderWrites(completion, "message")), cancel).ConfigureAwait(false);
             return;
         }
 
@@ -144,13 +147,55 @@ internal static class OpenAIChatBridge
         response.ContentType = "text/event-stream";
         response.Headers.CacheControl = "no-cache";
         context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
-        var updates = model.GetStreamingResponseAsync(request.Messages, request.Options, cancel).AsOpenAIStreamingChatCompletionUpdatesAsync(cancel);
+        // One id and one time for the whole answer, as the provider gives them.
+        var id = NewId();
+        var created = DateTimeOffset.UtcNow;
+        var updates = Stamped(model.GetStreamingResponseAsync(request.Messages, request.Options, cancel), id, created, cancel)
+            .AsOpenAIStreamingChatCompletionUpdatesAsync(cancel);
         await foreach (var update in updates.ConfigureAwait(false))
         {
-            await WriteEventAsync(response, ModelReaderWriter.Write(update, ModelReaderWriterOptions.Json, OpenAI.OpenAIContext.Default).ToString(), cancel).ConfigureAwait(false);
+            var chunk = ModelReaderWriter.Write(update, ModelReaderWriterOptions.Json, OpenAI.OpenAIContext.Default);
+            await WriteEventAsync(response, AsProviderWrites(chunk, "delta"), cancel).ConfigureAwait(false);
         }
 
         await WriteEventAsync(response, "[DONE]", cancel).ConfigureAwait(false);
+    }
+
+    private static string NewId() => "chatcmpl-" + Guid.NewGuid().ToString("N");
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> Stamped(IAsyncEnumerable<ChatResponseUpdate> updates, string id, DateTimeOffset created,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancel)
+    {
+        await foreach (var update in updates.WithCancellation(cancel).ConfigureAwait(false))
+        {
+            update.ResponseId = id;
+            update.CreatedAt ??= created;
+            yield return update;
+        }
+    }
+
+    /// <summary>
+    /// The serialized result, with what the provider leaves out left out: an empty
+    /// <c>tool_calls</c> (applications test <c>if (message.tool_calls)</c>, and an empty array is
+    /// true in JavaScript), empty <c>annotations</c>, and log probabilities nobody asked for.
+    /// </summary>
+    private static string AsProviderWrites(BinaryData serialized, string part)
+    {
+        var root = System.Text.Json.Nodes.JsonNode.Parse(serialized.ToString())!.AsObject();
+        if (root["choices"] is System.Text.Json.Nodes.JsonArray choices)
+        {
+            foreach (var choice in choices.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                if (choice["logprobs"] is System.Text.Json.Nodes.JsonObject logprobs
+                    && logprobs.All(p => p.Value is null or System.Text.Json.Nodes.JsonArray { Count: 0 }))
+                    choice["logprobs"] = null;
+                if (choice[part] is not System.Text.Json.Nodes.JsonObject body) continue;
+                foreach (var name in new[] { "tool_calls", "annotations" })
+                    if (body[name] is System.Text.Json.Nodes.JsonArray { Count: 0 }) body.Remove(name);
+            }
+        }
+
+        return root.ToJsonString();
     }
 
     private static async Task WriteEventAsync(HttpResponse response, string data, CancellationToken cancel)

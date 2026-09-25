@@ -59,6 +59,12 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
         Assert.Equal("assistant", choice.GetProperty("message").GetProperty("role").GetString());
         Assert.Equal("Paris", choice.GetProperty("message").GetProperty("content").GetString());
         Assert.Equal("stop", choice.GetProperty("finish_reason").GetString());
+        // What the provider gives and leaves out: an id and a current time; no empty tool_calls,
+        // which JavaScript would read as true.
+        Assert.StartsWith("chatcmpl-", body.GetProperty("id").GetString(), StringComparison.Ordinal);
+        Assert.InRange(DateTimeOffset.FromUnixTimeSeconds(body.GetProperty("created").GetInt64()), DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddMinutes(1));
+        Assert.False(choice.GetProperty("message").TryGetProperty("tool_calls", out _));
+        Assert.Equal(JsonValueKind.Null, choice.GetProperty("logprobs").ValueKind);
 
         var call = Assert.Single(_model.Calls);
         Assert.Equal([ChatRole.System, ChatRole.User], call.Messages.Select(m => m.Role));
@@ -97,6 +103,10 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
             .Select(d => d.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : ""));
         Assert.Equal("Paris", text);
         Assert.All(events[..^1], e => Assert.Equal("chat.completion.chunk", JsonDocument.Parse(e).RootElement.GetProperty("object").GetString()));
+        var ids = events[..^1].Select(e => JsonDocument.Parse(e).RootElement.GetProperty("id").GetString()).Distinct().ToList();
+        Assert.StartsWith("chatcmpl-", Assert.Single(ids), StringComparison.Ordinal);
+        Assert.All(events[..^1], e => Assert.True(JsonDocument.Parse(e).RootElement.GetProperty("created").GetInt64() > 1_700_000_000));
+        Assert.All(events[..^1], e => Assert.False(Assert.Single(JsonDocument.Parse(e).RootElement.GetProperty("choices").EnumerateArray()).GetProperty("delta").TryGetProperty("tool_calls", out _)));
     }
 
     [Fact]
@@ -188,6 +198,68 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
 
         using var put = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(RealKey));
         Assert.False(JsonDocument.Parse(await put.Content.ReadAsStringAsync()).RootElement.GetProperty("answeredLocally").GetBoolean());
+    }
+
+    [Fact]
+    public async Task A_chosen_model_is_remembered_across_launches_and_can_be_chosen_away()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-local-model-").FullName;
+        var model = Path.Combine(dataRoot, "..", Path.GetRandomFileName() + ".gguf");
+        await File.WriteAllTextAsync(model, "not really a model", TestContext.Current.CancellationToken);
+        model = Path.GetFullPath(model);
+        try
+        {
+            var first = await RunningHost.StartAsync(dataRoot);
+            var none = JsonDocument.Parse(await first.ControlClient().GetStringAsync("/__control/llm/local-model")).RootElement;
+            Assert.Equal(JsonValueKind.Null, none.GetProperty("modelPath").ValueKind);
+            Assert.False(none.GetProperty("fixed").GetBoolean());
+
+            using var chosen = await first.ControlClient().PutAsync("/__control/llm/local-model", new StringContent(model));
+            HttpAssert.Status(HttpStatusCode.OK, chosen);
+            Assert.Equal(model, JsonDocument.Parse(await chosen.Content.ReadAsStringAsync()).RootElement.GetProperty("modelPath").GetString());
+            var openai = JsonDocument.Parse(await first.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray()
+                .Single(p => p.GetProperty("id").GetString() == "openai");
+            Assert.True(openai.GetProperty("answeredLocally").GetBoolean());
+            await first.StopKeepingDataAsync(); // the data root stays for the second launch
+
+            await using var second = await RunningHost.StartAsync(dataRoot);
+            var remembered = JsonDocument.Parse(await second.ControlClient().GetStringAsync("/__control/llm/local-model")).RootElement;
+            Assert.Equal(model, remembered.GetProperty("modelPath").GetString());
+            Assert.False(remembered.GetProperty("loaded").GetBoolean());
+
+            using var cleared = await second.ControlClient().DeleteAsync("/__control/llm/local-model");
+            HttpAssert.Status(HttpStatusCode.OK, cleared);
+            Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await cleared.Content.ReadAsStringAsync()).RootElement.GetProperty("modelPath").ValueKind);
+            Assert.False(File.Exists(Path.Combine(dataRoot, "local-model.json")));
+            Assert.All(JsonDocument.Parse(await second.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray(),
+                p => Assert.False(p.GetProperty("answeredLocally").GetBoolean()));
+        }
+        finally
+        {
+            File.Delete(model);
+        }
+    }
+
+    [Theory]
+    [InlineData("relative.gguf")]
+    [InlineData(@"C:\no\such\model.gguf")]
+    public async Task Only_a_model_file_that_is_there_can_be_chosen(string path)
+    {
+        await using var host = await RunningHost.StartAsync();
+
+        using var response = await host.ControlClient().PutAsync("/__control/llm/local-model", new StringContent(path));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+        Assert.False(File.Exists(Path.Combine(host.DataRoot, "local-model.json")));
+    }
+
+    [Fact]
+    public async Task A_model_fixed_at_start_cannot_be_changed_through_the_control_api()
+    {
+        using var response = await _host.ControlClient().DeleteAsync("/__control/llm/local-model");
+
+        HttpAssert.Status(HttpStatusCode.Conflict, response);
+        Assert.True(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/llm/local-model")).RootElement.GetProperty("fixed").GetBoolean());
     }
 
     /// <summary>
