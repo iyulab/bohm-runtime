@@ -15,8 +15,10 @@ namespace Bohm.Runtime.Host.Llm;
 /// otherwise, streaming the provider's answer back as it arrives.
 /// </summary>
 /// <remarks>
-/// When no key is connected, or the provider cannot be reached, the application gets an error in
-/// the provider's own shape, so its existing error handling shows it instead of breaking.
+/// When no key is connected but a model on this computer is (<see cref="LocalModelOptions"/>), a
+/// chat request in the OpenAI shape is answered by that model instead (<see cref="OpenAIChatBridge"/>).
+/// Otherwise, when no key is connected or the provider cannot be reached, the application gets an
+/// error in the provider's own shape, so its existing error handling shows it instead of breaking.
 /// </remarks>
 internal static class LlmProxy
 {
@@ -58,6 +60,13 @@ internal static class LlmProxy
         }
 
         var key = context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName);
+        if (string.IsNullOrEmpty(key) && context.RequestServices.GetRequiredService<LocalModel>() is { Configured: true } local
+            && OpenAIChatBridge.Handles(provider, request.Method, slash < 0 ? "" : rest[(slash + 1)..]))
+        {
+            await AnswerLocallyAsync(context, provider, local).ConfigureAwait(false);
+            return;
+        }
+
         if (string.IsNullOrEmpty(key))
         {
             app.NeedsKey(provider.Id);
@@ -145,6 +154,40 @@ internal static class LlmProxy
                 await response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// No key is connected for the provider, and a model on this computer is: the request is
+    /// answered by it, converted from and back to the provider's shape. Nothing leaves the computer,
+    /// so nothing is recorded as sent.
+    /// </summary>
+    private static async Task AnswerLocallyAsync(HttpContext context, LlmProvider provider, LocalModel local)
+    {
+        OpenAIChatBridge.Parsed parsed;
+        try
+        {
+            using var body = new MemoryStream();
+            await context.Request.Body.CopyToAsync(body, context.RequestAborted).ConfigureAwait(false);
+            parsed = OpenAIChatBridge.Parse(body.GetBuffer().AsSpan(0, (int)body.Length));
+        }
+        catch (FormatException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request", e.Message).ConfigureAwait(false);
+            return;
+        }
+
+        Microsoft.Extensions.AI.IChatClient model;
+        try
+        {
+            model = await local.GetAsync(context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "local_model_unavailable", e.Message).ConfigureAwait(false);
+            return;
+        }
+
+        await OpenAIChatBridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
     }
 
     private static bool SameOriginOrAbsent(HttpRequest request)

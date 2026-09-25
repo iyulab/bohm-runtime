@@ -41,6 +41,12 @@ public sealed record RuntimeHostOptions
     public IReadOnlyDictionary<string, Uri>? LlmEndpoints { get; init; }
 
     /// <summary>
+    /// A model on this computer that answers applications' AI chat requests when no key is connected
+    /// for the provider they call. <see langword="null"/> (the default): there is none.
+    /// </summary>
+    public Llm.LocalModelOptions? LocalModel { get; init; }
+
+    /// <summary>
     /// Whether adopting an application also fetches, in the background, the code it loads from
     /// other hosts. On by default; the fetch needs the network once, at adoption.
     /// </summary>
@@ -86,6 +92,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Activity>();
         builder.Services.AddSingleton<AssetFetcher>();
         builder.Services.AddSingleton<Egress>();
+        builder.Services.AddSingleton<Llm.LocalModel>();
         configure?.Invoke(builder);
 
         var app = builder.Build();
