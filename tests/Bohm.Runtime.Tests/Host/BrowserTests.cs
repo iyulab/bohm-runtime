@@ -123,6 +123,27 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_write_made_while_leaving_goes_out_at_once_not_on_a_timer_that_may_never_run()
+    {
+        // Timers are not guaranteed to run once a page is leaving. The page here makes sure they do
+        // not, then writes: the write must already be on its way, carrying anything not yet acknowledged.
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Leaving</title>
+            <script>addEventListener('pagehide', () => { window.setTimeout = () => 0; localStorage.setItem('last', 'written while leaving'); });</script>
+            """);
+        var page = await OpenAsync(id);
+        await page.EvaluateAsync("() => localStorage.setItem('before', 'kept')");
+        await page.GotoAsync("about:blank");
+        await page.CloseAsync();
+
+        var check = await OpenAsync(id);
+        await ReloadUntilAsync(check, "localStorage.getItem('last') !== null");
+        Assert.Equal("written while leaving", await check.EvaluateAsync<string?>("localStorage.getItem('last')"));
+        Assert.Equal("kept", await check.EvaluateAsync<string?>("localStorage.getItem('before')"));
+    }
+
+    [Fact]
     public async Task Web_storage_semantics_hold_for_common_access_patterns()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

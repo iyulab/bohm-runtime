@@ -65,7 +65,13 @@
     if (!timer) timer = setTimeout(pump, delay);
   }
 
+  // Once the page starts leaving, a timer may never run: the page's own pagehide/unload writes come
+  // after this script's handler (registered first) and are sent at once instead.
+  var leaving = false;
+  window.addEventListener("pageshow", function () { leaving = false; });
+
   function flushOnLeave() {
+    leaving = true;
     var ops = unacked.concat(queue);
     if (ops.length === 0) return;
     unacked = ops;
@@ -80,6 +86,13 @@
   function record(op) {
     op.seq = ++seq;
     queue.push(op);
+    if (leaving) {
+      // Sent now, with keepalive, so it leaves before the document does, together with everything
+      // not yet acknowledged: the runtime skips sequences it has passed, so a batch that arrived
+      // ahead of an earlier one would otherwise make the earlier one's operations count as old.
+      flushOnLeave();
+      return;
+    }
     schedule(0);
   }
 

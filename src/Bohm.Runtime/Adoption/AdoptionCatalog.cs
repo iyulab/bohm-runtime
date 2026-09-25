@@ -312,6 +312,14 @@ public sealed class AdoptionCatalog
         foreach (var directory in Directory.EnumerateDirectories(_root))
         {
             var id = Path.GetFileName(directory);
+            // A removal stopped between leaving the catalog and reaching the recycle bin: the folder,
+            // with everything in it, is still here. Said so, rather than left silently out of sight.
+            if (id.StartsWith(RemovingPrefix, StringComparison.Ordinal) && IsValidId(id[RemovingPrefix.Length..]))
+            {
+                unreadable.Add(new UnreadableApp(id[RemovingPrefix.Length..], UnreadableApp.InterruptedRemoval, $"The folder is still in {Path.GetFileName(_root)}{Path.DirectorySeparatorChar}{id}."));
+                continue;
+            }
+
             if (!IsValidId(id)) continue; // Includes staging folders left by an interrupted adoption.
             try
             {

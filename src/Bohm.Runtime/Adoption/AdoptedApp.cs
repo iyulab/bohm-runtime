@@ -63,6 +63,12 @@ public sealed record UnreadableApp(string Id, string Kind, string Detail)
 
     /// <summary>The record is missing or is not in a known format.</summary>
     public const string Damaged = "damaged";
+
+    /// <summary>
+    /// A removal for good stopped before the folder reached the recycle bin (the runtime ended in
+    /// between). The folder, data included, is still under the data root; it is not in the list.
+    /// </summary>
+    public const string InterruptedRemoval = "interruptedRemoval";
 }
 
 /// <summary>An application removed for good, as far as it is remembered: when it came, how far it was revised, and when it was put away and removed.</summary>
