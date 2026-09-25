@@ -41,10 +41,17 @@ public sealed class AdoptionCatalog
     private const string RevisionFile = "revision.json";
     private const string DataBeforeFile = "data-before.json";
     private const string DataUndoneFile = "data-undone.json";
+    private const string RemovedDirectory = "removed";
+    private const string RemovedFile = "removed.json";
+    private const string RemovingPrefix = ".removing-";
+
+    /// <summary>Format identifier written into every <c>removed/&lt;id&gt;/removed.json</c>.</summary>
+    public const string RemovedFormat = "bohm.removed/0";
 
     private static readonly JsonWriterOptions RecordWriter = new() { Indented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private readonly string _root;
+    private readonly string _removed;
     private readonly TimeProvider _clock;
 
     /// <summary>Creates a catalog over <paramref name="dataRoot"/>. The host chooses the root; there is no default.</summary>
@@ -52,6 +59,7 @@ public sealed class AdoptionCatalog
     {
         ArgumentException.ThrowIfNullOrEmpty(dataRoot);
         _root = Path.Combine(Path.GetFullPath(dataRoot), AdoptedDirectory);
+        _removed = Path.Combine(Path.GetFullPath(dataRoot), RemovedDirectory);
         _clock = clock ?? TimeProvider.System;
         Directory.CreateDirectory(_root);
     }
@@ -112,6 +120,80 @@ public sealed class AdoptionCatalog
         var changed = app with { ArchivedAt = archived ? _clock.GetUtcNow() : null };
         await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(changed), cancellationToken).ConfigureAwait(false);
         return changed;
+    }
+
+    /// <summary>
+    /// Removes an archived application for good: its folder — code, data, revisions — leaves the
+    /// catalog and is handed to <paramref name="discard"/> (the host sends it to the recycle bin, so
+    /// the operating system still has a way back). What stays is its usage record, in
+    /// <c>removed/&lt;id&gt;/</c> with the days it was adopted, archived and removed — the record of
+    /// how it was used outlives the application, as a judgment of "no longer used" needs it.
+    /// </summary>
+    /// <returns>The removed application, or <see langword="null"/> for an unknown id.</returns>
+    /// <exception cref="InvalidOperationException">The application is not archived: only an application put away can be removed.</exception>
+    /// <remarks>
+    /// The folder is first renamed out of the catalog, so the application disappears at once and
+    /// completely; if <paramref name="discard"/> then fails, it is renamed back and nothing changed.
+    /// </remarks>
+    public async Task<RemovedApp?> RemoveAsync(string id, Func<string, CancellationToken, Task> discard, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(discard);
+        if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
+        if (app.ArchivedAt is null) throw new InvalidOperationException("Only an archived application can be removed.");
+
+        var removed = new RemovedApp(app.Id, app.AdoptedAt, app.Revision, app.ArchivedAt, _clock.GetUtcNow());
+        var kept = Path.Combine(_removed, id);
+        Directory.CreateDirectory(kept);
+        var usage = Path.Combine(AppDirectory(id), UsageFile);
+        if (File.Exists(usage))
+            await DurableFile.WriteAtomicallyAsync(Path.Combine(kept, UsageFile), await File.ReadAllBytesAsync(usage, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(kept, RemovedFile), WriteRemoved(removed), cancellationToken).ConfigureAwait(false);
+
+        var leaving = Path.Combine(_root, RemovingPrefix + id);
+        Directory.Move(AppDirectory(id), leaving);
+        try
+        {
+            await discard(leaving, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (Directory.Exists(leaving)) Directory.Move(leaving, AppDirectory(id));
+            Directory.Delete(kept, recursive: true);
+            throw;
+        }
+
+        return removed;
+    }
+
+    /// <summary>Applications removed for good, oldest removal first, with what was kept of them.</summary>
+    public async Task<IReadOnlyList<RemovedApp>> ListRemovedAsync(CancellationToken cancellationToken = default)
+    {
+        var list = new List<RemovedApp>();
+        if (!Directory.Exists(_removed)) return list;
+        foreach (var folder in Directory.EnumerateDirectories(_removed))
+        {
+            var path = Path.Combine(folder, RemovedFile);
+            if (!IsValidId(Path.GetFileName(folder)) || !File.Exists(path)) continue;
+            try
+            {
+                if (ReadRemoved(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)) is { } app) list.Add(app);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+            {
+                // A kept record that cannot be read leaves the report short by one; nothing is deleted.
+            }
+        }
+
+        return [.. list.OrderBy(a => a.RemovedAt)];
+    }
+
+    /// <summary>The usage record kept of a removed application.</summary>
+    public UsageLog OpenRemovedUsage(string id)
+    {
+        RequireValidId(id);
+        var folder = Path.Combine(_removed, id);
+        if (!Directory.Exists(folder)) throw new KeyNotFoundException($"No removed application '{id}'.");
+        return UsageLog.Open(Path.Combine(folder, UsageFile), _clock);
     }
 
     /// <summary>
@@ -382,6 +464,34 @@ public sealed class AdoptionCatalog
     private static void RequireValidId(string id)
     {
         if (!IsValidId(id)) throw new ArgumentException($"'{id}' is not an adopted application identifier.", nameof(id));
+    }
+
+    private static byte[] WriteRemoved(RemovedApp app)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer, RecordWriter))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("format", RemovedFormat);
+            writer.WriteString("id", app.Id);
+            writer.WriteString("adoptedAt", app.AdoptedAt.ToString("O", CultureInfo.InvariantCulture));
+            writer.WriteNumber("revision", app.Revision);
+            WriteTime(writer, "archivedAt", app.ArchivedAt);
+            writer.WriteString("removedAt", app.RemovedAt.ToString("O", CultureInfo.InvariantCulture));
+            writer.WriteEndObject();
+        }
+
+        return buffer.ToArray();
+    }
+
+    private static RemovedApp? ReadRemoved(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("format", out var format) || !format.ValueEquals(RemovedFormat)) return null;
+        DateTimeOffset? Time(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? DateTimeOffset.Parse(v.GetString()!, CultureInfo.InvariantCulture) : null;
+        return new RemovedApp(root.GetProperty("id").GetString()!, Time("adoptedAt")!.Value, root.GetProperty("revision").GetInt32(), Time("archivedAt"), Time("removedAt")!.Value);
     }
 
     private static byte[] WriteRecord(AdoptedApp app)

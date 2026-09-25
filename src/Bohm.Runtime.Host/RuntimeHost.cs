@@ -60,6 +60,13 @@ public sealed record RuntimeHostOptions
     /// </summary>
     public bool FetchAssetsOnAdoption { get; init; } = true;
 
+    /// <summary>
+    /// Where the folder of an application removed for good goes. Default: the recycle bin on
+    /// Windows; elsewhere <c>discarded/</c> under the data root, since deleting outright is not
+    /// this runtime's call to make.
+    /// </summary>
+    public Func<string, CancellationToken, Task>? Discard { get; init; }
+
     /// <summary>Replaces the network for asset fetching — for tests.</summary>
     public Func<HttpMessageHandler>? AssetHttpHandler { get; init; }
 }
