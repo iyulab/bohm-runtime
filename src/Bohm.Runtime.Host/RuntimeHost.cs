@@ -42,9 +42,17 @@ public sealed record RuntimeHostOptions
 
     /// <summary>
     /// A model on this computer that answers applications' AI chat requests when no key is connected
-    /// for the provider they call. <see langword="null"/> (the default): there is none.
+    /// for the provider they call, fixed for this run. <see langword="null"/> (the default): the
+    /// person chooses one, or none, through the control API.
     /// </summary>
     public Llm.LocalModelOptions? LocalModel { get; init; }
+
+    /// <summary>
+    /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).
+    /// Named, nothing is looked up or downloaded; <see langword="null"/>: it is fetched on first use,
+    /// which needs the internet. Not used when <see cref="LocalModel"/> fixes the model.
+    /// </summary>
+    public string? LlamaServerPath { get; init; }
 
     /// <summary>
     /// Whether adopting an application also fetches, in the background, the code it loads from

@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Bohm.Runtime.Host;
 
-// Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>]
+// Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
 // The control API is enabled by passing a per-launch secret in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -12,10 +12,14 @@ using Bohm.Runtime.Host;
 // --port 0 lets the operating system choose every time.
 // With --parent-pid the host stops by itself when that process ends, so a companion runtime is
 // never left running after the application that started it crashed or was killed.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>]";
+// --llama-server names the executable that runs a model chosen on this computer; without it, one
+// shipped next to this executable (llama-server\llama-server.exe) is used when present, so a model
+// runs with nothing downloaded.
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]";
 string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
+string? llamaServer = null;
 for (var i = 0; i < args.Length - 1; i++)
 {
     switch (args[i])
@@ -23,6 +27,7 @@ for (var i = 0; i < args.Length - 1; i++)
         case "--data-root": dataRoot = args[++i]; break;
         case "--port": port = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
         case "--parent-pid": parentPid = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
+        case "--llama-server": llamaServer = args[++i]; break;
     }
 }
 
@@ -32,8 +37,17 @@ if (dataRoot is null)
     return 2;
 }
 
+var shipped = Path.Combine(AppContext.BaseDirectory, "llama-server", OperatingSystem.IsWindows() ? "llama-server.exe" : "llama-server");
+llamaServer ??= File.Exists(shipped) ? shipped : null;
+
 // Standard output carries only the protocol line below; every log line goes to standard error.
-var started = await RuntimeHost.StartAsync(new RuntimeHostOptions { DataRoot = dataRoot, Port = port, ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET") },
+var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
+{
+    DataRoot = dataRoot,
+    Port = port,
+    ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
+    LlamaServerPath = llamaServer,
+},
     builder => builder.Logging.AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
 await using var app = started.App;
 
