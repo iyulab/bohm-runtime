@@ -51,6 +51,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     private LocalModelOptions? _chosen = Read(options);
     private ITextGenerator? _generator;
     private GeneratorChatClient? _client;
+    private Task? _loading;
 
     /// <summary>Whether the model was fixed by whoever started the runtime, so the person cannot change it.</summary>
     public bool Fixed => options.LocalModel is not null;
@@ -63,6 +64,36 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
     /// <summary>Whether the model is loaded now.</summary>
     public bool Loaded => _client is not null;
+
+    /// <summary>Whether a load started ahead of use (<see cref="StartLoading"/>) is still under way.</summary>
+    public bool Loading => _loading is { IsCompleted: false };
+
+    /// <summary>Why the last attempt to load the model failed, or <see langword="null"/> — cleared by a new choice or a load that succeeds.</summary>
+    public string? LastError { get; private set; }
+
+    /// <summary>
+    /// Starts loading the model in the background, so the first request does not wait for it — a
+    /// model on a cold disk has taken over a minute. Does nothing when there is no model, it is
+    /// loaded, or a load is already under way.
+    /// </summary>
+    /// <returns>Whether a model is set (whether there was anything to load).</returns>
+    public bool StartLoading()
+    {
+        if (!Configured) return false;
+        if (Loaded || Loading) return true;
+        _loading = Task.Run(async () =>
+        {
+            try
+            {
+                await GetAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (LocalModelUnavailableException)
+            {
+                // Recorded in LastError by GetAsync.
+            }
+        });
+        return true;
+    }
 
     /// <summary>Uses the model file at <paramref name="modelPath"/> from now on, and remembers it.</summary>
     /// <exception cref="InvalidOperationException">The model is fixed.</exception>
@@ -95,6 +126,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 _chosen = WithServer(modelPath);
             }
 
+            LastError = null;
             await UnloadAsync().ConfigureAwait(false);
         }
         finally
@@ -116,7 +148,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             if (_client is { } raced) return raced;
             var settings = Current ?? throw new LocalModelUnavailableException("No model on this computer is chosen.");
             if (!File.Exists(settings.ModelPath))
-                throw new LocalModelUnavailableException($"The model file {Path.GetFileName(settings.ModelPath)} is not there.");
+                throw Failed(new LocalModelUnavailableException($"The model file {Path.GetFileName(settings.ModelPath)} is not there."));
 
             var generatorOptions = new GeneratorOptions
             {
@@ -133,9 +165,10 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
-                throw new LocalModelUnavailableException($"The model on this computer could not be started: {e.Message}", e);
+                throw Failed(new LocalModelUnavailableException($"The model on this computer could not be started: {e.Message}", e));
             }
 
+            LastError = null;
             _client = new GeneratorChatClient(_generator);
             return _client;
         }
@@ -160,6 +193,12 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             _generator = null;
             await generator.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    private LocalModelUnavailableException Failed(LocalModelUnavailableException e)
+    {
+        LastError = e.Message;
+        return e;
     }
 
     private LocalModelOptions WithServer(string modelPath) => new() { ModelPath = modelPath, ServerPath = options.LlamaServerPath };

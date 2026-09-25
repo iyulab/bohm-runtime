@@ -240,6 +240,79 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Loading_ahead_of_use_needs_a_chosen_model()
+    {
+        await using var host = await RunningHost.StartAsync();
+
+        using var response = await host.ControlClient().PostAsync("/__control/llm/local-model/load", null);
+
+        HttpAssert.Status(HttpStatusCode.Conflict, response);
+    }
+
+    [Fact]
+    public async Task A_load_started_ahead_of_use_that_fails_says_why_until_another_model_is_chosen()
+    {
+        var model = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gguf");
+        await File.WriteAllTextAsync(model, "not really a model", TestContext.Current.CancellationToken);
+        try
+        {
+            // A server that is not there fails the load at once, without looking for one elsewhere.
+            await using var host = await RunningHost.StartAsync(configure: o => o with { LlamaServerPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName(), "llama-server.exe") });
+            using var client = host.ControlClient();
+            (await client.PutAsync("/__control/llm/local-model", new StringContent(model))).Dispose();
+
+            using var started = await client.PostAsync("/__control/llm/local-model/load", null);
+
+            HttpAssert.Status(HttpStatusCode.Accepted, started);
+            var failed = await EventuallyAsync(async () =>
+            {
+                var view = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+                return view.GetProperty("loading").GetBoolean() ? null : view;
+            });
+            Assert.False(failed.GetProperty("loaded").GetBoolean());
+            Assert.False(string.IsNullOrEmpty(failed.GetProperty("error").GetString()));
+
+            using var again = await client.PutAsync("/__control/llm/local-model", new StringContent(model));
+            Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await again.Content.ReadAsStringAsync()).RootElement.GetProperty("error").ValueKind);
+        }
+        finally
+        {
+            File.Delete(model);
+        }
+    }
+
+    [Fact]
+    public async Task A_real_model_loaded_ahead_of_use_is_running_before_the_first_request()
+    {
+        var model = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");
+        var server = Environment.GetEnvironmentVariable("BOHM_TEST_LLAMA_SERVER");
+        Assert.SkipWhen(string.IsNullOrEmpty(model) || string.IsNullOrEmpty(server), "BOHM_TEST_GGUF and BOHM_TEST_LLAMA_SERVER are not set.");
+        await using var host = await RunningHost.StartAsync(configure: o => o with { LlamaServerPath = server });
+        using var client = host.ControlClient();
+        (await client.PutAsync("/__control/llm/local-model", new StringContent(model!))).Dispose();
+
+        (await client.PostAsync("/__control/llm/local-model/load", null)).Dispose();
+
+        var view = await EventuallyAsync(async () =>
+        {
+            var v = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+            return v.GetProperty("loading").GetBoolean() ? null : v;
+        }, TimeSpan.FromMinutes(5));
+        Assert.True(view.GetProperty("loaded").GetBoolean(), view.GetProperty("error").GetString());
+    }
+
+    private static async Task<JsonElement> EventuallyAsync(Func<Task<JsonElement?>> probe, TimeSpan? limit = null)
+    {
+        var until = DateTime.UtcNow + (limit ?? TimeSpan.FromSeconds(30));
+        while (true)
+        {
+            if (await probe() is { } found) return found;
+            if (DateTime.UtcNow > until) throw new TimeoutException("The condition did not hold in time.");
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+        }
+    }
+
     [Theory]
     [InlineData("relative.gguf")]
     [InlineData(@"C:\no\such\model.gguf")]
