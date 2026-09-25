@@ -30,7 +30,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
-/// <item><term><c>GET /__control/llm</c></term><description>AI providers and whether a key is connected (never the key).</description></item>
+/// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
@@ -221,8 +221,9 @@ internal static class ControlPlane
 
             case ("GET", ["llm"]):
                 var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
+                var local = context.RequestServices.GetRequiredService<LocalModel>();
                 await WriteAsync(response, LlmProviders.All
-                    .Select(p => new ProviderView(p.Id, p.DisplayName, p.Host, !string.IsNullOrEmpty(vault.Read(p.VaultName))))
+                    .Select(p => ProviderViewOf(p, !string.IsNullOrEmpty(vault.Read(p.VaultName)), local))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -250,7 +251,7 @@ internal static class ControlPlane
                     keys.Write(provider.VaultName, key);
                 }
 
-                await WriteAsync(response, new ProviderView(provider.Id, provider.DisplayName, provider.Host, request.Method != "DELETE"), cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices.GetRequiredService<LocalModel>()), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["drain"]):
@@ -449,7 +450,12 @@ internal static class ControlPlane
 
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
-    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected);
+    private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
+        new(provider.Id, provider.DisplayName, provider.Host, connected,
+            !connected && local.Configured && OpenAIChatBridge.Handles(provider, "POST", "chat/completions"));
+
+    /// <param name="AnsweredLocally">Whether, with no key connected, the model on this computer answers this provider's chat requests.</param>
+    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, bool AnsweredLocally);
 
     internal sealed record DrainResult(bool Quiet);
 

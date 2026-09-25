@@ -15,6 +15,16 @@
     <ProjectReference Include="..\Bohm.Runtime\Bohm.Runtime.csproj" />
   </ItemGroup>
 
+  <!--
+    A model on this computer answering applications' AI requests (GGUF through llama-server), and the
+    conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
+  -->
+  <ItemGroup>
+    <PackageReference Include="IronProw.LMSupply" Version="0.6.0" />
+    <PackageReference Include="LMSupply.Generator" Version="0.75.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Bohm.Runtime.Tests" />
   </ItemGroup>
