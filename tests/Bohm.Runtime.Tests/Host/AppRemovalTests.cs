@@ -99,6 +99,23 @@ public sealed class AppRemovalTests : IAsyncLifetime
         Assert.DoesNotContain((await ReportAsync()).GetProperty("apps").EnumerateArray(), a => a.TryGetProperty("removedOn", out var r) && r.ValueKind == JsonValueKind.String);
     }
 
+    [Fact]
+    public async Task A_removal_stopped_before_the_recycle_bin_is_reported_not_hidden()
+    {
+        var id = await _host.AdoptAsync("<p>half gone</p>");
+        await ArchiveAsync(id);
+        // As if the runtime ended between renaming the folder aside and sending it on.
+        Directory.Move(Path.Combine(_host.DataRoot, "adopted", id), Path.Combine(_host.DataRoot, "adopted", ".removing-" + id));
+
+        var unreadable = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/apps/unreadable")).RootElement;
+
+        var entry = Assert.Single(unreadable.EnumerateArray());
+        Assert.Equal(id, entry.GetProperty("id").GetString());
+        Assert.Equal("interruptedRemoval", entry.GetProperty("kind").GetString());
+        Assert.Contains(".removing-" + id, entry.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(_host.DataRoot, "adopted", ".removing-" + id, "app.html")), "nothing is touched");
+    }
+
     private async Task ArchiveAsync(string id)
     {
         using var archived = await _host.ControlClient().PostAsync($"/__control/apps/{id}/archive", null);
