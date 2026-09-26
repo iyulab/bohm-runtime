@@ -271,15 +271,38 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
                 return view.GetProperty("loading").GetBoolean() ? null : view;
             });
             Assert.False(failed.GetProperty("loaded").GetBoolean());
-            Assert.False(string.IsNullOrEmpty(failed.GetProperty("error").GetString()));
+            // A reason for the shell to put into words — no sentence from the runtime.
+            Assert.Equal("server-missing", failed.GetProperty("failure").GetProperty("reason").GetString());
 
             using var again = await client.PutAsync("/__control/llm/local-model", new StringContent(model));
-            Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await again.Content.ReadAsStringAsync()).RootElement.GetProperty("error").ValueKind);
+            Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await again.Content.ReadAsStringAsync()).RootElement.GetProperty("failure").ValueKind);
         }
         finally
         {
             File.Delete(model);
         }
+    }
+
+    [Fact]
+    public async Task A_chosen_model_file_that_is_gone_fails_with_its_name_and_no_sentence()
+    {
+        var model = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".gguf");
+        await File.WriteAllTextAsync(model, "not really a model", TestContext.Current.CancellationToken);
+        await using var host = await RunningHost.StartAsync();
+        using var client = host.ControlClient();
+        (await client.PutAsync("/__control/llm/local-model", new StringContent(model))).Dispose();
+        File.Delete(model);
+
+        (await client.PostAsync("/__control/llm/local-model/load", null)).Dispose();
+
+        var failed = await EventuallyAsync(async () =>
+        {
+            var view = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+            return view.GetProperty("loading").GetBoolean() ? null : view;
+        }, TimeSpan.FromSeconds(5));
+        var failure = failed.GetProperty("failure");
+        Assert.Equal("model-missing", failure.GetProperty("reason").GetString());
+        Assert.Equal(Path.GetFileName(model), failure.GetProperty("file").GetString());
     }
 
     [Fact]
@@ -303,7 +326,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
                 return view.GetProperty("loading").GetBoolean() ? null : view;
             }, TimeSpan.FromSeconds(5));
             Assert.False(failed.GetProperty("loaded").GetBoolean());
-            Assert.Contains("llama-server", failed.GetProperty("error").GetString(), StringComparison.Ordinal);
+            Assert.Equal("server-missing", failed.GetProperty("failure").GetProperty("reason").GetString());
         }
         finally
         {
@@ -328,7 +351,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
             var v = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
             return v.GetProperty("loading").GetBoolean() ? null : v;
         }, TimeSpan.FromMinutes(5));
-        Assert.True(view.GetProperty("loaded").GetBoolean(), view.GetProperty("error").GetString());
+        Assert.True(view.GetProperty("loaded").GetBoolean(), view.GetProperty("failure").ToString());
     }
 
     private static async Task<JsonElement> EventuallyAsync(Func<Task<JsonElement?>> probe, TimeSpan? limit = null)

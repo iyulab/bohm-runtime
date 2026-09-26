@@ -89,14 +89,17 @@ public sealed class ProcessTests : IDisposable
     [Fact]
     public async Task The_runtime_stops_by_itself_when_the_process_that_started_it_ends()
     {
-        // A stand-in for the shell that ends on its own after a few seconds.
+        // A stand-in for the shell. It ends when the test ends it, once the runtime is ready — a parent that
+        // ended on its own after a fixed time raced the runtime's start on a busy machine (the runtime then
+        // saw no parent and stopped before it was ready).
         using var parent = OperatingSystem.IsWindows()
-            ? Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 4 127.0.0.1 >nul") { UseShellExecute = false, CreateNoWindow = true })!
-            : Process.Start(new ProcessStartInfo("sleep", "3") { UseShellExecute = false })!;
+            ? Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 120 127.0.0.1 >nul") { UseShellExecute = false, CreateNoWindow = true })!
+            : Process.Start(new ProcessStartInfo("sleep", "120") { UseShellExecute = false })!;
         using var process = Start("s", parent.Id);
         try
         {
             await ReadReadyPortAsync(process);
+            parent.Kill(entireProcessTree: true);
             using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await process.WaitForExitAsync(exited.Token);
             Assert.Equal(0, process.ExitCode);
@@ -104,6 +107,7 @@ public sealed class ProcessTests : IDisposable
         finally
         {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
+            if (!parent.HasExited) parent.Kill(entireProcessTree: true);
         }
     }
 
