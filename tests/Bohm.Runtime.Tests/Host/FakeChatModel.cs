@@ -14,6 +14,12 @@ internal sealed class FakeChatModel : IChatClient
 
     public FunctionCallContent? Call { get; set; }
 
+    /// <summary>
+    /// Answers to give in order, one per request, before falling back to <see cref="Call"/> or
+    /// <see cref="Reply"/> — a tool call, then the text that follows it.
+    /// </summary>
+    public Queue<AIContent> Script { get; } = new();
+
     /// <summary>What the model throws instead of answering, or nothing.</summary>
     public Exception? Failure { get; set; }
 
@@ -24,6 +30,15 @@ internal sealed class FakeChatModel : IChatClient
     {
         Calls.Add(([.. messages], options));
         if (Failure is not null) return Task.FromException<ChatResponse>(Failure);
+        if (Script.TryDequeue(out var next))
+        {
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [next]))
+            {
+                ModelId = "local-test",
+                FinishReason = next is FunctionCallContent ? ChatFinishReason.ToolCalls : ChatFinishReason.Stop,
+            });
+        }
+
         var message = Call is { } call ? new ChatMessage(ChatRole.Assistant, [call]) : new ChatMessage(ChatRole.Assistant, Reply);
         return Task.FromResult(new ChatResponse(message)
         {
