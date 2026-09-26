@@ -163,6 +163,21 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_model_is_told_how_the_application_runs_so_a_change_stays_inside_it()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new TextContent("Nothing to change."));
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var system = Assert.Single(_model.Calls).Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text).Aggregate("", string.Concat);
+        Assert.Contains(EditProposals.AppContract, system, StringComparison.Ordinal);
+        Assert.Contains("localStorage", system, StringComparison.Ordinal);
+        Assert.Contains("no server behind it", system, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_real_model_on_this_computer_proposes_a_local_change()
     {
         var gguf = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");
