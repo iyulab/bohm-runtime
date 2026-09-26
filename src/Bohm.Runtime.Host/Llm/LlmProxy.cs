@@ -25,6 +25,13 @@ internal static class LlmProxy
 {
     public const string PathPrefix = "/__bohm/llm/";
 
+    /// <summary>
+    /// The longest answer the model on this computer writes when a request sets no limit — a little
+    /// over two minutes at the slowest rate measured on an office PC (under 4 tokens a second), well
+    /// inside the local server's five-minute request limit.
+    /// </summary>
+    public const int DefaultLocalMaxOutputTokens = 512;
+
     private static readonly HashSet<string> NotForwarded = new(StringComparer.OrdinalIgnoreCase)
     {
         "Host", "Cookie", "Origin", "Referer", "Connection", "Content-Length", "Transfer-Encoding", "Keep-Alive",
@@ -185,6 +192,16 @@ internal static class LlmProxy
             await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request", e.Message).ConfigureAwait(false);
             return;
         }
+        catch (NotSupportedException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.NotImplemented, "local_model_unsupported", e.Message).ConfigureAwait(false);
+            return;
+        }
+
+        // A request that sets no limit on the answer's length gets one: a provider stops on its own
+        // well within its time, a small model on a CPU writes a few tokens a second and can run past
+        // the local server's request limit before it ends. A limit the application sets is kept.
+        parsed.Options.MaxOutputTokens ??= DefaultLocalMaxOutputTokens;
 
         Microsoft.Extensions.AI.IChatClient model;
         try

@@ -43,6 +43,11 @@ internal sealed class OpenAIChatBridge : IChatBridge
         using (var document = ChatBridges.ParseObject(body))
         {
             var root = document.RootElement;
+            // Spoken answers: an answer without the audio the application asked for breaks it where it
+            // reads the audio, so it is told plainly instead.
+            if (ChatBridges.Strings(root, "modalities") is { } modalities && modalities.Contains("audio"))
+                throw new NotSupportedException("The AI model on this computer cannot answer with audio.");
+
             if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
                 throw new FormatException("The request has no messages.");
 
