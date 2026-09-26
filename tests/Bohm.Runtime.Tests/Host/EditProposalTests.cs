@@ -150,6 +150,19 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_model_is_asked_not_to_think_and_to_keep_each_answer_short()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new TextContent("Nothing to change."));
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        var options = Assert.Single(_model.Calls).Options!;
+        Assert.Equal(ReasoningEffort.None, options.Reasoning!.Effort);
+        Assert.Equal(EditProposals.MaxOutputTokensPerRound, options.MaxOutputTokens);
+    }
+
+    [Fact]
     public async Task A_real_model_on_this_computer_proposes_a_local_change()
     {
         var gguf = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");

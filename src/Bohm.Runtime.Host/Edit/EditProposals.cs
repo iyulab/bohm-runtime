@@ -42,6 +42,9 @@ internal static class EditProposals
     /// <summary>How many rounds of tool calls one proposal may take.</summary>
     public const int MaxRounds = 8;
 
+    /// <summary>The longest single answer from the model in one round — a tool call or the closing sentence.</summary>
+    public const int MaxOutputTokensPerRound = 512;
+
     private const string SystemPrompt = """
         You change a small web application's HTML source as the person asks, by exact local
         replacements. The source around the element the person pointed at is given with line numbers;
@@ -80,7 +83,15 @@ internal static class EditProposals
         // marked as material before the model reads it. Without an Allow default the gate would ask
         // an approval service there is none of, and nothing would run.
         var permissions = new PermissionConfig { ReadOnlyTools = ["read_source"], DefaultAction = PermissionAction.Allow };
+        // The same rule as for the applications' own requests: no thinking unless asked, and a bound
+        // on each answer — a model that reasons by default otherwise spends the local server's whole
+        // request limit before its first tool call.
         var client = model.AsBuilder()
+            .ConfigureOptions(options =>
+            {
+                options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+                options.MaxOutputTokens ??= MaxOutputTokensPerRound;
+            })
             .UseFunctionInvocation(configure: invoking =>
             {
                 invoking.MaximumIterationsPerRequest = MaxRounds;
