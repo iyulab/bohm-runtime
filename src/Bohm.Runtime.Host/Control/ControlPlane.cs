@@ -614,7 +614,7 @@ internal static class ControlPlane
 
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
-            !connected && local.Configured && OpenAIChatBridge.Handles(provider, "POST", "chat/completions"));
+            !connected && local.Configured && ChatBridges.AnswersChat(provider));
 
     /// <param name="AnsweredLocally">Whether, with no key connected, the model on this computer answers this provider's chat requests.</param>
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, bool AnsweredLocally);

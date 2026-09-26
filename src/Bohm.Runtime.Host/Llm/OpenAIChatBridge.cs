@@ -7,7 +7,6 @@ using OpenAI.Chat;
 // They are the maintained, two-way mapping for this wire shape; re-implementing it here would be
 // the worse risk. A change in them shows up in this project's tests.
 #pragma warning disable OPENAI001
-using MeaiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using OpenAIChatMessage = OpenAI.Chat.ChatMessage;
 
 namespace Bohm.Runtime.Host.Llm;
@@ -22,33 +21,29 @@ namespace Bohm.Runtime.Host.Llm;
 /// <c>AsOpenAIChatCompletion</c>, <c>AsOpenAIStreamingChatCompletionUpdatesAsync</c>); this class
 /// only reads the request's options and writes the result to the wire.
 /// </remarks>
-internal static class OpenAIChatBridge
+internal sealed class OpenAIChatBridge : IChatBridge
 {
-    /// <summary>Whether the request is one this bridge can answer.</summary>
-    public static bool Handles(LlmProvider provider, string method, string path) =>
-        provider.Style == KeyStyle.Bearer && method == "POST"
+    public static readonly OpenAIChatBridge Instance = new();
+
+    private OpenAIChatBridge()
+    {
+    }
+
+    public bool AnswersChat(LlmProvider provider) => provider.Style == KeyStyle.Bearer;
+
+    public bool Handles(LlmProvider provider, string method, string path) =>
+        AnswersChat(provider) && method == "POST"
         && path.TrimEnd('/').EndsWith("chat/completions", StringComparison.Ordinal);
 
-    /// <summary>The request, read into Microsoft.Extensions.AI terms.</summary>
-    public sealed record Parsed(IReadOnlyList<MeaiChatMessage> Messages, ChatOptions Options, bool Stream);
+    public string? Unsupported(LlmProvider provider, string method, string path) => null;
 
     /// <exception cref="FormatException">The body is not a chat completions request.</exception>
-    public static Parsed Parse(ReadOnlySpan<byte> body)
+    public BridgedChat Parse(ReadOnlySpan<byte> body, string path)
     {
-        JsonDocument document;
-        try
-        {
-            document = JsonDocument.Parse(body.ToArray());
-        }
-        catch (JsonException e)
-        {
-            throw new FormatException("The request body is not JSON.", e);
-        }
-
-        using (document)
+        using (var document = ChatBridges.ParseObject(body))
         {
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
+            if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
                 throw new FormatException("The request has no messages.");
 
             var wire = new List<OpenAIChatMessage>();
@@ -106,6 +101,10 @@ internal static class OpenAIChatBridge
                         f.TryGetProperty("parameters", out var p) ? p.Clone() : JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone()))];
             }
 
+            // Thinking only when the request asks for it: most models an application names do not
+            // think, and a model here that reasons by default would spend minutes before the first
+            // word on a CPU.
+            options.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.None };
             if (root.TryGetProperty("reasoning_effort", out var effort) && effort.ValueKind == JsonValueKind.String)
             {
                 ReasoningEffort? level = effort.GetString() switch
@@ -120,12 +119,12 @@ internal static class OpenAIChatBridge
             }
 
             var stream = root.TryGetProperty("stream", out var s) && s.ValueKind == JsonValueKind.True;
-            return new Parsed(wire.AsChatMessages().ToList(), options, stream);
+            return new BridgedChat(wire.AsChatMessages().ToList(), options, stream, ChatBridges.Text(root, "model"));
         }
     }
 
     /// <summary>Answers the request with <paramref name="model"/>, in the OpenAI chat completions shape.</summary>
-    public static async Task AnswerAsync(HttpContext context, IChatClient model, Parsed request)
+    public async Task AnswerAsync(HttpContext context, IChatClient model, BridgedChat request)
     {
         var response = context.Response;
         var cancel = context.RequestAborted;
@@ -143,10 +142,7 @@ internal static class OpenAIChatBridge
 
         // Server-sent events, one per update, each flushed as it arrives — a typing effect in the
         // application depends on it.
-        response.StatusCode = StatusCodes.Status200OK;
-        response.ContentType = "text/event-stream";
-        response.Headers.CacheControl = "no-cache";
-        context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
+        ChatBridges.StartStream(context, "text/event-stream");
         // One id and one time for the whole answer, as the provider gives them.
         var id = NewId();
         var created = DateTimeOffset.UtcNow;
@@ -198,12 +194,8 @@ internal static class OpenAIChatBridge
         return root.ToJsonString();
     }
 
-    private static async Task WriteEventAsync(HttpResponse response, string data, CancellationToken cancel)
-    {
-        await response.Body.WriteAsync(Encoding.UTF8.GetBytes($"data: {data}\n\n"), cancel).ConfigureAwait(false);
-        await response.Body.FlushAsync(cancel).ConfigureAwait(false);
-    }
+    private static Task WriteEventAsync(HttpResponse response, string data, CancellationToken cancel) =>
+        ChatBridges.WriteAsync(response, $"data: {data}\n\n", cancel);
 
-    private static double? Number(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetDouble() : null;
+    private static double? Number(JsonElement root, string name) => ChatBridges.Number(root, name);
 }
