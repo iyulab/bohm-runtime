@@ -31,6 +31,7 @@ internal interface IChatBridge
     string? Unsupported(LlmProvider provider, string method, string path);
 
     /// <exception cref="FormatException">The body is not a request this bridge can read.</exception>
+    /// <exception cref="NotSupportedException">The request asks for something the model on this computer cannot give.</exception>
     BridgedChat Parse(ReadOnlySpan<byte> body, string path);
 
     /// <summary>Answers the request with <paramref name="model"/>, in the provider's shape.</summary>

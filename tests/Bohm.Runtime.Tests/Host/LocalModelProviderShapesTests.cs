@@ -345,6 +345,31 @@ public sealed class LocalModelProviderShapesTests : IAsyncLifetime
         Assert.Contains("did not finish", error.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("generativelanguage.googleapis.com/v1beta/models/g:generateContent", """{"contents":[{"parts":[{"text":"hi"}]}]}""", LlmProxy.DefaultLocalMaxOutputTokens)]
+    [InlineData("generativelanguage.googleapis.com/v1beta/models/g:generateContent", """{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":4000}}""", 4000)]
+    [InlineData("api.openai.com/v1/chat/completions", """{"model":"m","messages":[{"role":"user","content":"hi"}]}""", LlmProxy.DefaultLocalMaxOutputTokens)]
+    [InlineData("api.anthropic.com/v1/messages", """{"model":"m","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}""", 20)]
+    public async Task A_request_without_a_length_limit_gets_the_local_default_and_one_with_a_limit_keeps_it(string path, string body, int expected)
+    {
+        using var response = await PostAsync("/__bohm/llm/" + path, body);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal(expected, Assert.Single(_model.Calls).Options!.MaxOutputTokens);
+    }
+
+    [Fact]
+    public async Task An_answer_in_audio_gets_a_provider_shaped_error_not_text_without_the_audio()
+    {
+        using var response = await PostAsync("/__bohm/llm/api.openai.com/v1/chat/completions",
+            """{"model":"gpt-4o-audio-preview","modalities":["text","audio"],"audio":{"voice":"ash","format":"wav"},"messages":[{"role":"user","content":"Say hi"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.NotImplemented, response);
+        var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("error");
+        Assert.Equal("bohm_local_model_unsupported", error.GetProperty("type").GetString());
+        Assert.Empty(_model.Calls);
+    }
+
     private async Task AssertNoKeyAskedAsync()
     {
         var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{_app}/status")).RootElement;
