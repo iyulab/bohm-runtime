@@ -287,6 +287,36 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task Reverting_a_revision_that_rewrote_much_of_a_large_store_brings_back_every_item_exactly()
+    {
+        // Not only a few keys: a store of thousands of items and some large values, which the revision
+        // changes, deletes, adds to and grows. Reverting must bring back all of it, not part of it.
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, "books.html");
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        var before = new Dictionary<string, string>();
+        for (var i = 0; i < 3000; i++) before[$"book:{i}"] = $"{{\"title\":\"Book {i}\",\"copies\":{i % 7}}}";
+        before["catalog"] = new string('x', 256 * 1024);
+        before["notes"] = string.Concat(Enumerable.Repeat("가나다라마바사 ", 20_000));
+        await storage.ApplyAsync(before.Select(kv => StorageOperation.Set(kv.Key, kv.Value)).ToArray());
+
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>revised</p>"), "books.html", storage);
+        var rewrite = new List<StorageOperation>();
+        for (var i = 0; i < 3000; i += 2) rewrite.Add(StorageOperation.Set($"book:{i}", "changed"));
+        for (var i = 1; i < 3000; i += 3) rewrite.Add(StorageOperation.Remove($"book:{i}"));
+        for (var i = 0; i < 500; i++) rewrite.Add(StorageOperation.Set($"new:{i}", "added"));
+        rewrite.Add(StorageOperation.Set("catalog", new string('y', 512 * 1024)));
+        rewrite.Add(StorageOperation.Remove("notes"));
+        await storage.ApplyAsync(rewrite.ToArray());
+
+        await catalog.RevertAsync(app.Id, storage);
+
+        var after = storage.GetItems();
+        Assert.Equal(before.Count, after.Count);
+        foreach (var (key, value) in before) Assert.Equal(value, after[key]);
+    }
+
+    [Fact]
     public async Task Revisions_are_numbered_onward_and_an_interrupted_revision_is_not_reused()
     {
         var catalog = new AdoptionCatalog(_root);
