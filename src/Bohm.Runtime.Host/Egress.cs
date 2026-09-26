@@ -3,7 +3,7 @@ namespace Bohm.Runtime.Host;
 /// <summary>
 /// What left this computer since the runtime started, by host — so the person can see it, not take
 /// it on trust. Three kinds, because they mean different things: <b>sent</b> carries an application's
-/// data out (AI requests relayed to a provider); <b>fetched</b> asks for code and brings it in (an
+/// data out (AI requests relayed to a provider, and an application's source sent with a proposal to a chosen provider); <b>fetched</b> asks for code and brings it in (an
 /// application's libraries, cached at adoption) — the request leaves, the application's data does
 /// not; <b>blocked</b> is a connection an application tried and the runtime refused — nothing left.
 /// </summary>

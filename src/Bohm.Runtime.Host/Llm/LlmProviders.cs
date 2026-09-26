@@ -18,7 +18,11 @@ internal enum KeyStyle
 /// <param name="Host">The provider's API host.</param>
 /// <param name="DisplayName">Name shown to the person.</param>
 /// <param name="Style">How the key is presented.</param>
-internal sealed record LlmProvider(string Id, string Host, string DisplayName, KeyStyle Style)
+/// <param name="OpenAICompatiblePath">
+/// Where on <paramref name="Host"/> the provider answers OpenAI-shaped chat requests — the base the
+/// runtime's own agent uses with this provider's key, whatever shape the applications use.
+/// </param>
+internal sealed record LlmProvider(string Id, string Host, string DisplayName, KeyStyle Style, string OpenAICompatiblePath)
 {
     public string VaultName => $"llm/{Id}";
 }
@@ -27,12 +31,12 @@ internal static class LlmProviders
 {
     public static readonly IReadOnlyList<LlmProvider> All =
     [
-        new("openai", "api.openai.com", "OpenAI", KeyStyle.Bearer),
-        new("anthropic", "api.anthropic.com", "Anthropic", KeyStyle.ApiKeyHeader),
-        new("google", "generativelanguage.googleapis.com", "Google Gemini", KeyStyle.Google),
-        new("groq", "api.groq.com", "Groq", KeyStyle.Bearer),
-        new("openrouter", "openrouter.ai", "OpenRouter", KeyStyle.Bearer),
-        new("mistral", "api.mistral.ai", "Mistral", KeyStyle.Bearer),
+        new("openai", "api.openai.com", "OpenAI", KeyStyle.Bearer, "v1/"),
+        new("anthropic", "api.anthropic.com", "Anthropic", KeyStyle.ApiKeyHeader, "v1/"),
+        new("google", "generativelanguage.googleapis.com", "Google Gemini", KeyStyle.Google, "v1beta/openai/"),
+        new("groq", "api.groq.com", "Groq", KeyStyle.Bearer, "openai/v1/"),
+        new("openrouter", "openrouter.ai", "OpenRouter", KeyStyle.Bearer, "api/v1/"),
+        new("mistral", "api.mistral.ai", "Mistral", KeyStyle.Bearer, "v1/"),
     ];
 
     public static LlmProvider? ByHost(string host) => All.FirstOrDefault(p => string.Equals(p.Host, host, StringComparison.OrdinalIgnoreCase));

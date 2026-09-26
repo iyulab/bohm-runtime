@@ -108,6 +108,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<AssetFetcher>();
         builder.Services.AddSingleton<Egress>();
         builder.Services.AddSingleton<Llm.LocalModel>();
+        builder.Services.AddSingleton<Edit.EditModel>();
         configure?.Invoke(builder);
 
         var app = builder.Build();
