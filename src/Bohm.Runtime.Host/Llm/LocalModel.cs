@@ -69,7 +69,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     public bool Loading => _loading is { IsCompleted: false };
 
     /// <summary>Why the last attempt to load the model failed, or <see langword="null"/> — cleared by a new choice or a load that succeeds.</summary>
-    public string? LastError { get; private set; }
+    public LocalModelFailure? LastFailure { get; private set; }
 
     /// <summary>
     /// Starts loading the model in the background, so the first request does not wait for it — a
@@ -89,7 +89,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
             catch (LocalModelUnavailableException)
             {
-                // Recorded in LastError by GetAsync.
+                // Recorded in LastFailure by GetAsync.
             }
         });
         return true;
@@ -126,7 +126,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 _chosen = WithServer(modelPath);
             }
 
-            LastError = null;
+            LastFailure = null;
             await UnloadAsync().ConfigureAwait(false);
         }
         finally
@@ -146,13 +146,21 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
         try
         {
             if (_client is { } raced) return raced;
-            var settings = Current ?? throw new LocalModelUnavailableException("No model on this computer is chosen.");
+            var settings = Current ?? throw new LocalModelUnavailableException(
+                new LocalModelFailure(LocalModelFailure.NotChosen), "No model on this computer is chosen.");
             if (!File.Exists(settings.ModelPath))
-                throw Failed(new LocalModelUnavailableException($"The model file {Path.GetFileName(settings.ModelPath)} is not there."));
+            {
+                var file = Path.GetFileName(settings.ModelPath);
+                throw Failed(new LocalModelUnavailableException(
+                    new LocalModelFailure(LocalModelFailure.ModelMissing, File: file), $"The model file {file} is not there."));
+            }
+
             // Without a server named here the model library would fetch one from the internet on first
             // use; nothing on this path may leave the computer, so a missing server is a failure instead.
             if (settings.ServerPath is null || !File.Exists(settings.ServerPath))
-                throw Failed(new LocalModelUnavailableException("The program that runs models on this computer (llama-server) is not installed with this copy."));
+                throw Failed(new LocalModelUnavailableException(
+                    new LocalModelFailure(LocalModelFailure.ServerMissing),
+                    "The program that runs models on this computer (llama-server) is not installed with this copy."));
 
             var generatorOptions = new GeneratorOptions
             {
@@ -167,10 +175,12 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
-                throw Failed(new LocalModelUnavailableException($"The model on this computer could not be started: {e.Message}", e));
+                throw Failed(new LocalModelUnavailableException(
+                    new LocalModelFailure(LocalModelFailure.StartFailed, Detail: e.Message),
+                    $"The model on this computer could not be started: {e.Message}", e));
             }
 
-            LastError = null;
+            LastFailure = null;
             _client = new GeneratorChatClient(_generator);
             return _client;
         }
@@ -199,7 +209,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
     private LocalModelUnavailableException Failed(LocalModelUnavailableException e)
     {
-        LastError = e.Message;
+        LastFailure = e.Failure;
         return e;
     }
 
@@ -232,7 +242,33 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 [System.Text.Json.Serialization.JsonSerializable(typeof(LocalModel.Stored))]
 internal sealed partial class LocalModelJson : System.Text.Json.Serialization.JsonSerializerContext;
 
+/// <summary>
+/// Why the local model could not be loaded, as a stable reason and the values that go with it. The runtime
+/// makes no sentences for the screen — the shell turns the reason into the user's language.
+/// </summary>
+/// <param name="Reason">One of the reason constants below.</param>
+/// <param name="File">The model file's name, for <see cref="ModelMissing"/>.</param>
+/// <param name="Detail">The model library's own message, for <see cref="StartFailed"/> — technical, shown as is.</param>
+internal sealed record LocalModelFailure(string Reason, string? File = null, string? Detail = null)
+{
+    /// <summary>No model is chosen.</summary>
+    public const string NotChosen = "not-chosen";
+
+    /// <summary>The chosen model file is not there any more.</summary>
+    public const string ModelMissing = "model-missing";
+
+    /// <summary>The program that runs models (llama-server) is not installed with this copy.</summary>
+    public const string ServerMissing = "server-missing";
+
+    /// <summary>The model library could not start the model.</summary>
+    public const string StartFailed = "start-failed";
+}
+
 /// <summary>The configured local model could not be loaded.</summary>
+/// <remarks>
+/// <see cref="Exception.Message"/> is English and goes to apps in their provider's error shape; the shell reads
+/// <see cref="Failure"/>.
+/// </remarks>
 internal sealed class LocalModelUnavailableException : Exception
 {
     public LocalModelUnavailableException() { }
@@ -240,4 +276,10 @@ internal sealed class LocalModelUnavailableException : Exception
     public LocalModelUnavailableException(string message) : base(message) { }
 
     public LocalModelUnavailableException(string message, Exception inner) : base(message, inner) { }
+
+    public LocalModelUnavailableException(LocalModelFailure failure, string message, Exception? inner = null)
+        : base(message, inner) => Failure = failure;
+
+    /// <summary>Why, as a reason — <see langword="null"/> only for an exception made without one.</summary>
+    public LocalModelFailure? Failure { get; }
 }

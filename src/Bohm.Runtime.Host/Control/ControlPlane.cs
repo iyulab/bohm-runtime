@@ -606,11 +606,11 @@ internal static class ControlPlane
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
     private static LocalModelView LocalModelViewOf(LocalModel local) =>
-        new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastError);
+        new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure);
 
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
-    /// <param name="Error">Why the last load failed, or <see langword="null"/>.</param>
-    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, string? Error);
+    /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
+    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure);
 
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
