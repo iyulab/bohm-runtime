@@ -31,8 +31,30 @@ public sealed record AssetCacheLimits
     /// <summary>The whole cache stops growing past this.</summary>
     public long MaxTotalBytes { get; init; } = 80 * 1024 * 1024;
 
-    /// <summary>How deep module imports and style sheet imports are followed.</summary>
-    public int MaxDepth { get; init; } = 4;
+    /// <summary>
+    /// How deep module imports and style sheet imports are followed. Some CDNs answer a package
+    /// name with a small module that re-exports a pinned build, so each package costs two depths;
+    /// the file, request and time limits are what bound a wide graph.
+    /// </summary>
+    public int MaxDepth { get; init; } = 8;
+
+    /// <summary>At most this many requests at once.</summary>
+    public int MaxConcurrency { get; init; } = 6;
+
+    /// <summary>At most this many requests at once to one host.</summary>
+    public int MaxConcurrencyPerHost { get; init; } = 2;
+
+    /// <summary>
+    /// At most this many requests in one fetch, whether they succeed or not — a document naming
+    /// many files that fail would otherwise never reach <see cref="MaxFiles"/>.
+    /// </summary>
+    public int MaxRequests { get; init; } = 120;
+
+    /// <summary>
+    /// How long one fetch may spend on the network. What was fetched by then is kept; files not
+    /// reached are recorded as failures, and the next fetch picks them up.
+    /// </summary>
+    public TimeSpan TimeBudget { get; init; } = TimeSpan.FromSeconds(90);
 }
 
 /// <summary>
@@ -126,73 +148,146 @@ public sealed class AssetCache
     /// style sheet imports, and replaces the cache with the result. Files already cached are kept
     /// without fetching them again.
     /// </summary>
+    /// <remarks>
+    /// Imports are followed one depth at a time. The files of one depth are requested together,
+    /// within <see cref="AssetCacheLimits.MaxConcurrency"/> and
+    /// <see cref="AssetCacheLimits.MaxConcurrencyPerHost"/>, and taken in the order they were found,
+    /// so the result does not depend on which answer came first. Once
+    /// <see cref="AssetCacheLimits.TimeBudget"/> runs out or <see cref="AssetCacheLimits.MaxRequests"/>
+    /// is reached nothing more is requested, but files already in the cache are still followed from
+    /// disk — a fetch cut short never loses what an earlier one kept.
+    /// </remarks>
     public async Task<(int Cached, int Failed)> FetchAsync(string html, HttpClient http, TimeProvider clock, AssetCacheLimits? limits = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(http);
+        ArgumentNullException.ThrowIfNull(clock);
         limits ??= new AssetCacheLimits();
         Directory.CreateDirectory(_directory);
 
         var assets = new List<CachedAsset>();
         var failures = new List<AssetFailure>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var queue = new Queue<(AssetReference Reference, int Depth)>(AssetScanner.ScanHtml(html).Select(r => (r, 0)));
         long total = 0;
+        var requests = 0;
 
-        while (queue.Count > 0 && assets.Count < limits.MaxFiles)
+        using var budget = new CancellationTokenSource(limits.TimeBudget, clock);
+        using var network = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
+        using var all = new SemaphoreSlim(Math.Max(1, limits.MaxConcurrency));
+        var perHost = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+
+        try
         {
-            var (reference, depth) = queue.Dequeue();
-            var url = reference.Url.AbsoluteUri;
-            if (!seen.Add(url)) continue;
-
-            var known = Find(url);
-            byte[] bytes;
-            CachedAsset asset;
-            if (known is not null && File.Exists(Path.Combine(_directory, known.Sha256)))
+            var level = AssetScanner.ScanHtml(html).ToList();
+            for (var depth = 0; level.Count > 0 && assets.Count < limits.MaxFiles; depth++)
             {
-                asset = known;
-                bytes = await File.ReadAllBytesAsync(Path.Combine(_directory, known.Sha256), cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                var (fetched, failure) = await FetchOneAsync(http, reference, clock, limits, cancellationToken).ConfigureAwait(false);
-                if (fetched is null)
+                var next = new List<AssetReference>();
+                var pending = new Queue<AssetReference>(level.Where(r => seen.Add(r.Url.AbsoluteUri)));
+                while (pending.Count > 0 && assets.Count < limits.MaxFiles)
                 {
-                    failures.Add(new AssetFailure(url, failure!));
-                    continue;
+                    // No more at once than the files still allowed, so a nearly full cache is not
+                    // overshot by a whole depth of requests.
+                    var batch = new List<AssetReference>();
+                    while (pending.Count > 0 && batch.Count < limits.MaxFiles - assets.Count) batch.Add(pending.Dequeue());
+
+                    var results = await Task.WhenAll(batch.Select(ObtainAsync)).ConfigureAwait(false);
+                    for (var i = 0; i < batch.Count && assets.Count < limits.MaxFiles; i++)
+                    {
+                        var reference = batch[i];
+                        var (asset, bytes, failure) = results[i];
+                        if (asset is null || bytes is null)
+                        {
+                            failures.Add(new AssetFailure(reference.Url.AbsoluteUri, failure!));
+                            continue;
+                        }
+
+                        if (total + bytes.Length > limits.MaxTotalBytes)
+                        {
+                            failures.Add(new AssetFailure(reference.Url.AbsoluteUri, "the application's cache is full"));
+                            continue;
+                        }
+
+                        var path = Path.Combine(_directory, asset.Sha256);
+                        if (!File.Exists(path))
+                            await DurableFile.WriteAtomicallyAsync(path, bytes, cancellationToken).ConfigureAwait(false);
+
+                        total += bytes.Length;
+                        assets.Add(asset);
+                        if (depth >= limits.MaxDepth) continue;
+
+                        var text = Encoding.UTF8.GetString(bytes);
+                        var finalUrl = new Uri(asset.FinalUrl);
+                        next.AddRange(reference.Kind switch
+                        {
+                            AssetKind.Module => AssetScanner.ScanModule(text, finalUrl),
+                            AssetKind.Style => AssetScanner.ScanCss(text, finalUrl),
+                            _ => [],
+                        });
+                    }
                 }
 
-                (asset, bytes) = fetched.Value;
-                if (total + bytes.Length > limits.MaxTotalBytes)
-                {
-                    failures.Add(new AssetFailure(url, "the application's cache is full"));
-                    continue;
-                }
-
-                var path = Path.Combine(_directory, asset.Sha256);
-                if (!File.Exists(path))
-                    await DurableFile.WriteAtomicallyAsync(path, bytes, cancellationToken).ConfigureAwait(false);
+                level = next;
             }
-
-            total += bytes.Length;
-            assets.Add(asset);
-            if (depth >= limits.MaxDepth) continue;
-
-            var text = Encoding.UTF8.GetString(bytes);
-            var finalUrl = new Uri(asset.FinalUrl);
-            IEnumerable<AssetReference> next = reference.Kind switch
-            {
-                AssetKind.Module => AssetScanner.ScanModule(text, finalUrl),
-                AssetKind.Style => AssetScanner.ScanCss(text, finalUrl),
-                _ => [],
-            };
-            foreach (var child in next) queue.Enqueue((child, depth + 1));
+        }
+        finally
+        {
+            foreach (var gate in perHost.Values) gate.Dispose();
         }
 
         await WriteIndexAsync(assets, failures, cancellationToken).ConfigureAwait(false);
         lock (_lock) Load(assets, failures);
         RemoveUnreferencedFiles(assets);
         return (assets.Count, failures.Count);
+
+        async Task<(CachedAsset? Asset, byte[]? Bytes, string? Failure)> ObtainAsync(AssetReference reference)
+        {
+            var known = Find(reference.Url.AbsoluteUri);
+            if (known is not null)
+            {
+                var knownPath = Path.Combine(_directory, known.Sha256);
+                if (File.Exists(knownPath))
+                    return (known, await File.ReadAllBytesAsync(knownPath, cancellationToken).ConfigureAwait(false), null);
+            }
+
+            if (budget.IsCancellationRequested) return (null, null, BudgetRanOut);
+            if (Interlocked.Increment(ref requests) > limits.MaxRequests) return (null, null, "too many requests for one fetch");
+
+            SemaphoreSlim host;
+            lock (perHost)
+            {
+                if (!perHost.TryGetValue(reference.Url.Host, out host!))
+                    perHost[reference.Url.Host] = host = new SemaphoreSlim(Math.Max(1, limits.MaxConcurrencyPerHost));
+            }
+
+            try
+            {
+                await all.WaitAsync(network.Token).ConfigureAwait(false);
+                try
+                {
+                    await host.WaitAsync(network.Token).ConfigureAwait(false);
+                    try
+                    {
+                        var (fetched, failure) = await FetchOneAsync(http, reference, clock, limits, network.Token).ConfigureAwait(false);
+                        if (fetched is { } found) return (found.Item1, found.Item2, null);
+                        return (null, null, budget.IsCancellationRequested ? BudgetRanOut : failure);
+                    }
+                    finally
+                    {
+                        host.Release();
+                    }
+                }
+                finally
+                {
+                    all.Release();
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return (null, null, BudgetRanOut);
+            }
+        }
     }
+
+    private const string BudgetRanOut = "the time budget ran out";
 
     /// <summary>
     /// Whether <paramref name="url"/> may be requested on an application's behalf: HTTPS to a public

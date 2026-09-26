@@ -151,4 +151,101 @@ public sealed class AssetCacheTests : IDisposable
 
         Assert.Equal("too large", Assert.Single(cache.Failures).Reason);
     }
+
+    [Fact]
+    public async Task Files_are_requested_together_within_the_overall_and_per_host_limits_and_kept_in_the_order_found()
+    {
+        // A module graph is wide: one file at a time made a single application wait minutes on a slow CDN.
+        var cdn = new FakeCdn();
+        var urls = new List<string>();
+        foreach (var host in new[] { "a.example", "b.example", "c.example", "d.example" })
+        {
+            cdn.Slow(host, TimeSpan.FromMilliseconds(150));
+            for (var i = 0; i < 4; i++)
+            {
+                var url = $"https://{host}/m{i}.js";
+                cdn.File(url, "text/javascript", $"window.{host[0]}{i}=1;");
+                urls.Add(url);
+            }
+        }
+
+        var cache = AssetCache.Open(_directory);
+        var (cached, failed) = await cache.FetchAsync(string.Concat(urls.Select(u => $"""<script src="{u}"></script>""")), new HttpClient(cdn), _clock);
+
+        Assert.Equal((16, 0), (cached, failed));
+        Assert.Equal(urls, cache.Assets.Select(a => a.Url));
+        Assert.Equal(6, cdn.MostAtOnce);
+        Assert.Equal(2, cdn.MostAtOncePerHost);
+    }
+
+    [Fact]
+    public async Task When_the_time_budget_runs_out_what_arrived_is_kept_and_the_rest_says_why()
+    {
+        var cdn = new FakeCdn()
+            .File("https://fast.example/lib.js", "text/javascript", "window.lib=1;")
+            .File("https://slow.example/big.js", "text/javascript", "window.big=1;")
+            .Slow("slow.example", TimeSpan.FromSeconds(30));
+        var cache = AssetCache.Open(_directory);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        var (cached, failed) = await cache.FetchAsync(
+            """<script src="https://fast.example/lib.js"></script><script src="https://slow.example/big.js"></script>""",
+            new HttpClient(cdn), _clock, new AssetCacheLimits { TimeBudget = TimeSpan.FromMilliseconds(300) });
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"took {started.Elapsed}");
+        Assert.Equal((1, 1), (cached, failed));
+        Assert.Equal("https://fast.example/lib.js", Assert.Single(cache.Assets).Url);
+        Assert.Equal(("https://slow.example/big.js", "the time budget ran out"), (cache.Failures[0].Url, cache.Failures[0].Reason));
+    }
+
+    [Fact]
+    public async Task A_fetch_cut_short_keeps_what_an_earlier_fetch_cached_and_follows_it_from_disk()
+    {
+        var cdn = new FakeCdn()
+            .File("https://cdn.example/app.mjs", "text/javascript", """import"/dep.mjs";""")
+            .File("https://cdn.example/dep.mjs", "text/javascript", "export const d=1;");
+        const string before = """<script type="module" src="https://cdn.example/app.mjs"></script>""";
+        await AssetCache.Open(_directory).FetchAsync(before, new HttpClient(cdn), _clock);
+        cdn.File("https://cdn.example/new.js", "text/javascript", "window.n=1;");
+        var requestedBefore = cdn.Requested.Count;
+
+        var cache = AssetCache.Open(_directory);
+        var (cached, failed) = await cache.FetchAsync(before + """<script src="https://cdn.example/new.js"></script>""",
+            new HttpClient(cdn), _clock, new AssetCacheLimits { TimeBudget = TimeSpan.Zero });
+
+        Assert.Equal((2, 1), (cached, failed));
+        Assert.Equal(["https://cdn.example/app.mjs", "https://cdn.example/dep.mjs"], cache.Assets.Select(a => a.Url));
+        Assert.All(cache.Assets, a => Assert.True(File.Exists(Path.Combine(_directory, a.Sha256))));
+        Assert.Equal("the time budget ran out", Assert.Single(cache.Failures).Reason);
+        Assert.Equal(requestedBefore, cdn.Requested.Count);
+    }
+
+    [Fact]
+    public async Task Failed_requests_count_toward_the_request_limit()
+    {
+        var cdn = new FakeCdn();
+        var cache = AssetCache.Open(_directory);
+
+        var (cached, failed) = await cache.FetchAsync(string.Concat(Enumerable.Range(0, 10).Select(i => $"""<script src="https://cdn.example/missing{i}.js"></script>""")),
+            new HttpClient(cdn), _clock, new AssetCacheLimits { MaxRequests = 3 });
+
+        Assert.Equal((0, 10), (cached, failed));
+        Assert.Equal(3, cdn.Requested.Count);
+        Assert.Equal(7, cache.Failures.Count(f => f.Reason == "too many requests for one fetch"));
+    }
+
+    [Fact]
+    public async Task A_chain_of_re_exporting_modules_is_followed_past_three_packages()
+    {
+        // Some CDNs answer a package name with a module that re-exports a pinned build, so three
+        // packages importing each other are six files deep.
+        var cdn = new FakeCdn();
+        for (var i = 0; i < 6; i++)
+            cdn.File($"https://cdn.example/m{i}.js", "text/javascript", i < 5 ? $"""export*from"/m{i + 1}.js";""" : "export const leaf=1;");
+        var cache = AssetCache.Open(_directory);
+
+        var (cached, failed) = await cache.FetchAsync("""<script type="module" src="https://cdn.example/m0.js"></script>""", new HttpClient(cdn), _clock);
+
+        Assert.Equal((6, 0), (cached, failed));
+    }
 }
