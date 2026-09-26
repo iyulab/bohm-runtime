@@ -16,7 +16,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     private const string RealKey = "sk-real-secret-0123456789";
 
     private FakeProvider _provider = null!;
-    private FakeModel _model = null!;
+    private FakeChatModel _model = null!;
     private RunningHost _host = null!;
     private string _app = null!;
     private string _cookie = null!;
@@ -24,7 +24,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         _provider = await FakeProvider.StartAsync();
-        _model = new FakeModel();
+        _model = new FakeChatModel();
         _host = await RunningHost.StartAsync(configure: o => o with
         {
             LlmEndpoints = new Dictionary<string, Uri> { ["api.openai.com"] = _provider.Address, ["api.anthropic.com"] = _provider.Address },
@@ -124,12 +124,12 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     [Fact]
     public async Task A_request_in_a_shape_the_local_model_does_not_answer_still_asks_for_a_key()
     {
-        using var response = await PostAsync("/__bohm/llm/api.anthropic.com/v1/messages", """{"model":"m","max_tokens":10,"messages":[]}""");
+        using var response = await PostAsync("/__bohm/llm/api.openai.com/v1/embeddings", """{"model":"m","input":"hello"}""");
 
         HttpAssert.Status(HttpStatusCode.Unauthorized, response);
         Assert.Empty(_model.Calls);
         var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{_app}/status")).RootElement;
-        Assert.Equal(["anthropic"], status.GetProperty("needsKey").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(["openai"], status.GetProperty("needsKey").EnumerateArray().Select(e => e.GetString()));
     }
 
     [Fact]
@@ -191,10 +191,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     {
         var providers = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray()
             .ToDictionary(p => p.GetProperty("id").GetString()!, p => p.GetProperty("answeredLocally").GetBoolean());
-        Assert.True(providers["openai"]);
-        Assert.True(providers["groq"]);
-        Assert.False(providers["anthropic"]);
-        Assert.False(providers["google"]);
+        Assert.All(providers.Values, Assert.True); // OpenAI-shaped, Anthropic and Gemini alike
 
         using var put = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(RealKey));
         Assert.False(JsonDocument.Parse(await put.Content.ReadAsStringAsync()).RootElement.GetProperty("answeredLocally").GetBoolean());
@@ -436,45 +433,5 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
         request.Headers.Add("Cookie", _cookie);
         request.Headers.Authorization = new("Bearer", $"bohm-key-{_app}");
         return _host.ClientForApp(_app).SendAsync(request, completion);
-    }
-
-    /// <summary>A model that records what it was asked and answers as told.</summary>
-    private sealed class FakeModel : IChatClient
-    {
-        public List<(List<ChatMessage> Messages, ChatOptions? Options)> Calls { get; } = [];
-
-        public string Reply { get; set; } = "ok";
-
-        public IReadOnlyList<string> Chunks { get; set; } = ["ok"];
-
-        public FunctionCallContent? Call { get; set; }
-
-        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            Calls.Add(([.. messages], options));
-            var message = Call is { } call ? new ChatMessage(ChatRole.Assistant, [call]) : new ChatMessage(ChatRole.Assistant, Reply);
-            return Task.FromResult(new ChatResponse(message)
-            {
-                ModelId = "local-test",
-                FinishReason = Call is null ? ChatFinishReason.Stop : ChatFinishReason.ToolCalls,
-            });
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            Calls.Add(([.. messages], options));
-            foreach (var chunk in Chunks)
-            {
-                await Task.Yield();
-                yield return new ChatResponseUpdate(ChatRole.Assistant, chunk) { ModelId = "local-test", ResponseId = "r-1" };
-            }
-
-            yield return new ChatResponseUpdate { FinishReason = ChatFinishReason.Stop, ModelId = "local-test", ResponseId = "r-1" };
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose() { }
     }
 }

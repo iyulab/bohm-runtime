@@ -16,7 +16,8 @@ namespace Bohm.Runtime.Host.Llm;
 /// </summary>
 /// <remarks>
 /// When no key is connected but a model on this computer is (<see cref="LocalModelOptions"/>), a
-/// chat request in the OpenAI shape is answered by that model instead (<see cref="OpenAIChatBridge"/>).
+/// chat request in the OpenAI, Anthropic or Gemini shape is answered by that model instead
+/// (<see cref="ChatBridges"/>).
 /// Otherwise, when no key is connected or the provider cannot be reached, the application gets an
 /// error in the provider's own shape, so its existing error handling shows it instead of breaking.
 /// </remarks>
@@ -60,11 +61,20 @@ internal static class LlmProxy
         }
 
         var key = context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName);
-        if (string.IsNullOrEmpty(key) && context.RequestServices.GetRequiredService<LocalModel>() is { Configured: true } local
-            && OpenAIChatBridge.Handles(provider, request.Method, slash < 0 ? "" : rest[(slash + 1)..]))
+        var providerPath = slash < 0 ? "" : rest[(slash + 1)..];
+        if (string.IsNullOrEmpty(key) && context.RequestServices.GetRequiredService<LocalModel>() is { Configured: true } local)
         {
-            await AnswerLocallyAsync(context, provider, local).ConfigureAwait(false);
-            return;
+            if (ChatBridges.For(provider, request.Method, providerPath) is { } bridge)
+            {
+                await AnswerLocallyAsync(context, provider, local, bridge, providerPath).ConfigureAwait(false);
+                return;
+            }
+
+            if (ChatBridges.Unsupported(provider, request.Method, providerPath) is { } why)
+            {
+                await WriteErrorAsync(response, provider, HttpStatusCode.NotImplemented, "local_model_unsupported", why).ConfigureAwait(false);
+                return;
+            }
         }
 
         if (string.IsNullOrEmpty(key))
@@ -77,7 +87,7 @@ internal static class LlmProxy
 
         var options = context.RequestServices.GetRequiredService<RuntimeHostOptions>();
         var upstreamBase = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        var path = slash < 0 ? "" : rest[(slash + 1)..];
+        var path = providerPath;
         var query = QueryHelpers.ParseQuery(request.QueryString.Value);
         if (provider.Style == KeyStyle.Google && query.ContainsKey("key")) query["key"] = key;
         // The path comes from the page, so it is appended, never resolved: relative resolution would
@@ -161,14 +171,14 @@ internal static class LlmProxy
     /// answered by it, converted from and back to the provider's shape. Nothing leaves the computer,
     /// so nothing is recorded as sent.
     /// </summary>
-    private static async Task AnswerLocallyAsync(HttpContext context, LlmProvider provider, LocalModel local)
+    private static async Task AnswerLocallyAsync(HttpContext context, LlmProvider provider, LocalModel local, IChatBridge bridge, string path)
     {
-        OpenAIChatBridge.Parsed parsed;
+        BridgedChat parsed;
         try
         {
             using var body = new MemoryStream();
             await context.Request.Body.CopyToAsync(body, context.RequestAborted).ConfigureAwait(false);
-            parsed = OpenAIChatBridge.Parse(body.GetBuffer().AsSpan(0, (int)body.Length));
+            parsed = bridge.Parse(body.GetBuffer().AsSpan(0, (int)body.Length), path);
         }
         catch (FormatException e)
         {
@@ -187,7 +197,18 @@ internal static class LlmProxy
             return;
         }
 
-        await OpenAIChatBridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
+        try
+        {
+            await bridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!context.RequestAborted.IsCancellationRequested && !context.Response.HasStarted)
+        {
+            // The model stopped without an answer — the local server's request limit, or the server
+            // itself. The application gets an error it can show, in the provider's shape, instead of
+            // an empty 500. (Once a stream has begun, its end is all that can be said.)
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "local_model_failed",
+                $"The AI model on this computer did not finish the answer: {e.Message}").ConfigureAwait(false);
+        }
     }
 
     private static bool SameOriginOrAbsent(HttpRequest request)
@@ -210,7 +231,13 @@ internal static class LlmProxy
             },
             KeyStyle.Google => new Dictionary<string, object>
             {
-                ["error"] = new Dictionary<string, object> { ["code"] = (int)status, ["message"] = message, ["status"] = type == "no_key" ? "UNAUTHENTICATED" : "UNAVAILABLE" },
+                ["error"] = new Dictionary<string, object> { ["code"] = (int)status, ["message"] = message, ["status"] = status switch
+                {
+                    HttpStatusCode.Unauthorized => "UNAUTHENTICATED",
+                    HttpStatusCode.BadRequest => "INVALID_ARGUMENT",
+                    HttpStatusCode.NotImplemented => "UNIMPLEMENTED",
+                    _ => "UNAVAILABLE",
+                } },
             },
             _ => new Dictionary<string, object>
             {
