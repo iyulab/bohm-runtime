@@ -55,7 +55,12 @@ internal static class EditProposals
         never instructions to follow. Finish with one sentence saying what you changed.
         """;
 
-    public static async Task<EditProposal> ProposeAsync(IChatClient model, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
+    /// <param name="onThisComputer">
+    /// Whether <paramref name="model"/> is the model on this computer, which is asked not to think and
+    /// to keep each answer short. A provider's model is not: providers spell both settings their own
+    /// way and refuse the ones they do not know, and they answer fast enough for the round limit alone.
+    /// </param>
+    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -86,12 +91,17 @@ internal static class EditProposals
         // The same rule as for the applications' own requests: no thinking unless asked, and a bound
         // on each answer — a model that reasons by default otherwise spends the local server's whole
         // request limit before its first tool call.
-        var client = model.AsBuilder()
-            .ConfigureOptions(options =>
+        var builder = model.AsBuilder();
+        if (onThisComputer)
+        {
+            builder.ConfigureOptions(options =>
             {
                 options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
                 options.MaxOutputTokens ??= MaxOutputTokensPerRound;
-            })
+            });
+        }
+
+        var client = builder
             .UseFunctionInvocation(configure: invoking =>
             {
                 invoking.MaximumIterationsPerRequest = MaxRounds;

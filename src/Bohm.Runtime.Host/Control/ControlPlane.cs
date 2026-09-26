@@ -25,7 +25,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
-/// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }] }</c>; nothing is applied (taking it in is a new revision). 409 when no model on this computer is chosen, 503 with why when it cannot run.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model }</c>; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
@@ -34,6 +34,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
+/// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
+/// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
+/// <item><term><c>DELETE /__control/edit/model</c></term><description>Goes back to the model on this computer.</description></item>
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
@@ -318,6 +321,33 @@ internal static class ControlPlane
 
             case ("GET", ["egress"]):
                 await WriteAsync(response, context.RequestServices.GetRequiredService<Egress>().Snapshot(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["edit", "model"]):
+                await WriteAsync(response, EditModelViewOf(context.RequestServices.GetRequiredService<Edit.EditModel>()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["edit", "model"]):
+                var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
+                if (request.Method == "PUT")
+                {
+                    try
+                    {
+                        using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                        await editModel.ChooseAsync(new(body.RootElement.GetProperty("provider").GetString() ?? "", body.RootElement.GetProperty("model").GetString() ?? ""), cancel).ConfigureAwait(false);
+                    }
+                    catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentException)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+                }
+                else
+                {
+                    await editModel.ChooseAsync(null, cancel).ConfigureAwait(false);
+                }
+
+                await WriteAsync(response, EditModelViewOf(editModel), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm"]):
@@ -654,17 +684,11 @@ internal static class ControlPlane
             return;
         }
 
-        var local = context.RequestServices.GetRequiredService<LocalModel>();
-        if (!local.Configured)
-        {
-            response.StatusCode = StatusCodes.Status409Conflict;
-            return;
-        }
-
-        Microsoft.Extensions.AI.IChatClient model;
+        var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
+        Edit.ChosenEditModel? model;
         try
         {
-            model = await local.GetAsync(cancel).ConfigureAwait(false);
+            model = await editModel.GetAsync(cancel).ConfigureAwait(false);
         }
         catch (LocalModelUnavailableException e)
         {
@@ -673,27 +697,42 @@ internal static class ControlPlane
             return;
         }
 
+        if (model is null)
+        {
+            response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteAsync(response, editModel.Missing ?? new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
+            return;
+        }
+
         var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
         Edit.EditProposal proposal;
         try
         {
-            proposal = await Edit.EditProposals.ProposeAsync(model, source, target, instruction, cancel).ConfigureAwait(false);
+            proposal = await Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, source, target, instruction, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
-            // The model stopped without finishing — the local server's request limit, for one.
+            // The model stopped without finishing — the local server's request limit, or a provider's refusal.
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             await WriteAsync(response, new ProposalFailure(null, e.Message), cancel).ConfigureAwait(false);
             return;
         }
 
-        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits), cancel).ConfigureAwait(false);
+        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name), cancel).ConfigureAwait(false);
     }
 
     /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
     /// <param name="Summary">The model's sentence on what it changed.</param>
     /// <param name="Edits">Each exact piece replaced and its replacement, in order; empty when nothing changed.</param>
-    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits);
+    /// <param name="Model">Which model proposed it: <c>local</c>, or the provider and model name (<c>openai/…</c>).</param>
+    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model);
+
+    /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
+    /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
+    /// <param name="Missing">What is missing before a proposal can be made, or <see langword="null"/>.</param>
+    internal sealed record EditModelView(string? Provider, string? Model, Edit.EditModelMissing? Missing);
+
+    private static EditModelView EditModelViewOf(Edit.EditModel model) => new(model.Chosen?.Provider, model.Chosen?.Model, model.Missing);
 
     /// <param name="Model">Why the model could not start, when that is why.</param>
     /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
@@ -726,6 +765,8 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalFailure))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.EditModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(Edit.EditModelMissing))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
