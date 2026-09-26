@@ -391,6 +391,29 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Calls_to_a_server_the_page_expected_are_listed_with_their_method_apart_from_files()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Sign up</title><p id="out">waiting</p><script src="footer.js"></script>
+            <script>
+              Promise.allSettled([
+                fetch("/api/register?name=kim", { method: "POST", body: "{}" }),
+                fetch("/api/users"),
+              ]).then(() => { document.getElementById("out").textContent = "done"; });
+            </script>
+            """);
+
+        var page = await OpenAsync(id);
+        await page.WaitForSelectorAsync("#out:has-text('done')");
+
+        var status = await StatusWhenAsync(id, s => s.GetProperty("missingApis").GetArrayLength() >= 2 && s.GetProperty("missingFiles").GetArrayLength() > 0);
+        Assert.Equal(["GET /api/users", "POST /api/register"],
+            status.GetProperty("missingApis").EnumerateArray().Select(c => $"{c.GetProperty("method").GetString()} {c.GetProperty("path").GetString()}").Order(StringComparer.Ordinal));
+        Assert.Equal("/footer.js", Assert.Single(status.GetProperty("missingFiles").EnumerateArray()).GetString());
+    }
+
+    [Fact]
     public async Task Code_from_other_hosts_cached_at_adoption_runs_under_the_policy_and_offline()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

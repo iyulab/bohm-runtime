@@ -128,13 +128,18 @@ internal static class AdoptedAppServing
         if (path != "/" || !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
         {
             // An adopted application is one file. A page that asks for files next to itself (as it
-            // could on the site it came from) gets nothing, and the person can be told which.
+            // could on the site it came from) gets nothing, and the person can be told which. A
+            // call to a server there — fetch or XMLHttpRequest (Sec-Fetch-Dest: empty), or any
+            // method but GET and HEAD — is told apart from a file, with its method.
             // (The browser's own favicon request is not the page asking for anything.)
-            if (HttpMethods.IsGet(context.Request.Method) && !path.StartsWithSegments("/__bohm") && path != "/favicon.ico")
+            var method = context.Request.Method;
+            if (!path.StartsWithSegments("/__bohm") && path != "/favicon.ico")
             {
                 var pathApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
-                if (await AssetServing.TryServeByPathAsync(context, pathApp).ConfigureAwait(false)) return;
-                pathApp.AddMissingFile(path.Value!);
+                var get = HttpMethods.IsGet(method) || HttpMethods.IsHead(method);
+                if (get && await AssetServing.TryServeByPathAsync(context, pathApp).ConfigureAwait(false)) return;
+                if (!get || context.Request.Headers["Sec-Fetch-Dest"] == "empty") pathApp.AddMissingApi(method, path.Value!);
+                else pathApp.AddMissingFile(path.Value!);
             }
             response.StatusCode = StatusCodes.Status404NotFound;
             return;
