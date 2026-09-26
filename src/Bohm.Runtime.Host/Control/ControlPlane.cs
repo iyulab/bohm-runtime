@@ -25,6 +25,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }] }</c>; nothing is applied (taking it in is a new revision). 409 when no model on this computer is chosen, 503 with why when it cannot run.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
@@ -152,6 +153,10 @@ internal static class ControlPlane
                 var revisedPath = OriginalPath(request);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
                     storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), reverted: false).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var proposalFor, "proposals"]):
+                await ProposeAsync(context, proposalFor, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var revertedId, "revisions", "revert"]):
@@ -612,6 +617,88 @@ internal static class ControlPlane
     /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
     internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure);
 
+    /// <summary>
+    /// A proposal for the application's current source, from the model on this computer. Nothing is
+    /// kept: the proposal is the answer, and taking it in is the caller's next request.
+    /// </summary>
+    private static async Task ProposeAsync(HttpContext context, string appId, CancellationToken cancel)
+    {
+        var response = context.Response;
+        var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
+        if (await catalog.GetAsync(appId, cancel).ConfigureAwait(false) is null)
+        {
+            response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        string instruction;
+        Edit.EditTarget target;
+        try
+        {
+            using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
+            var root = body.RootElement;
+            instruction = root.GetProperty("instruction").GetString() ?? "";
+            var element = root.GetProperty("target");
+            target = new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
+                element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null);
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(instruction))
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var local = context.RequestServices.GetRequiredService<LocalModel>();
+        if (!local.Configured)
+        {
+            response.StatusCode = StatusCodes.Status409Conflict;
+            return;
+        }
+
+        Microsoft.Extensions.AI.IChatClient model;
+        try
+        {
+            model = await local.GetAsync(cancel).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await WriteAsync(response, new ProposalFailure(e.Failure, null), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
+        Edit.EditProposal proposal;
+        try
+        {
+            proposal = await Edit.EditProposals.ProposeAsync(model, source, target, instruction, cancel).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            // The model stopped without finishing — the local server's request limit, for one.
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await WriteAsync(response, new ProposalFailure(null, e.Message), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits), cancel).ConfigureAwait(false);
+    }
+
+    /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
+    /// <param name="Summary">The model's sentence on what it changed.</param>
+    /// <param name="Edits">Each exact piece replaced and its replacement, in order; empty when nothing changed.</param>
+    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits);
+
+    /// <param name="Model">Why the model could not start, when that is why.</param>
+    /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
+    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail);
+
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
             !connected && local.Configured && ChatBridges.AnswersChat(provider));
@@ -637,6 +724,8 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalFailure))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
