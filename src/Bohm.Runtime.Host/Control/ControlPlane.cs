@@ -30,7 +30,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page (<c>ack</c>) and the highest sequence the page reported having issued (<c>issued</c>); <c>left</c> once the page's report sent after leaving has arrived, which makes <c>issued</c> final. A host closing the page waits until <c>ack</c> reaches both the sequence it read before the page left and <c>issued</c>; 404 when the page is not (or no longer) the application's.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/loss-suspected</c></term><description>Records that a closing page of the application went away before its last writes could be confirmed as applied. Counted per day in the usage record.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files and keys needed.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
@@ -275,7 +275,7 @@ internal static class ControlPlane
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.Assets.Assets.Count), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var assetsFor, "assets"]):
@@ -545,7 +545,7 @@ internal static class ControlPlane
     /// person is the caller's job, in the person's language.
     /// </summary>
     internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors,
-        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, int CachedAssets);
+        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, IReadOnlyList<MissingApi> MissingApis, int CachedAssets);
 
     /// <summary>
     /// An application's usage record. <c>FirstUsed</c> is day 0 of the retention rule (<c>null</c> until
@@ -636,6 +636,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TabView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]

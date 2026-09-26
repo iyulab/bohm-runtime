@@ -11,6 +11,15 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <param name="Host">The host it would have come from.</param>
 internal sealed record BlockedResource(string Category, string Host);
 
+/// <summary>
+/// A request the page made to its own origin for something other than a file — a <c>fetch</c> or
+/// <c>XMLHttpRequest</c>, or a method other than GET — which the server it came from would have
+/// answered. Path only: the query can carry what the person typed.
+/// </summary>
+/// <param name="Method">The request method, upper case.</param>
+/// <param name="Path">The path asked for.</param>
+internal sealed record MissingApi(string Method, string Path);
+
 /// <summary>An adopted application while the host is running: its storage, its usage record and recent load failures.</summary>
 internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache assets)
 {
@@ -20,6 +29,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
     private readonly HashSet<string> _neededKeys = new(StringComparer.Ordinal);
     private readonly List<BlockedResource> _blocked = [];
     private readonly List<string> _missingFiles = [];
+    private readonly List<MissingApi> _missingApis = [];
 
     public AppStorage Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
@@ -44,6 +54,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
             _neededKeys.Clear();
             _blocked.Clear();
             _missingFiles.Clear();
+            _missingApis.Clear();
         }
     }
 
@@ -82,6 +93,12 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
         get { lock (_lock) return _missingFiles.ToList(); }
     }
 
+    /// <summary>Calls the page made to a server it expected on its own origin, which is not here.</summary>
+    public IReadOnlyList<MissingApi> MissingApis
+    {
+        get { lock (_lock) return _missingApis.ToList(); }
+    }
+
     public void AddBlocked(string category, string host)
     {
         var first = false;
@@ -103,6 +120,15 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
         lock (_lock)
         {
             if (_missingFiles.Count < 20 && !_missingFiles.Contains(path)) _missingFiles.Add(path);
+        }
+    }
+
+    public void AddMissingApi(string method, string path)
+    {
+        var call = new MissingApi(method.ToUpperInvariant(), path);
+        lock (_lock)
+        {
+            if (_missingApis.Count < 20 && !_missingApis.Contains(call)) _missingApis.Add(call);
         }
     }
 
