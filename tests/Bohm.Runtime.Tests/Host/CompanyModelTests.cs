@@ -151,6 +151,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
         var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("error");
         Assert.Equal("bohm_company_model_failed", error.GetProperty("type").GetString());
+        Assert.Contains("model overloaded", error.GetProperty("message").GetString(), StringComparison.Ordinal); // the server's own reason reaches the app
     }
 
     [Fact]
