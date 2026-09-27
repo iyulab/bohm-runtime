@@ -783,24 +783,38 @@ internal static class ControlPlane
             return;
         }
 
-        string instruction;
-        Edit.EditTarget target;
+        // Either «change this» on an element — an instruction and a target — or a named fix the runtime
+        // words itself: `{"fix": "local-storage"}` moves an application that keeps its data only online.
+        string instruction = "";
+        Edit.EditTarget? target = null;
+        var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
         try
         {
             using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
             var root = body.RootElement;
-            instruction = root.GetProperty("instruction").GetString() ?? "";
-            var element = root.GetProperty("target");
-            target = new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
-                element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null);
+            if (root.TryGetProperty("fix", out var fix))
+            {
+                // Only an application that has the problem: the proposal would otherwise rewrite working storage.
+                if (fix.GetString() != "local-storage" || OnlineStorage.OnlyOnline(source) is null)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+            }
+            else
+            {
+                instruction = root.GetProperty("instruction").GetString() ?? "";
+                var element = root.GetProperty("target");
+                target = new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
+                    element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null);
+                if (string.IsNullOrWhiteSpace(instruction))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+            }
         }
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            response.StatusCode = StatusCodes.Status400BadRequest;
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(instruction))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -826,11 +840,12 @@ internal static class ControlPlane
             return;
         }
 
-        var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
         Edit.EditProposal proposal;
         try
         {
-            proposal = await Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, source, target, instruction, cancel).ConfigureAwait(false);
+            proposal = await (target is null
+                ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, source, cancel)
+                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, source, target, instruction, cancel)).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
