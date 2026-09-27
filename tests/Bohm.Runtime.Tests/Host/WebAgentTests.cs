@@ -141,6 +141,50 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_provider_answers_only_once_the_person_chooses_it_for_web_questions_and_its_choice_is_not_the_edit_models()
+    {
+        await using var provider = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync(configure: o => o with
+        {
+            LlmEndpoints = LlmProviders.All.ToDictionary(p => p.Host, _ => provider.Address),
+            LocalModel = new LocalModelOptions { ModelPath = "unused.gguf", Client = _model },
+        });
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent("sk-real-0123456789"))) HttpAssert.Status(HttpStatusCode.OK, key);
+        using (var edit = await host.ControlClient().PutAsync("/__control/edit/model", Json("""{"provider":"openai","model":"for-edits"}"""))) HttpAssert.Status(HttpStatusCode.OK, edit);
+
+        // A key connected and a provider chosen for edits: web questions still stay on this computer.
+        using (var first = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}"""))
+            Assert.Equal("local", JsonDocument.Parse(await first.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
+        Assert.Empty(provider.Received);
+
+        using (var chose = await host.ControlClient().PutAsync("/__control/agent/model", Json("""{"provider":"openai","model":"for-pages"}""")))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, chose);
+            Assert.Equal("openai", JsonDocument.Parse(await chose.Content.ReadAsStringAsync()).RootElement.GetProperty("provider").GetString());
+        }
+
+        using var second = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        HttpAssert.Status(HttpStatusCode.OK, second);
+        Assert.Equal("openai/for-pages", JsonDocument.Parse(await second.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
+        Assert.Equal("for-pages", JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("model").GetString());
+        var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal("api.openai.com", sent.GetProperty("host").GetString());
+        Assert.Equal("for-edits", JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement.GetProperty("model").GetString());
+
+        using (var disconnected = await host.ControlClient().DeleteAsync("/__control/llm/openai/key")) HttpAssert.Status(HttpStatusCode.OK, disconnected);
+        using var third = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        HttpAssert.Status(HttpStatusCode.Conflict, third);
+        var missing = JsonDocument.Parse(await third.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(("key", "openai"), (missing.GetProperty("needs").GetString(), missing.GetProperty("provider").GetString()));
+
+        using (var back = await host.ControlClient().DeleteAsync("/__control/agent/model")) HttpAssert.Status(HttpStatusCode.OK, back);
+        using var fourth = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        Assert.Equal("local", JsonDocument.Parse(await fourth.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
+    }
+
+    private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+
+    [Fact]
     public async Task A_real_model_on_this_computer_reads_a_page_through_the_caller_and_answers_from_it()
     {
         var gguf = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");

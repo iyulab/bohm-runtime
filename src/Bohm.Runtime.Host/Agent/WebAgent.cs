@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Bohm.Runtime.Host.Llm;
 using IronHive.Agent.Loop;
 using Microsoft.Extensions.AI;
 
@@ -155,19 +154,6 @@ internal static class WebAgent
         if (conversation[^1].Role != ChatRole.User && conversation[^1].Role != ChatRole.Tool)
             throw new FormatException("The conversation must end with the question or with tool results.");
         return conversation;
-    }
-
-    /// <summary>
-    /// The model a web question goes to: the organization's model server, or else the model on this
-    /// computer — never a provider by default, since the pages may be the organization's own (a
-    /// provider is something the person turns on, not yet offered). <see langword="null"/> when neither is set.
-    /// </summary>
-    /// <exception cref="LocalModelUnavailableException">The model on this computer cannot be loaded.</exception>
-    public static async Task<(IChatClient Client, string Name, bool OnThisComputer)?> ModelAsync(CompanyModel company, LocalModel local, CancellationToken cancellationToken)
-    {
-        if (company.Client() is { } organizations) return (organizations, $"company/{company.Current!.Model}", false);
-        if (local.Configured) return (await local.GetAsync(cancellationToken).ConfigureAwait(false), "local", true);
-        return null;
     }
 }
 
