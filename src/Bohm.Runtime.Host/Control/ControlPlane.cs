@@ -288,12 +288,13 @@ internal static class ControlPlane
                 }
 
                 var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(id).ConfigureAwait(false);
+                var onlineOnly = OnlineStorage.OnlyOnline(Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(id, cancel).ConfigureAwait(false)));
                 var today = app.Usage.Today;
                 var signals = app.Usage.SignalsOn(today);
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count, onlineOnly), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var assetsFor, "assets"]):
@@ -645,10 +646,13 @@ internal static class ControlPlane
 
     /// <summary>
     /// Today's facts about one application. Structured only — turning them into sentences for a
-    /// person is the caller's job, in the person's language.
+    /// person is the caller's job, in the person's language. <c>OnlineOnlyStorage</c> names the online
+    /// database the application keeps its data in when it has no local storage of its own — what it
+    /// writes there is not kept (<see cref="OnlineStorage"/>).
     /// </summary>
     internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors,
-        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, IReadOnlyList<MissingApi> MissingApis, int CachedAssets);
+        IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, IReadOnlyList<MissingApi> MissingApis, int CachedAssets,
+        string? OnlineOnlyStorage);
 
     /// <summary>
     /// An application's usage record. <c>FirstUsed</c> is day 0 of the retention rule (<c>null</c> until
