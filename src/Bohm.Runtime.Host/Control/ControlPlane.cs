@@ -48,6 +48,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model }</c> — its OpenAI-compatible base address (http or https) and a model's name — and remembers it; 400 when either is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
+/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked of the organization's model server or the model on this computer; 409 with <c>{ needs: "localModel" }</c> when neither is set, 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -160,6 +161,10 @@ internal static class ControlPlane
                 var revisedPath = OriginalPath(request);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
                     storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), reverted: false).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["agent", "turns"]):
+                await AgentTurnAsync(context, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var proposalFor, "proposals"]):
@@ -713,6 +718,55 @@ internal static class ControlPlane
     /// A proposal for the application's current source, from the model on this computer. Nothing is
     /// kept: the proposal is the answer, and taking it in is the caller's next request.
     /// </summary>
+    private static async Task AgentTurnAsync(HttpContext context, CancellationToken cancel)
+    {
+        var response = context.Response;
+        List<Microsoft.Extensions.AI.ChatMessage> conversation;
+        try
+        {
+            using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
+            conversation = Agent.WebAgent.ParseConversation(body.RootElement);
+        }
+        catch (Exception e) when (e is JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        (Microsoft.Extensions.AI.IChatClient Client, string Name, bool OnThisComputer)? model;
+        try
+        {
+            model = await Agent.WebAgent.ModelAsync(context.RequestServices.GetRequiredService<CompanyModel>(), context.RequestServices.GetRequiredService<LocalModel>(), cancel).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await WriteAsync(response, new ProposalFailure(e.Failure, null, null), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        if (model is not { } chosen)
+        {
+            response.StatusCode = StatusCodes.Status409Conflict;
+            await WriteAsync(response, new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        Agent.TurnResult turn;
+        try
+        {
+            turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation, cancel).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        await WriteAsync(response, turn, cancel).ConfigureAwait(false);
+    }
+
     private static async Task ProposeAsync(HttpContext context, string appId, CancellationToken cancel)
     {
         var response = context.Response;
@@ -844,6 +898,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
