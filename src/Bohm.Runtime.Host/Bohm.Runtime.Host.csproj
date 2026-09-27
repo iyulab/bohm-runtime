@@ -20,11 +20,11 @@
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
   -->
   <ItemGroup>
-    <PackageReference Include="IronHive.Agent" Version="0.19.9" />
+    <PackageReference Include="IronHive.Agent" Version="0.19.12" />
     <PackageReference Include="IronHive.Extensions.AI" Version="0.42.0" />
     <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.42.0" />
-    <PackageReference Include="IronProw.LMSupply" Version="0.8.2" />
-    <PackageReference Include="LMSupply.Generator" Version="0.84.0" />
+    <PackageReference Include="IronProw.LMSupply" Version="0.8.5" />
+    <PackageReference Include="LMSupply.Generator" Version="0.87.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
   </ItemGroup>
 
