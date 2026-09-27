@@ -121,9 +121,14 @@ public sealed class AssetCache
     }
 
     /// <summary>The cached file for <paramref name="url"/> (as referenced, or as finally fetched), if any.</summary>
+    /// <remarks>
+    /// Matched by what the address means, not how it is spelled: files are known by their
+    /// normalized address, and a request or a document may spell the same one differently
+    /// (<c>react@^18</c> for <c>react@%5E18</c>, an upper-case host).
+    /// </remarks>
     public CachedAsset? Find(string url)
     {
-        lock (_lock) return _byUrl.GetValueOrDefault(url);
+        lock (_lock) return _byUrl.GetValueOrDefault(url) ?? _byUrl.GetValueOrDefault(Normalized(url));
     }
 
     /// <summary>
@@ -133,12 +138,19 @@ public sealed class AssetCache
     /// </summary>
     public CachedAsset? FindByPath(string pathAndQuery)
     {
+        // A request's path arrives decoded (react@^18); cached paths are escaped (react@%5E18).
+        var wanted = Uri.TryCreate(PathBase, pathAndQuery, out var resolved) ? resolved.PathAndQuery : pathAndQuery;
         lock (_lock)
         {
-            var matches = _assets.Where(a => new Uri(a.FinalUrl).PathAndQuery == pathAndQuery || new Uri(a.Url).PathAndQuery == pathAndQuery).Take(2).ToList();
+            var matches = _assets.Where(a => new Uri(a.FinalUrl).PathAndQuery == wanted || new Uri(a.Url).PathAndQuery == wanted).Take(2).ToList();
             return matches.Count == 1 ? matches[0] : null;
         }
     }
+
+    private static readonly Uri PathBase = new("http://path.invalid/");
+
+    private static string Normalized(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var parsed) ? new UriBuilder(parsed) { Fragment = "" }.Uri.AbsoluteUri : url;
 
     /// <summary>Opens a cached file's bytes.</summary>
     public Stream OpenRead(CachedAsset asset) => File.OpenRead(Path.Combine(_directory, asset.Sha256));

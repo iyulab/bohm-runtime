@@ -6,6 +6,28 @@ namespace Bohm.Runtime.Tests.Assets;
 public sealed class AssetScannerTests
 {
     [Fact]
+    public void Finds_the_modules_an_import_map_names_but_not_its_folder_prefixes()
+    {
+        var found = AssetScanner.ScanHtml("""
+            <script type="importmap">
+              { "imports": { "react": "https://esm.example/react@18", "react-dom/client": "https://esm.example/react-dom@18/client",
+                             "lodash/": "https://cdn.example/lodash/", "local": "./local.js" },
+                "scopes": { "https://esm.example/": { "scheduler": "https://esm.example/scheduler@0.23" } } }
+            </script>
+            <script type="importmap">not json</script>
+            <script type="text/babel" data-type="module">import React from "react";</script>
+            """);
+
+        Assert.Equal(
+            [
+                ("https://esm.example/react@18", AssetKind.Module),
+                ("https://esm.example/react-dom@18/client", AssetKind.Module),
+                ("https://esm.example/scheduler@0.23", AssetKind.Module),
+            ],
+            found.Select(r => (r.Url.AbsoluteUri, r.Kind)));
+    }
+
+    [Fact]
     public void Finds_scripts_modules_styles_and_module_imports_written_in_a_document()
     {
         var found = AssetScanner.ScanHtml("""
@@ -85,6 +107,25 @@ public sealed class AssetCacheTests : IDisposable
 
         Assert.Equal((0, 2), (cached, failed));
         Assert.Equal(["not code (text/html)", "the server answered 404"], cache.Failures.Select(f => f.Reason));
+    }
+
+    [Fact]
+    public async Task A_cached_file_is_found_however_its_address_or_path_is_spelled()
+    {
+        // esm.sh modules import their dependencies by absolute path with a version range: "/react@^18.3.1?target=es2022".
+        var cdn = new FakeCdn()
+            .File("https://esm.example/lucide@1", "application/javascript", """import"/react@^18.3.1?target=es2022";export const x=1;""")
+            .File("https://esm.example/react@%5E18.3.1?target=es2022", "application/javascript", "export default {};");
+        var cache = AssetCache.Open(_directory);
+
+        var (cached, failed) = await cache.FetchAsync("""<script type="module">import "https://esm.example/lucide@1";</script>""", new HttpClient(cdn), _clock);
+
+        Assert.Equal((2, 0), (cached, failed));
+        var react = cache.Find("https://esm.example/react@%5E18.3.1?target=es2022");
+        Assert.NotNull(react);
+        Assert.Same(react, cache.FindByPath("/react@^18.3.1?target=es2022")); // how the request's path arrives (decoded)
+        Assert.Same(react, cache.FindByPath("/react@%5E18.3.1?target=es2022"));
+        Assert.Same(react, cache.Find("https://ESM.example:443/react@^18.3.1?target=es2022"));
     }
 
     [Fact]
