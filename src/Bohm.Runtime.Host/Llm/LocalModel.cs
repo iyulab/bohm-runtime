@@ -47,6 +47,15 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
     private const string FileName = "local-model.json";
 
+    /// <summary>
+    /// How long one call to the model may take before it is given up as hung. Generous on purpose:
+    /// on a slow processor a single legitimate call (a long prompt, or one round of a tool loop) can
+    /// take several minutes, and the model library's own default (5 minutes) cut such calls off.
+    /// Callers still end a call sooner by cancelling it — an application closing its request, or a
+    /// person stopping a proposal.
+    /// </summary>
+    internal static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(30);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private LocalModelOptions? _chosen = Read(options);
     private ITextGenerator? _generator;
@@ -168,6 +177,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 DisableAutoDownload = true,
                 MaxContextLength = settings.ContextLength,
                 ServerUpdateOptions = new LlamaServerUpdateOptions { ServerBinaryPath = settings.ServerPath, AutoDownloadUpdates = false },
+                LlamaOptions = new LlamaOptions { RequestTimeout = RequestTimeout },
             };
             try
             {
