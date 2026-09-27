@@ -403,6 +403,21 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.False(status.GetProperty("input").GetBoolean());
         Assert.False(status.GetProperty("wrote").GetBoolean());
         Assert.Equal(0, status.GetProperty("loadErrors").GetInt32());
+        Assert.Equal(JsonValueKind.Null, status.GetProperty("onlineOnlyStorage").ValueKind);
+    }
+
+    [Fact]
+    public async Task Status_names_the_online_database_an_application_keeps_its_data_only_in()
+    {
+        var id = await _host.AdoptAsync("""
+            <form></form><script type="module">
+            import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+            </script>
+            """);
+
+        var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+
+        Assert.Equal("firestore", status.GetProperty("onlineOnlyStorage").GetString());
     }
 
     [Fact]
