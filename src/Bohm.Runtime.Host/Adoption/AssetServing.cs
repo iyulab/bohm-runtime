@@ -64,27 +64,53 @@ internal static partial class AssetServing
     /// The served copy of a document: every cached URL written in it points at its local path.
     /// Returns the document unchanged when nothing is cached or it is not ASCII-compatible.
     /// </summary>
+    /// <remarks>
+    /// A URL is matched by what it means, not how it is spelled: the cache knows each file by its
+    /// normalized address, and a document may write the same address differently — a host with no
+    /// path (<c>https://cdn.tailwindcss.com</c>, the way that library tells people to load it), an
+    /// upper-case host, the default port, <c>&amp;amp;</c> for <c>&amp;</c> in an attribute. Each
+    /// URL in the document is read whole and normalized the way addresses are when they are found,
+    /// so a longer URL that merely starts with a cached one is never rewritten.
+    /// </remarks>
     public static byte[] PointAtCache(byte[] document, AssetCache cache)
     {
         var assets = cache.Assets;
         if (assets.Count == 0 || document.Length >= 2 && (document[0] is 0xFF or 0xFE)) return document;
 
+        var cached = assets.Select(a => a.Url).ToHashSet(StringComparer.Ordinal);
         // Latin-1 maps bytes to characters one to one, so replacing ASCII URLs is byte-exact.
         var text = Encoding.Latin1.GetString(document);
         var changed = false;
-        foreach (var url in assets.Select(a => a.Url).Distinct(StringComparer.Ordinal).OrderByDescending(u => u.Length))
+        text = WrittenUrl().Replace(text, match =>
         {
-            var local = AssetUrls.LocalPath(new Uri(url));
-            foreach (var written in new[] { url, url.Replace("&", "&amp;", StringComparison.Ordinal) }.Distinct(StringComparer.Ordinal))
+            // Punctuation that ends a statement or a list item can sit right after an unquoted URL.
+            var written = match.Value;
+            for (var end = written.Length; end > 0; end--)
             {
-                if (!text.Contains(written, StringComparison.Ordinal)) continue;
-                text = text.Replace(written, local, StringComparison.Ordinal);
-                changed = true;
+                if (end < written.Length && written[end] is not (';' or ',' or '.')) break;
+                if (LocalOf(written[..end], cached) is { } local)
+                {
+                    changed = true;
+                    return local + written[end..];
+                }
             }
-        }
+
+            return written;
+        });
 
         return changed ? Encoding.Latin1.GetBytes(text) : document;
     }
+
+    private static string? LocalOf(string written, HashSet<string> cached)
+    {
+        if (!Uri.TryCreate(written.Replace("&amp;", "&", StringComparison.Ordinal), UriKind.Absolute, out var url)) return null;
+        var key = new UriBuilder(url) { Fragment = "" }.Uri;
+        return cached.Contains(key.AbsoluteUri) ? AssetUrls.LocalPath(key) + url.Fragment : null;
+    }
+
+    /// <summary>An absolute http(s) URL as written: up to a quote, space, bracket, backslash or anything outside printable ASCII.</summary>
+    [System.Text.RegularExpressions.GeneratedRegex("""https?://[!#$%&*+,\-./0-9:;=?@A-Z\[\]^_a-z{|}~]+""", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex WrittenUrl();
 
     /// <summary>
     /// An import map sending every cached host's modules to their local paths, so an import a
