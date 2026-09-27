@@ -15,29 +15,33 @@ namespace Bohm.Runtime.Host.Edit;
 /// <param name="Model">The model's name as the provider knows it.</param>
 internal sealed record EditModelChoice(string Provider, string Model);
 
-/// <summary>What is missing for a proposal to be made: <c>localModel</c> (none is chosen) or <c>key</c> (the chosen provider's key is not connected).</summary>
+/// <summary>What is missing for a proposal to be made: <c>localModel</c> (neither a model on this computer nor the organization's model server is set) or <c>key</c> (the chosen provider's key is not connected).</summary>
 internal sealed record EditModelMissing(string Needs, string? Provider);
 
 /// <summary>The model a proposal is made with, and the name reported with the proposal.</summary>
 internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer);
 
 /// <summary>
-/// The model the runtime's own agent proposes changes with. The model on this computer unless the
-/// person chose a connected provider and one of its models, remembered in <c>edit-model.json</c> at
-/// the data root. Which model an application's own requests use is a separate matter.
+/// The model the runtime's own agent proposes changes with. The organization's model server when one
+/// is set (<see cref="CompanyModel"/>), otherwise the model on this computer — unless the person chose a
+/// connected provider and one of its models, remembered in <c>edit-model.json</c> at the data root.
+/// Which model an application's own requests use is a separate matter.
 /// </summary>
 /// <remarks>
 /// A provider is reached at its OpenAI-compatible base (<see cref="LlmProvider.OpenAICompatiblePath"/>),
 /// so one client serves them all. Choosing a provider sends the application's source there, which
 /// is why it is the person's choice and never the default; every request is counted as sent.
 /// </remarks>
-internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, Egress egress) : IDisposable
+internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
 {
     /// <summary>Format identifier written into <c>edit-model.json</c>.</summary>
     public const string Format = "bohm.edit-model/0";
 
     /// <summary>The name a proposal made by the model on this computer is reported with.</summary>
     public const string LocalName = "local";
+
+    /// <summary>The prefix a proposal made by the organization's model server is reported with, before the model's name.</summary>
+    public const string CompanyName = "company";
 
     private const string FileName = "edit-model.json";
 
@@ -50,7 +54,7 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     /// <summary>What is missing before a proposal can be made, or <see langword="null"/> when nothing is.</summary>
     public EditModelMissing? Missing => _chosen is { } chosen
         ? string.IsNullOrEmpty(vault.Read(LlmProviders.ById(chosen.Provider)!.VaultName)) ? new("key", chosen.Provider) : null
-        : local.Configured ? null : new("localModel", null);
+        : company.Configured || local.Configured ? null : new("localModel", null);
 
     /// <summary>Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> goes back to the model on this computer.</summary>
     /// <exception cref="ArgumentException">No such provider, or no model name.</exception>
@@ -91,7 +95,11 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     public async Task<ChosenEditModel?> GetAsync(CancellationToken cancellationToken)
     {
         if (_chosen is not { } chosen)
+        {
+            if (company.Client() is { } organizations)
+                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false);
             return local.Configured ? new(await local.GetAsync(cancellationToken).ConfigureAwait(false), LocalName, OnThisComputer: true) : null;
+        }
 
         var provider = LlmProviders.ById(chosen.Provider)!;
         var key = vault.Read(provider.VaultName);
@@ -134,21 +142,6 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
 
     internal sealed record Stored(string Format, string Provider, string Model);
 
-    /// <summary>Counts each request to the provider as the application's data sent to its host.</summary>
-    private sealed class CountedAsSent(IChatClient inner, Egress egress, string host) : DelegatingChatClient(inner)
-    {
-        public override Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            egress.Sent(host);
-            return base.GetResponseAsync(messages, options, cancellationToken);
-        }
-
-        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            egress.Sent(host);
-            return base.GetStreamingResponseAsync(messages, options, cancellationToken);
-        }
-    }
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

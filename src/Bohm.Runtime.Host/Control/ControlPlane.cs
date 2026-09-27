@@ -37,13 +37,17 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
 /// <item><term><c>DELETE /__control/edit/model</c></term><description>Goes back to the model on this computer.</description></item>
-/// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and whether, without one, the model on this computer answers the provider's chat requests.</description></item>
+/// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and what, without one, answers the provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or nothing.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
 /// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
+/// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start.</description></item>
+/// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model }</c> — its OpenAI-compatible base address (http or https) and a model's name — and remembers it; 400 when either is not usable, 409 when fixed at start.</description></item>
+/// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
+/// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -352,10 +356,68 @@ internal static class ControlPlane
 
             case ("GET", ["llm"]):
                 var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
-                var local = context.RequestServices.GetRequiredService<LocalModel>();
                 await WriteAsync(response, LlmProviders.All
-                    .Select(p => ProviderViewOf(p, !string.IsNullOrEmpty(vault.Read(p.VaultName)), local))
+                    .Select(p => ProviderViewOf(p, !string.IsNullOrEmpty(vault.Read(p.VaultName)), context.RequestServices))
                     .ToList(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["llm", "company-model"]):
+                await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["llm", "company-model"]):
+                var companyModel = context.RequestServices.GetRequiredService<CompanyModel>();
+                CompanyModelOptions? setTo = null;
+                if (request.Method == "PUT")
+                {
+                    try
+                    {
+                        using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                        if (!CompanyModelOptions.TryCreate(body.RootElement.GetProperty("endpoint").GetString(), body.RootElement.GetProperty("model").GetString(), out setTo))
+                        {
+                            response.StatusCode = StatusCodes.Status400BadRequest;
+                            break;
+                        }
+                    }
+                    catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+                }
+
+                try
+                {
+                    await companyModel.ChooseAsync(setTo, cancel).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                await WriteAsync(response, CompanyModelViewOf(companyModel), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["llm", "company-model", "key"]):
+                var companyKeys = context.RequestServices.GetRequiredService<ICredentialVault>();
+                if (request.Method == "DELETE")
+                {
+                    companyKeys.Delete(CompanyModel.VaultName);
+                }
+                else
+                {
+                    var companyKey = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                    if (companyKey.Length == 0)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+
+                    companyKeys.Write(CompanyModel.VaultName, companyKey);
+                }
+
+                await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm", "local-model"]):
@@ -419,7 +481,7 @@ internal static class ControlPlane
                     keys.Write(provider.VaultName, key);
                 }
 
-                await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices.GetRequiredService<LocalModel>()), cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["drain"]):
@@ -740,12 +802,21 @@ internal static class ControlPlane
     /// <param name="Provider">The provider's refusal — its status and own message — when a provider refused.</param>
     internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider);
 
-    private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
+    private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, IServiceProvider services) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
-            !connected && local.Configured && ChatBridges.AnswersChat(provider));
+            connected || !ChatBridges.AnswersChat(provider) ? null
+            : services.GetRequiredService<CompanyModel>().Configured ? "company"
+            : services.GetRequiredService<LocalModel>().Configured ? "local"
+            : null);
 
-    /// <param name="AnsweredLocally">Whether, with no key connected, the model on this computer answers this provider's chat requests.</param>
-    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, bool AnsweredLocally);
+    /// <param name="AnsweredBy">What, with no key connected, answers this provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or <see langword="null"/> (nothing — the application is told to connect a key).</param>
+    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
+
+    private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
+        new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected);
+
+    /// <param name="Endpoint">The server's OpenAI-compatible base address, or <see langword="null"/> when none is set.</param>
+    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected);
 
     internal sealed record DrainResult(bool Quiet);
 
@@ -772,6 +843,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]

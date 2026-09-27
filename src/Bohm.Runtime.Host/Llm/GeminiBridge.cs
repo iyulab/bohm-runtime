@@ -33,7 +33,7 @@ internal sealed partial class GeminiBridge : IChatBridge
 
     public string? Unsupported(LlmProvider provider, string method, string path) =>
         AnswersChat(provider) && method == "POST" && Generate().Match(path) is { Success: true } m && m.Groups["verb"].Value == "countTokens"
-            ? "The AI model on this computer cannot count tokens the way this provider does."
+            ? "The AI model answering in this provider's place cannot count tokens the way this provider does."
             : null;
 
     [GeneratedRegex(@"^v1(alpha|beta)?/(models|tunedModels)/(?<model>[^/:]+):(?<verb>generateContent|streamGenerateContent|countTokens)$")]
@@ -165,7 +165,7 @@ internal sealed partial class GeminiBridge : IChatBridge
                 ChatBridges.TryGet(result, out var response, "response") ? response.GetRawText() : "");
         }
 
-        throw new FormatException("A part is not something the model on this computer can read.");
+        throw new FormatException("A part is not something the model answering in this provider's place can read.");
     }
 
     /// <summary>

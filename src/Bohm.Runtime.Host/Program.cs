@@ -3,6 +3,7 @@ using System.Globalization;
 using Bohm.Runtime.Host;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
+//        [--company-model-endpoint <url> --company-model <name>]
 // The control API is enabled by passing a per-launch secret in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -15,13 +16,18 @@ using Bohm.Runtime.Host;
 // --llama-server names the executable that runs a model chosen on this computer; without it, one
 // shipped next to this executable (llama-server\llama-server.exe) is used when present, so a model
 // runs with nothing downloaded.
+// --company-model-endpoint and --company-model fix the organization's model server for this run — its
+// OpenAI-compatible base address and a model's name — so the person cannot change it (an
+// administrator's policy, passed on by whoever starts the runtime). Given together or not at all.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]";
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-model-endpoint <url> --company-model <name>]";
 string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
 string? llamaServer = null;
+string? companyEndpoint = null;
+string? companyModelName = null;
 for (var i = 0; i < args.Length - 1; i++)
 {
     switch (args[i])
@@ -30,10 +36,15 @@ for (var i = 0; i < args.Length - 1; i++)
         case "--port": port = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
         case "--parent-pid": parentPid = int.Parse(args[++i], CultureInfo.InvariantCulture); break;
         case "--llama-server": llamaServer = args[++i]; break;
+        case "--company-model-endpoint": companyEndpoint = args[++i]; break;
+        case "--company-model": companyModelName = args[++i]; break;
     }
 }
 
-if (dataRoot is null)
+Bohm.Runtime.Host.Llm.CompanyModelOptions? companyModel = null;
+if (dataRoot is null
+    || (companyEndpoint ?? companyModelName) is not null
+        && !Bohm.Runtime.Host.Llm.CompanyModelOptions.TryCreate(companyEndpoint, companyModelName, out companyModel))
 {
     await Console.Error.WriteLineAsync(usage);
     return 2;
@@ -49,6 +60,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     Port = port,
     ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
+    CompanyModel = companyModel,
     Discard = Environment.GetEnvironmentVariable("BOHM_DISCARD_DIR") is { Length: > 0 } discardDir
         ? (folder, _) =>
         {

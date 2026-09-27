@@ -48,6 +48,13 @@ public sealed record RuntimeHostOptions
     public Llm.LocalModelOptions? LocalModel { get; init; }
 
     /// <summary>
+    /// The organization's model server, fixed for this run — typically an administrator's policy passed
+    /// on by whoever starts the runtime. <see langword="null"/> (the default): the person sets one, or
+    /// none, through the control API.
+    /// </summary>
+    public Llm.CompanyModelOptions? CompanyModel { get; init; }
+
+    /// <summary>
     /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).
     /// Nothing is looked up or downloaded; <see langword="null"/>: a chosen model cannot be loaded (its
     /// state says why). Not used when <see cref="LocalModel"/> fixes the model.
@@ -108,6 +115,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<AssetFetcher>();
         builder.Services.AddSingleton<Egress>();
         builder.Services.AddSingleton<Llm.LocalModel>();
+        builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
         configure?.Invoke(builder);
 

@@ -190,11 +190,11 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
     public async Task The_control_api_says_which_providers_the_local_model_answers()
     {
         var providers = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray()
-            .ToDictionary(p => p.GetProperty("id").GetString()!, p => p.GetProperty("answeredLocally").GetBoolean());
-        Assert.All(providers.Values, Assert.True); // OpenAI-shaped, Anthropic and Gemini alike
+            .ToDictionary(p => p.GetProperty("id").GetString()!, p => p.GetProperty("answeredBy").GetString());
+        Assert.All(providers.Values, by => Assert.Equal("local", by)); // OpenAI-shaped, Anthropic and Gemini alike
 
         using var put = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(RealKey));
-        Assert.False(JsonDocument.Parse(await put.Content.ReadAsStringAsync()).RootElement.GetProperty("answeredLocally").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await put.Content.ReadAsStringAsync()).RootElement.GetProperty("answeredBy").ValueKind);
     }
 
     [Fact]
@@ -216,7 +216,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
             Assert.Equal(model, JsonDocument.Parse(await chosen.Content.ReadAsStringAsync()).RootElement.GetProperty("modelPath").GetString());
             var openai = JsonDocument.Parse(await first.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray()
                 .Single(p => p.GetProperty("id").GetString() == "openai");
-            Assert.True(openai.GetProperty("answeredLocally").GetBoolean());
+            Assert.Equal("local", openai.GetProperty("answeredBy").GetString());
             await first.StopKeepingDataAsync(); // the data root stays for the second launch
 
             await using var second = await RunningHost.StartAsync(dataRoot);
@@ -229,7 +229,7 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
             Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await cleared.Content.ReadAsStringAsync()).RootElement.GetProperty("modelPath").ValueKind);
             Assert.False(File.Exists(Path.Combine(dataRoot, "local-model.json")));
             Assert.All(JsonDocument.Parse(await second.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray(),
-                p => Assert.False(p.GetProperty("answeredLocally").GetBoolean()));
+                p => Assert.Equal(JsonValueKind.Null, p.GetProperty("answeredBy").ValueKind));
         }
         finally
         {

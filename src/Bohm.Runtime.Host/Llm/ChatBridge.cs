@@ -24,14 +24,14 @@ internal interface IChatBridge
     bool Handles(LlmProvider provider, string method, string path);
 
     /// <summary>
-    /// A request of the same provider API that the model on this computer cannot answer, and why —
+    /// A request of the same provider API that the model answering in the provider's place (on this computer or the organization's server) cannot answer, and why —
     /// or <see langword="null"/>. It gets an error in the provider's shape rather than a request for
     /// a key, since a key is not what is missing.
     /// </summary>
     string? Unsupported(LlmProvider provider, string method, string path);
 
     /// <exception cref="FormatException">The body is not a request this bridge can read.</exception>
-    /// <exception cref="NotSupportedException">The request asks for something the model on this computer cannot give.</exception>
+    /// <exception cref="NotSupportedException">The request asks for something the model answering in the provider's place cannot give.</exception>
     BridgedChat Parse(ReadOnlySpan<byte> body, string path);
 
     /// <summary>Answers the request with <paramref name="model"/>, in the provider's shape.</summary>

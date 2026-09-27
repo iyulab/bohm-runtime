@@ -15,8 +15,9 @@ namespace Bohm.Runtime.Host.Llm;
 /// otherwise, streaming the provider's answer back as it arrives.
 /// </summary>
 /// <remarks>
-/// When no key is connected but a model on this computer is (<see cref="LocalModelOptions"/>), a
-/// chat request in the OpenAI, Anthropic or Gemini shape is answered by that model instead
+/// When no key is connected but the organization's model server (<see cref="CompanyModelOptions"/>) or
+/// a model on this computer (<see cref="LocalModelOptions"/>) is — the organization's first — a chat
+/// request in the OpenAI, Anthropic or Gemini shape is answered by that model instead
 /// (<see cref="ChatBridges"/>).
 /// Otherwise, when no key is connected or the provider cannot be reached, the application gets an
 /// error in the provider's own shape, so its existing error handling shows it instead of breaking.
@@ -31,6 +32,9 @@ internal static class LlmProxy
     /// inside the local server's five-minute request limit.
     /// </summary>
     public const int DefaultLocalMaxOutputTokens = 512;
+
+    /// <summary>The path segment, in place of a provider's host, under which an application's own calls to the organization's model server arrive.</summary>
+    public const string CompanyModelSegment = "company-model";
 
     private static readonly HashSet<string> NotForwarded = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -60,6 +64,23 @@ internal static class LlmProxy
 
         var rest = request.Path.Value![PathPrefix.Length..];
         var slash = rest.IndexOf('/', StringComparison.Ordinal);
+        var providerPath = slash < 0 ? "" : rest[(slash + 1)..];
+        var company = context.RequestServices.GetRequiredService<CompanyModel>();
+        if ((slash < 0 ? rest : rest[..slash]) == CompanyModelSegment)
+        {
+            // The application calls the organization's model server itself: relayed as it is, with the server's key.
+            if (company.Current is not { } server)
+            {
+                response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            var serverKey = context.RequestServices.GetRequiredService<ICredentialVault>().Read(CompanyModel.VaultName);
+            await RelayAsync(context, CompanyModelShape(server), server.Endpoint, providerPath,
+                QueryHelpers.ParseQuery(request.QueryString.Value), string.IsNullOrEmpty(serverKey) ? null : serverKey).ConfigureAwait(false);
+            return;
+        }
+
         var provider = LlmProviders.ByHost(slash < 0 ? rest : rest[..slash]);
         if (provider is null)
         {
@@ -68,12 +89,15 @@ internal static class LlmProxy
         }
 
         var key = context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName);
-        var providerPath = slash < 0 ? "" : rest[(slash + 1)..];
-        if (string.IsNullOrEmpty(key) && context.RequestServices.GetRequiredService<LocalModel>() is { Configured: true } local)
+        var local = context.RequestServices.GetRequiredService<LocalModel>();
+        if (string.IsNullOrEmpty(key) && (company.Configured || local.Configured))
         {
             if (ChatBridges.For(provider, request.Method, providerPath) is { } bridge)
             {
-                await AnswerLocallyAsync(context, provider, local, bridge, providerPath).ConfigureAwait(false);
+                if (company.Client() is { } organizations)
+                    await AnswerByCompanyModelAsync(context, provider, organizations, bridge, providerPath).ConfigureAwait(false);
+                else
+                    await AnswerLocallyAsync(context, provider, local, bridge, providerPath).ConfigureAwait(false);
                 return;
             }
 
@@ -94,9 +118,21 @@ internal static class LlmProxy
 
         var options = context.RequestServices.GetRequiredService<RuntimeHostOptions>();
         var upstreamBase = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        var path = providerPath;
         var query = QueryHelpers.ParseQuery(request.QueryString.Value);
         if (provider.Style == KeyStyle.Google && query.ContainsKey("key")) query["key"] = key;
+        await RelayAsync(context, provider, upstreamBase, providerPath, query, key).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Forwards the application's request to <paramref name="upstreamBase"/> + <paramref name="path"/> with
+    /// <paramref name="key"/> presented the provider's way (nothing when <see langword="null"/>), and
+    /// streams the answer back. Counted as sent, whether or not it is answered.
+    /// </summary>
+    private static async Task RelayAsync(HttpContext context, LlmProvider provider, Uri upstreamBase, string path,
+        Dictionary<string, Microsoft.Extensions.Primitives.StringValues> query, string? key)
+    {
+        var request = context.Request;
+        var response = context.Response;
         // The path comes from the page, so it is appended, never resolved: relative resolution would
         // let "//other.host/…" or an absolute URL choose where the key goes.
         if (path.Contains('\\', StringComparison.Ordinal) || path.Split('/').Any(segment => segment is ".." or "."))
@@ -132,16 +168,19 @@ internal static class LlmProxy
             upstream.Headers.TryAddWithoutValidation(name, (IEnumerable<string?>)values);
         }
 
-        switch (provider.Style)
+        if (key is not null)
         {
-            case KeyStyle.Bearer: upstream.Headers.TryAddWithoutValidation("Authorization", $"Bearer {key}"); break;
-            case KeyStyle.ApiKeyHeader: upstream.Headers.TryAddWithoutValidation("x-api-key", key); break;
-            case KeyStyle.Google: upstream.Headers.TryAddWithoutValidation("x-goog-api-key", key); break;
+            switch (provider.Style)
+            {
+                case KeyStyle.Bearer: upstream.Headers.TryAddWithoutValidation("Authorization", $"Bearer {key}"); break;
+                case KeyStyle.ApiKeyHeader: upstream.Headers.TryAddWithoutValidation("x-api-key", key); break;
+                case KeyStyle.Google: upstream.Headers.TryAddWithoutValidation("x-goog-api-key", key); break;
+            }
         }
 
         var client = context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy));
         // Counted when it is sent, whether or not the provider answers: the application's data left.
-        context.RequestServices.GetRequiredService<Egress>().Sent(target.Host);
+        context.RequestServices.GetRequiredService<Egress>().Sent(target.Authority);
         HttpResponseMessage answer;
         try
         {
@@ -180,23 +219,7 @@ internal static class LlmProxy
     /// </summary>
     private static async Task AnswerLocallyAsync(HttpContext context, LlmProvider provider, LocalModel local, IChatBridge bridge, string path)
     {
-        BridgedChat parsed;
-        try
-        {
-            using var body = new MemoryStream();
-            await context.Request.Body.CopyToAsync(body, context.RequestAborted).ConfigureAwait(false);
-            parsed = bridge.Parse(body.GetBuffer().AsSpan(0, (int)body.Length), path);
-        }
-        catch (FormatException e)
-        {
-            await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request", e.Message).ConfigureAwait(false);
-            return;
-        }
-        catch (NotSupportedException e)
-        {
-            await WriteErrorAsync(context.Response, provider, HttpStatusCode.NotImplemented, "local_model_unsupported", e.Message).ConfigureAwait(false);
-            return;
-        }
+        if (await ParseAsync(context, provider, bridge, path).ConfigureAwait(false) is not { } parsed) return;
 
         // A request that sets no limit on the answer's length gets one: a provider stops on its own
         // well within its time, a small model on a CPU writes a few tokens a second and can run past
@@ -227,6 +250,52 @@ internal static class LlmProxy
                 $"The AI model on this computer did not finish the answer: {e.Message}").ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// No key is connected for the provider, and the organization's model server is set: the request
+    /// is answered by it, converted from and back to the provider's shape. It leaves this computer for
+    /// the organization's network, so it is counted as sent to the server's host.
+    /// </summary>
+    private static async Task AnswerByCompanyModelAsync(HttpContext context, LlmProvider provider, Microsoft.Extensions.AI.IChatClient model, IChatBridge bridge, string path)
+    {
+        if (await ParseAsync(context, provider, bridge, path).ConfigureAwait(false) is not { } parsed) return;
+        try
+        {
+            await bridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!context.RequestAborted.IsCancellationRequested && !context.Response.HasStarted)
+        {
+            // The server could not be reached or refused. The application gets an error it can show, in
+            // the provider's shape; the server's own message is kept, since it says why.
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "company_model_failed",
+                $"The organization's AI model server did not answer: {e.Message}").ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The application's chat request in the bridge's terms, or <see langword="null"/> after answering with why it cannot be.</summary>
+    private static async Task<BridgedChat?> ParseAsync(HttpContext context, LlmProvider provider, IChatBridge bridge, string path)
+    {
+        try
+        {
+            using var body = new MemoryStream();
+            await context.Request.Body.CopyToAsync(body, context.RequestAborted).ConfigureAwait(false);
+            return bridge.Parse(body.GetBuffer().AsSpan(0, (int)body.Length), path);
+        }
+        catch (FormatException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request", e.Message).ConfigureAwait(false);
+        }
+        catch (NotSupportedException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.NotImplemented, "local_model_unsupported", e.Message).ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    /// <summary>The organization's model server as a provider for relaying and for errors: OpenAI-shaped, keyed with a bearer token.</summary>
+    private static LlmProvider CompanyModelShape(CompanyModelOptions server) =>
+        new(CompanyModelSegment, server.Endpoint.Authority, "The organization's AI model server", KeyStyle.Bearer, "");
 
     private static bool SameOriginOrAbsent(HttpRequest request)
     {

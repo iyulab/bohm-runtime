@@ -507,6 +507,44 @@ public sealed class BrowserTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task An_app_written_for_the_organizations_model_server_reaches_it_through_the_runtime()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        await using var server = await FakeProvider.StartAsync();
+        var endpoint = new Uri(server.Address, "v1/");
+        await _host.StopKeepingDataAsync();
+        _host = await RunningHost.StartAsync(_host.DataRoot, configure: o => o with
+        {
+            CompanyModel = new Bohm.Runtime.Host.Llm.CompanyModelOptions(endpoint, "org-model"),
+        });
+
+        // A page someone wrote on the organization's network: it calls the server's address itself,
+        // which is another host — refused by the page's policy unless the runtime carries it.
+        var id = await _host.AdoptAsync($$"""
+            <!doctype html><title>Ask</title>
+            <button id="ask">Ask</button><p id="answer"></p>
+            <script>
+              document.getElementById('ask').onclick = async () => {
+                const r = await fetch('{{endpoint.AbsoluteUri}}chat/completions', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ model: 'org-model', messages: [{ role: 'user', content: 'hi' }] }),
+                });
+                const j = await r.json();
+                document.getElementById('answer').textContent = j.choices[0].message.content;
+              };
+            </script>
+            """);
+
+        var page = await OpenAsync(id);
+        await page.ClickAsync("#ask");
+        await page.WaitForSelectorAsync("#answer:has-text('hello from the provider')");
+
+        Assert.Equal("/v1/chat/completions", Assert.Single(server.Received).PathAndQuery);
+        await page.CloseAsync();
+    }
+
     /// <summary>
     /// Polls <paramref name="probe"/> until it yields a value, within one overall deadline. Each attempt is
     /// cancelled at the deadline too, so a request that hangs fails the test in seconds instead of waiting
