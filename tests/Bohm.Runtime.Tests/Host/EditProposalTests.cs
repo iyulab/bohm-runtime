@@ -134,6 +134,57 @@ public sealed class EditProposalTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.Conflict, response);
     }
 
+    private const string OnlineOnlyApp = """
+        <!doctype html><title>Survey</title>
+        <form id="f"><input id="name"><button>Send</button></form>
+        <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        const db = getFirestore(initializeApp({}));
+        document.getElementById('f').onsubmit = (e) => { e.preventDefault(); addDoc(collection(db, 'answers'), { name: document.getElementById('name').value }); };
+        </script>
+        """;
+
+    [Fact]
+    public async Task Moving_an_online_only_application_to_local_storage_shows_the_model_every_place_it_uses_the_database()
+    {
+        var filler = string.Join('\n', Enumerable.Range(1, 100).Select(i => $"<p>filler {i}</p>"));
+        var id = await _host.AdoptAsync(OnlineOnlyApp.Replace("<script type=\"module\">", filler + "\n<script type=\"module\">", StringComparison.Ordinal));
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "addDoc(collection(db, 'answers'), { name: document.getElementById('name').value });",
+            ["new_text"] = "localStorage.setItem('answers', JSON.stringify([...JSON.parse(localStorage.getItem('answers') || '[]'), { name: document.getElementById('name').value }]));",
+        }));
+        _model.Script.Enqueue(new TextContent("Answers are kept in localStorage."));
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals",
+            new StringContent("""{"fix":"local-storage"}""", Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var call = _model.Calls[0];
+        var asked = call.Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("firebase-firestore.js", asked, StringComparison.Ordinal);
+        Assert.Contains("addDoc(collection(db, 'answers')", asked, StringComparison.Ordinal);
+        Assert.DoesNotContain("<p>filler 50</p>", asked, StringComparison.Ordinal); // far from any use of the database
+        Assert.Contains("localStorage", call.Messages.First(m => m.Role == ChatRole.System).Text, StringComparison.Ordinal);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Contains("localStorage.setItem('answers'", proposal.GetProperty("html").GetString(), StringComparison.Ordinal);
+        Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData("""{"fix":"local-storage"}""")]
+    [InlineData("""{"fix":"something-else"}""")]
+    public async Task The_storage_fix_is_refused_for_an_application_that_does_not_need_it(string body)
+    {
+        var id = await _host.AdoptAsync(App); // keeps its data in localStorage already
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+        Assert.Empty(_model.Calls);
+    }
+
     [Theory]
     [InlineData("""{"target":{"html":"<b>"}}""")]
     [InlineData("""{"instruction":"  ","target":{"html":"<b>"}}""")]
