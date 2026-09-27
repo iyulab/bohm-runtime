@@ -23,7 +23,12 @@ internal sealed record SourceEdit(string Old, string New);
 /// <param name="Html">The whole source with the edits made.</param>
 /// <param name="Summary">The model's own sentence on what it changed.</param>
 /// <param name="Edits">The changes, in the order they were made.</param>
-internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits);
+/// <param name="Complete">
+/// For a named fix, whether the source no longer has what the fix removes — a proposal that stopped
+/// halfway is not one to apply, since half-moved storage breaks the application. <c>null</c> for a
+/// change the person asked for, which has no such test.
+/// </param>
+internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null);
 
 /// <summary>
 /// Turns «change this» on an element into a proposal: an agent reads the application's source
@@ -46,6 +51,12 @@ internal static partial class EditProposals
     /// <summary>How many rounds of tool calls moving an application's storage may take — one change per place it reads or writes.</summary>
     public const int MaxStorageRounds = 24;
 
+    /// <summary>
+    /// How many times moving storage is taken up again while the database is still used — each time
+    /// with the places that are left. A pass that changes nothing ends it.
+    /// </summary>
+    public const int MaxStoragePasses = 3;
+
     /// <summary>Lines shown on each side of each place the application uses its online database.</summary>
     public const int StorageContextLines = 6;
 
@@ -54,6 +65,15 @@ internal static partial class EditProposals
 
     /// <summary>The longest single answer from the model in one round — a tool call or the closing sentence.</summary>
     public const int MaxOutputTokensPerRound = 512;
+
+    /// <summary>
+    /// The longest single answer when moving storage on this computer — one replacement may carry a
+    /// whole block of storage code, and a tool call cut off at the limit arrives as text and ends the task.
+    /// </summary>
+    public const int MaxStorageOutputTokensHere = 2048;
+
+    /// <summary>The same bound for a provider's model, whose own default can be too short for it.</summary>
+    public const int MaxStorageOutputTokensProvider = 16000;
 
     private const string ReplaceRules = """
         Call read_source for other lines if you need them. Call replace with a piece of the source
@@ -86,7 +106,8 @@ internal static partial class EditProposals
         Replace each read, write, query, listener and sign-in with code that does the same with
         localStorage: one key per collection holding its documents as JSON, the same fields and ids,
         listeners called again after each write. Remove the database's imports, configuration and
-        sign-in. Keep everything else as it is.
+        sign-in. Keep everything else as it is. Keep calling replace until no use of the database is
+        left; do not stop to say what you will do next.
 
         """ + Closing + "\n\n" + AppContract;
 
@@ -114,18 +135,64 @@ internal static partial class EditProposals
     /// to keep each answer short. A provider's model is not: providers spell both settings their own
     /// way and refuse the ones they do not know, and they answer fast enough for the round limit alone.
     /// </param>
-    public static Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, string source, EditTarget target, string instruction, CancellationToken cancellationToken) =>
-        RunAsync(model, onThisComputer, source, SystemPrompt, MaxRounds, Prompt(source.Split('\n'), target, instruction), cancellationToken);
+    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
+    {
+        var text = SourceText.Of(source);
+        var proposal = await RunAsync(model, onThisComputer, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
+            Prompt(text.Lf.Split('\n'), target, instruction), cancellationToken).ConfigureAwait(false);
+        return proposal with { Html = text.Restore(proposal.Html) };
+    }
 
     /// <summary>
     /// A proposal that moves an application that keeps its data only in an online database
     /// (<see cref="Bohm.Runtime.Adoption.OnlineStorage"/>) to localStorage, which the runtime keeps.
     /// The model is shown every place the source uses the database rather than one element.
     /// </summary>
-    public static Task<EditProposal> ProposeLocalStorageAsync(IChatClient model, bool onThisComputer, string source, CancellationToken cancellationToken) =>
-        RunAsync(model, onThisComputer, source, StorageSystemPrompt, MaxStorageRounds, StoragePrompt(source.Split('\n')), cancellationToken);
+    public static async Task<EditProposal> ProposeLocalStorageAsync(IChatClient model, bool onThisComputer, string source, CancellationToken cancellationToken)
+    {
+        var text = SourceText.Of(source);
+        var draft = text.Lf;
+        var edits = new List<SourceEdit>();
+        var summary = "";
+        // A model may stop after a few places, saying what it will do next. Each pass shows it what is left.
+        for (var pass = 0; pass < MaxStoragePasses && StillOnline(draft); pass++)
+        {
+            var step = await RunAsync(model, onThisComputer, draft, StorageSystemPrompt, MaxStorageRounds,
+                onThisComputer ? MaxStorageOutputTokensHere : MaxStorageOutputTokensProvider,
+                StoragePrompt(draft.Split('\n'), again: pass > 0), cancellationToken).ConfigureAwait(false);
+            if (step.Edits.Count == 0) break;
+            draft = step.Html;
+            edits.AddRange(step.Edits);
+            summary = step.Summary;
+        }
 
-    private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, string source, string systemPrompt, int maxRounds, string prompt, CancellationToken cancellationToken)
+        return new EditProposal(text.Restore(draft), summary, edits, Complete: !StillOnline(draft));
+    }
+
+    /// <summary>
+    /// Whether the source still loads or calls the online database — its SDK, its setup, or the
+    /// configuration a generating tool supplies. A comment naming it, or a configuration object nothing
+    /// reads any more, does not keep data away from this computer.
+    /// </summary>
+    internal static bool StillOnline(string source) => OnlineUse().IsMatch(source);
+
+    [GeneratedRegex(@"firebasejs/|firebase-(?:app|firestore|auth)\b|\b(?:getFirestore|initializeApp|initializeFirestore|getAuth)\s*\(|__firebase_config|__initial_auth_token")]
+    private static partial Regex OnlineUse();
+
+    /// <summary>
+    /// The source with its line endings as the model sees them. Lines are shown without their carriage
+    /// returns, so a multi-line piece the model copies back would never match a CRLF source; the work is
+    /// done on LF text and the proposal gets the source's own line endings back.
+    /// </summary>
+    private readonly record struct SourceText(string Lf, bool Crlf)
+    {
+        public static SourceText Of(string source) =>
+            source.Contains("\r\n", StringComparison.Ordinal) ? new(source.Replace("\r\n", "\n", StringComparison.Ordinal), true) : new(source, false);
+
+        public string Restore(string lf) => Crlf ? lf.Replace("\n", "\r\n", StringComparison.Ordinal) : lf;
+    }
+
+    private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt, CancellationToken cancellationToken)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -154,16 +221,14 @@ internal static partial class EditProposals
         var permissions = new PermissionConfig { ReadOnlyTools = ["read_source"], DefaultAction = PermissionAction.Allow };
         // The same rule as for the applications' own requests: no thinking unless asked, and a bound
         // on each answer — a model that reasons by default otherwise spends the local server's whole
-        // request limit before its first tool call.
+        // request limit before its first tool call. A provider's model keeps its own settings except for
+        // the bound a task sets.
         var builder = model.AsBuilder();
-        if (onThisComputer)
+        builder.ConfigureOptions(options =>
         {
-            builder.ConfigureOptions(options =>
-            {
-                options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
-                options.MaxOutputTokens ??= MaxOutputTokensPerRound;
-            });
-        }
+            if (onThisComputer) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+            options.MaxOutputTokens ??= maxOutputTokens;
+        });
 
         var client = builder
             .UseFunctionInvocation(configure: invoking =>
@@ -194,7 +259,7 @@ internal static partial class EditProposals
         return prompt.ToString();
     }
 
-    private static string StoragePrompt(string[] lines)
+    private static string StoragePrompt(string[] lines, bool again)
     {
         // Each line that uses the database, with a few lines around it; nearby places share one block.
         var blocks = new List<(int From, int To)>();
@@ -207,7 +272,8 @@ internal static partial class EditProposals
         }
 
         var prompt = new StringBuilder();
-        prompt.Append(CultureInfo.InvariantCulture, $"The application's source has {lines.Length} lines. The places that use the online database:\n");
+        prompt.Append(CultureInfo.InvariantCulture, $"The application's source has {lines.Length} lines. ");
+        prompt.Append(again ? "Part of it has been moved already; the places that still use the online database:\n" : "The places that use the online database:\n");
         var shown = 0;
         foreach (var (from, to) in blocks)
         {

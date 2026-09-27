@@ -77,6 +77,25 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_multi_line_replacement_copied_from_the_shown_lines_matches_a_CRLF_source_and_keeps_its_line_endings()
+    {
+        // The model is shown lines without carriage returns and copies them back that way.
+        var id = await _host.AdoptAsync("<ul>\r\n<li>one</li>\r\n<li>two</li>\r\n</ul>\r\n");
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "<li>one</li>\n<li>two</li>",
+            ["new_text"] = "<li>하나</li>\n<li>둘</li>",
+        }));
+        _model.Script.Enqueue(new TextContent("Translated both items."));
+
+        using var response = await ProposeAsync(id, "<li>one</li>", "one", "Translate the list");
+
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+        Assert.Equal("<ul>\r\n<li>하나</li>\r\n<li>둘</li>\r\n</ul>\r\n", proposal.GetProperty("html").GetString());
+    }
+
+    [Fact]
     public async Task A_replacement_that_is_not_exact_or_not_unique_is_refused_and_the_model_is_told_why()
     {
         var id = await _host.AdoptAsync("<p>a</p>\n<p>a</p>\n<b>b</b>");
@@ -156,6 +175,7 @@ public sealed class EditProposalTests : IAsyncLifetime
             ["new_text"] = "localStorage.setItem('answers', JSON.stringify([...JSON.parse(localStorage.getItem('answers') || '[]'), { name: document.getElementById('name').value }]));",
         }));
         _model.Script.Enqueue(new TextContent("Answers are kept in localStorage."));
+        _model.Script.Enqueue(new TextContent("Nothing else to change.")); // the second pass, shown what is left
 
         using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals",
             new StringContent("""{"fix":"local-storage"}""", Encoding.UTF8, "application/json"));
@@ -170,6 +190,38 @@ public sealed class EditProposalTests : IAsyncLifetime
         var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Contains("localStorage.setItem('answers'", proposal.GetProperty("html").GetString(), StringComparison.Ordinal);
         Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+        // The imports and setup are still there: taken up again with what is left, then reported unfinished — not to apply.
+        Assert.Contains("still use the online database", _model.Calls[2].Messages.Last(m => m.Role == ChatRole.User).Text, StringComparison.Ordinal);
+        Assert.False(proposal.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task A_storage_move_that_leaves_no_trace_of_the_database_is_complete()
+    {
+        var id = await _host.AdoptAsync("""
+            <form></form>
+            <script type="module">
+            import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+            const db = getFirestore();
+            </script>
+            """);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = """
+                import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+                const db = getFirestore();
+                """,
+            ["new_text"] = "const db = { save: (v) => localStorage.setItem('answers', JSON.stringify(v)) };",
+        }));
+        _model.Script.Enqueue(new TextContent("Moved to localStorage."));
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals",
+            new StringContent("""{"fix":"local-storage"}""", Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.True(proposal.GetProperty("complete").GetBoolean());
+        Assert.Equal(2, _model.Calls.Count); // one pass: nothing was left to take up again
     }
 
     [Theory]
