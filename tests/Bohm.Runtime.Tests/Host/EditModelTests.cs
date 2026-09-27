@@ -67,7 +67,6 @@ public sealed class EditModelTests : IAsyncLifetime
     [Theory]
     [InlineData("openai", "/v1/chat/completions")]
     [InlineData("anthropic", "/v1/chat/completions")]
-    [InlineData("google", "/v1beta/openai/chat/completions")]
     [InlineData("groq", "/openai/v1/chat/completions")]
     [InlineData("openrouter", "/api/v1/chat/completions")]
     [InlineData("mistral", "/v1/chat/completions")]
@@ -98,6 +97,49 @@ public sealed class EditModelTests : IAsyncLifetime
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal(LlmProviders.ById(providerId)!.Host, sent.GetProperty("host").GetString());
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Gemini_is_asked_through_its_own_API_with_its_key_and_it_is_counted_as_sent()
+    {
+        // Not the OpenAI-compatible base: Gemini's models sign their tool calls and refuse the next turn
+        // without the signature, which that base drops. Its own API carries them.
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/google/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("google", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("google/model-x", proposal.GetProperty("model").GetString());
+        Assert.Equal(FakeProvider.Reply, proposal.GetProperty("summary").GetString());
+
+        var request = Assert.Single(_provider.Received);
+        Assert.StartsWith("/v1beta/models/model-x:", request.PathAndQuery);
+        Assert.Equal(Key, request.Headers["x-goog-api-key"]);
+        Assert.False(request.Headers.ContainsKey("Authorization"));
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray()
+            .SelectMany(t => t.GetProperty("functionDeclarations").EnumerateArray()).Select(f => f.GetProperty("name").GetString()).Order());
+
+        var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal("generativelanguage.googleapis.com", sent.GetProperty("host").GetString());
+        Assert.Equal(1, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Geminis_refusal_reaches_the_person_as_its_status_and_its_own_message()
+    {
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/google/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("google", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        _provider.Refusal = (404, """{"error":{"code":404,"message":"models/model-x is not found for API version v1beta.","status":"NOT_FOUND"}}""");
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(404, provider.GetProperty("status").GetInt32());
+        Assert.Equal("models/model-x is not found for API version v1beta.", provider.GetProperty("message").GetString());
     }
 
     [Theory]

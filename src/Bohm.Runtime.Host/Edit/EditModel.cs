@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Llm;
+using IronHive.Extensions.AI;
+using IronHive.Providers.GoogleAI;
 using Microsoft.Extensions.AI;
 using OpenAI;
 
@@ -96,8 +98,14 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
         if (string.IsNullOrEmpty(key)) return null;
 
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        var client = new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
-            new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient();
+        var client = provider.Id == "google"
+            // Gemini through its own API: its models sign each tool call and refuse the next turn without
+            // the signature, which the OpenAI-compatible base drops on the way back. IronHive's Gemini
+            // provider carries the signatures through the tool loop.
+            ? new GoogleAIMessageGenerator(new GoogleAIConfig { ApiKey = key, HttpOptions = new Google.GenAI.Types.HttpOptions { BaseUrl = root.ToString().TrimEnd('/') } })
+                .AsChatClient(chosen.Model, "googleai")
+            : new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
+                new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient();
         return new(new CountedAsSent(client, egress, provider.Host), $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
     }
 

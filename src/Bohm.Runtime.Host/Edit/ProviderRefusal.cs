@@ -20,6 +20,11 @@ internal sealed record ProviderRefusal(int Status, string? Message)
         {
             if (e is ClientResultException { Status: > 0 } refused)
                 return new ProviderRefusal(refused.Status, MessageOf(refused.GetRawResponse()?.Content?.ToString()));
+            // Gemini through its own API: the SDK has already read the provider's message out of the body.
+            if (e is Google.GenAI.ClientError { StatusCode: > 0 } client)
+                return new ProviderRefusal(client.StatusCode, Bounded(client.Message));
+            if (e is Google.GenAI.ServerError { StatusCode: > 0 } server)
+                return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
         }
 
         return null;
@@ -40,7 +45,7 @@ internal sealed record ProviderRefusal(int Status, string? Message)
             if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var error)
                 && error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var message)
                 && message.ValueKind == JsonValueKind.String && message.GetString() is { Length: > 0 } text)
-                return text.Length <= MaxMessage ? text : text[..MaxMessage] + "…";
+                return Bounded(text);
         }
         catch (JsonException)
         {
@@ -49,4 +54,7 @@ internal sealed record ProviderRefusal(int Status, string? Message)
 
         return null;
     }
+
+    private static string? Bounded(string? text) =>
+        string.IsNullOrWhiteSpace(text) ? null : text.Length <= MaxMessage ? text : text[..MaxMessage] + "…";
 }
