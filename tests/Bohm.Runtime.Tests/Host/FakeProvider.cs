@@ -24,6 +24,9 @@ public sealed class FakeProvider : IAsyncDisposable
 
     public ConcurrentQueue<ReceivedRequest> Received { get; } = new();
 
+    /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
+    public (int Status, string Body)? Refusal { get; set; }
+
     public sealed record ReceivedRequest(string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string Body);
 
     public static async Task<FakeProvider> StartAsync()
@@ -39,6 +42,14 @@ public sealed class FakeProvider : IAsyncDisposable
             var body = await reader.ReadToEndAsync();
             self!.Received.Enqueue(new ReceivedRequest(context.Request.Method, context.Request.Path + context.Request.QueryString,
                 context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.ToString(), StringComparer.OrdinalIgnoreCase), body));
+
+            if (self.Refusal is { } refusal)
+            {
+                context.Response.StatusCode = refusal.Status;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(refusal.Body);
+                return;
+            }
 
             if (body.Contains("\"stream\":true", StringComparison.Ordinal))
             {

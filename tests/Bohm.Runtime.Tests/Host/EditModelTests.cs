@@ -140,6 +140,28 @@ public sealed class EditModelTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    // The shapes providers refuse in: an object (OpenAI, Anthropic, most compatible bases) and a one-element
+    // array (Gemini's OpenAI-compatible base).
+    [InlineData("""{"error":{"message":"The model does not exist.","type":"invalid_request_error"}}""", 404, "The model does not exist.")]
+    [InlineData("""[{"error":{"code":400,"message":"Function call is missing a thought_signature in functionCall parts.","status":"INVALID_ARGUMENT"}}]""", 400, "Function call is missing a thought_signature in functionCall parts.")]
+    [InlineData("""not json""", 502, null)]
+    public async Task A_providers_refusal_reaches_the_person_as_its_status_and_its_own_message(string refusal, int status, string? message)
+    {
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("openai", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        _provider.Refusal = (status, refusal);
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var failure = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var provider = failure.GetProperty("provider");
+        Assert.Equal(status, provider.GetProperty("status").GetInt32());
+        if (message is null) Assert.Equal(JsonValueKind.Null, provider.GetProperty("message").ValueKind);
+        else Assert.Equal(message, provider.GetProperty("message").GetString());
+    }
+
     private async Task<JsonElement> GetModelAsync() => JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement;
 
     private Task<HttpResponseMessage> ChooseAsync(string provider, string model) =>

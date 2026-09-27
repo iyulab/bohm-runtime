@@ -693,7 +693,7 @@ internal static class ControlPlane
         catch (LocalModelUnavailableException e)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(e.Failure, null), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new ProposalFailure(e.Failure, null, null), cancel).ConfigureAwait(false);
             return;
         }
 
@@ -712,9 +712,10 @@ internal static class ControlPlane
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
-            // The model stopped without finishing — the local server's request limit, or a provider's refusal.
+            // The model stopped without finishing — the local server's request limit, or a provider's refusal,
+            // which carries the provider's own status and message so the person can see why.
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(null, e.Message), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
             return;
         }
 
@@ -736,7 +737,8 @@ internal static class ControlPlane
 
     /// <param name="Model">Why the model could not start, when that is why.</param>
     /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
-    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail);
+    /// <param name="Provider">The provider's refusal — its status and own message — when a provider refused.</param>
+    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider);
 
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, LocalModel local) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
