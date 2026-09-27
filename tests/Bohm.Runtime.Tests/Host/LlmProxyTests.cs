@@ -84,7 +84,7 @@ public sealed class LlmProxyTests : IAsyncLifetime
 
         var egress = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement;
         var sent = Assert.Single(egress.GetProperty("sent").EnumerateArray());
-        Assert.Equal(_provider.Address.Host, sent.GetProperty("host").GetString()); // the stand-in, not the name the app used
+        Assert.Equal(_provider.Address.Authority, sent.GetProperty("host").GetString()); // the stand-in (with its port), not the name the app used
         Assert.Equal(2, sent.GetProperty("count").GetInt32());
     }
 

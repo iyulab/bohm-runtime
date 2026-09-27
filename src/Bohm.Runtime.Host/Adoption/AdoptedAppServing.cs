@@ -162,7 +162,8 @@ internal static class AdoptedAppServing
         }
 
         var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
-            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value), BootJson.Default.Boot);
+            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value,
+            context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
         var (body, charset) = ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets),
             ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
 
@@ -185,7 +186,8 @@ internal static class AdoptedAppServing
     }
 
     /// <param name="LineOffset">Lines the injected script adds before the document's own first line.</param>
-    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts, int LineOffset);
+    /// <param name="CompanyBase">The organization's model server's base address, when one is set — an application written for it calls it directly.</param>
+    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts, int LineOffset, string? CompanyBase);
 }
 
 /// <summary>

@@ -271,11 +271,16 @@
     return nativePrompt.apply(window, arguments);
   };
 
+  // An application written for the organization's model server calls its address directly; that
+  // address is on another host, so the call goes through the runtime too, which adds the server's key.
   function toProxy(url) {
     try {
       var parsed = new URL(url, location.href);
       if (parsed.protocol === "https:" && boot.llmHosts.indexOf(parsed.hostname.toLowerCase()) >= 0)
         return location.origin + "/__bohm/llm/" + parsed.hostname.toLowerCase() + parsed.pathname + parsed.search;
+      var plain = parsed.origin + parsed.pathname;
+      if (boot.companyBase && (plain + "/").indexOf(boot.companyBase) === 0)
+        return location.origin + "/__bohm/llm/company-model/" + plain.substring(boot.companyBase.length) + parsed.search;
     } catch (e) { /* not a URL; leave it alone */ }
     return null;
   }

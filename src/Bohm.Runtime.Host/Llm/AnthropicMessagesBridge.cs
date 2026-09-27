@@ -30,7 +30,7 @@ internal sealed class AnthropicMessagesBridge : IChatBridge
 
     public string? Unsupported(LlmProvider provider, string method, string path) =>
         AnswersChat(provider) && method == "POST" && path.TrimEnd('/').EndsWith("v1/messages/count_tokens", StringComparison.Ordinal)
-            ? "The AI model on this computer cannot count tokens the way this provider does."
+            ? "The AI model answering in this provider's place cannot count tokens the way this provider does."
             : null;
 
     /// <exception cref="FormatException">The body is not a Messages request this bridge can read.</exception>
@@ -142,7 +142,7 @@ internal sealed class AnthropicMessagesBridge : IChatBridge
                     // reasons afresh, so it is left out.
                     break;
                 case var type:
-                    throw new FormatException($"Content of type '{type}' is not something the model on this computer can read.");
+                    throw new FormatException($"Content of type '{type}' is not something the model answering in this provider's place can read.");
             }
         }
 

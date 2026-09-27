@@ -111,7 +111,41 @@ public sealed class ProcessTests : IDisposable
         }
     }
 
-    private Process Start(string secret, int? parentPid = null)
+    [Fact]
+    public async Task The_organizations_model_server_given_at_start_is_fixed()
+    {
+        const string secret = "launch-secret";
+        using var process = Start(secret, extra: ["--company-model-endpoint", "http://models.example:8000/v1", "--company-model", "qwen"]);
+        try
+        {
+            var port = await ReadReadyPortAsync(process);
+            using var control = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+            control.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+
+            var state = JsonDocument.Parse(await control.GetStringAsync("/__control/llm/company-model")).RootElement;
+            Assert.Equal("http://models.example:8000/v1/", state.GetProperty("endpoint").GetString());
+            Assert.Equal("qwen", state.GetProperty("model").GetString());
+            Assert.True(state.GetProperty("fixed").GetBoolean());
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("--company-model-endpoint", "http://models.example:8000/v1")] // no model's name
+    [InlineData("--company-model", "qwen")] // no address
+    [InlineData("--company-model-endpoint", "ftp://models.example/v1", "--company-model", "qwen")]
+    public async Task A_model_server_given_only_in_part_or_unusable_stops_the_runtime_with_its_usage(params string[] extra)
+    {
+        using var process = Start("launch-secret", extra: extra);
+        using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(exited.Token);
+        Assert.Equal(2, process.ExitCode);
+    }
+
+    private Process Start(string secret, int? parentPid = null, string[]? extra = null)
     {
         var host = Path.Combine(AppContext.BaseDirectory, "Bohm.Runtime.Host.dll");
         var info = new ProcessStartInfo("dotnet")
@@ -128,6 +162,8 @@ public sealed class ProcessTests : IDisposable
             info.ArgumentList.Add("--parent-pid");
             info.ArgumentList.Add(pid.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+
+        foreach (var argument in extra ?? []) info.ArgumentList.Add(argument);
 
         info.Environment["BOHM_RUNTIME_SECRET"] = secret;
         var process = Process.Start(info)!;
