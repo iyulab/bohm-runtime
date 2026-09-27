@@ -265,10 +265,10 @@ internal static class LlmProxy
         }
         catch (Exception e) when (!context.RequestAborted.IsCancellationRequested && !context.Response.HasStarted)
         {
-            // The server could not be reached or refused. The application gets an error it can show, in
+            // The server could not be reached, or refused the request (an input it cannot read, a model it does not have). The application gets an error it can show, in
             // the provider's shape; the server's own message is kept, since it says why.
             await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "company_model_failed",
-                $"The organization's AI model server did not answer: {e.Message}").ConfigureAwait(false);
+                $"The organization's AI model server could not answer this request: {e.Message}").ConfigureAwait(false);
         }
     }
 
