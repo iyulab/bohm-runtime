@@ -36,6 +36,13 @@ public static partial class AssetScanner
         foreach (Match script in ScriptTag().Matches(html))
         {
             var attributes = script.Groups["attrs"].Value;
+            if (TypeImportMap().IsMatch(attributes))
+            {
+                foreach (var target in ImportMapTargets(script.Groups["body"].Value))
+                    Add(found, target, baseUrl, AssetKind.Module);
+                continue;
+            }
+
             var isModule = TypeModule().IsMatch(attributes);
             if (Attribute(attributes, "src") is { } src)
                 Add(found, src, baseUrl, isModule ? AssetKind.Module : AssetKind.Script);
@@ -89,6 +96,39 @@ public static partial class AssetScanner
         return Distinct(found);
     }
 
+    /// <summary>
+    /// The modules an import map sends names to — <c>"react": "https://esm.sh/react@18"</c> — in its
+    /// <c>imports</c> and <c>scopes</c>. A prefix entry (a target ending in <c>/</c>) names a folder,
+    /// not a file, so it is not fetched; the modules loaded under it are found by following imports.
+    /// A map that is not valid JSON names nothing, as it does in the browser.
+    /// </summary>
+    private static List<string> ImportMapTargets(string json)
+    {
+        var targets = new List<string>();
+        try
+        {
+            using var map = System.Text.Json.JsonDocument.Parse(json);
+            if (map.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return targets;
+            void Collect(System.Text.Json.JsonElement entries)
+            {
+                if (entries.ValueKind != System.Text.Json.JsonValueKind.Object) return;
+                foreach (var entry in entries.EnumerateObject())
+                    if (entry.Value.ValueKind == System.Text.Json.JsonValueKind.String && entry.Value.GetString() is { Length: > 0 } target && !target.EndsWith('/'))
+                        targets.Add(target);
+            }
+
+            if (map.RootElement.TryGetProperty("imports", out var imports)) Collect(imports);
+            if (map.RootElement.TryGetProperty("scopes", out var scopes) && scopes.ValueKind == System.Text.Json.JsonValueKind.Object)
+                foreach (var scope in scopes.EnumerateObject()) Collect(scope.Value);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // Not a valid map.
+        }
+
+        return targets;
+    }
+
     private static IEnumerable<string> ModuleSpecifiers(string source)
     {
         foreach (Match match in StaticImport().Matches(source)) yield return match.Groups["spec"].Value;
@@ -122,6 +162,9 @@ public static partial class AssetScanner
 
     [GeneratedRegex("""\btype\s*=\s*["']?module\b""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TypeModule();
+
+    [GeneratedRegex("""\btype\s*=\s*["']?importmap\b""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TypeImportMap();
 
     [GeneratedRegex("""<link\b(?<attrs>[^>]*)>""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LinkTag();
