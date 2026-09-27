@@ -22,20 +22,22 @@ internal sealed record EditModelMissing(string Needs, string? Provider);
 internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer);
 
 /// <summary>
-/// The model the runtime's own agent proposes changes with. The organization's model server when one
-/// is set (<see cref="CompanyModel"/>), otherwise the model on this computer — unless the person chose a
-/// connected provider and one of its models, remembered in <c>edit-model.json</c> at the data root.
-/// Which model an application's own requests use is a separate matter.
+/// A model the person may choose for one of the runtime's agents: by default the organization's model
+/// server when one is set (<see cref="CompanyModel"/>), otherwise the model on this computer — unless the
+/// person chose a connected provider and one of its models, remembered in a file at the data root.
 /// </summary>
 /// <remarks>
 /// A provider is reached at its OpenAI-compatible base (<see cref="LlmProvider.OpenAICompatiblePath"/>),
-/// so one client serves them all. Choosing a provider sends the application's source there, which
+/// so one client serves them all. Choosing a provider sends what the agent works on there, which
 /// is why it is the person's choice and never the default; every request is counted as sent.
 /// </remarks>
-internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
+internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
 {
-    /// <summary>Format identifier written into <c>edit-model.json</c>.</summary>
-    public const string Format = "bohm.edit-model/0";
+    /// <summary>The file at the data root the choice is remembered in.</summary>
+    protected abstract string FileName { get; }
+
+    /// <summary>Format identifier written into <see cref="FileName"/>.</summary>
+    protected abstract string Format { get; }
 
     /// <summary>The name a proposal made by the model on this computer is reported with.</summary>
     public const string LocalName = "local";
@@ -43,16 +45,26 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     /// <summary>The prefix a proposal made by the organization's model server is reported with, before the model's name.</summary>
     public const string CompanyName = "company";
 
-    private const string FileName = "edit-model.json";
-
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private EditModelChoice? _chosen = Read(options);
+    private EditModelChoice? _read;
+    private bool _wasRead;
+
+    /// <summary>The remembered choice, read from its file the first time it is needed (the file name belongs to the derived class).</summary>
+    private EditModelChoice? Remembered
+    {
+        get
+        {
+            if (!_wasRead) (_read, _wasRead) = (Read(), true);
+            return _read;
+        }
+        set => (_read, _wasRead) = (value, true);
+    }
 
     /// <summary>The chosen provider and model, or <see langword="null"/> for the model on this computer.</summary>
-    public EditModelChoice? Chosen => _chosen;
+    public EditModelChoice? Chosen => Remembered;
 
     /// <summary>What is missing before a proposal can be made, or <see langword="null"/> when nothing is.</summary>
-    public EditModelMissing? Missing => _chosen is { } chosen
+    public EditModelMissing? Missing => Remembered is { } chosen
         ? string.IsNullOrEmpty(vault.Read(LlmProviders.ById(chosen.Provider)!.VaultName)) ? new("key", chosen.Provider) : null
         : company.Configured || local.Configured ? null : new("localModel", null);
 
@@ -82,7 +94,7 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
                 File.Move(aside, path, overwrite: true);
             }
 
-            _chosen = choice;
+            Remembered = choice;
         }
         finally
         {
@@ -94,7 +106,7 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     /// <exception cref="LocalModelUnavailableException">The model on this computer cannot be loaded.</exception>
     public async Task<ChosenEditModel?> GetAsync(CancellationToken cancellationToken)
     {
-        if (_chosen is not { } chosen)
+        if (Remembered is not { } chosen)
         {
             if (company.Client() is { } organizations)
                 return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false);
@@ -118,7 +130,7 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
-    private static EditModelChoice? Read(RuntimeHostOptions options)
+    private EditModelChoice? Read()
     {
         try
         {
@@ -141,9 +153,29 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
     public void Dispose() => _gate.Dispose();
 
     internal sealed record Stored(string Format, string Provider, string Model);
+}
 
+/// <summary>The model the runtime's own agent proposes changes to an application with (<c>edit-model.json</c>).</summary>
+internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress)
+    : ProviderChoice(options, vault, local, company, egress)
+{
+    protected override string FileName => "edit-model.json";
+
+    protected override string Format => "bohm.edit-model/0";
+}
+
+/// <summary>
+/// The model questions about the open web pages go to (<c>agent-model.json</c>). The pages may be the
+/// organization's own, so a provider is only ever the person's explicit choice.
+/// </summary>
+internal sealed class AgentModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress)
+    : ProviderChoice(options, vault, local, company, egress)
+{
+    protected override string FileName => "agent-model.json";
+
+    protected override string Format => "bohm.agent-model/0";
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
-[System.Text.Json.Serialization.JsonSerializable(typeof(EditModel.Stored))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ProviderChoice.Stored))]
 internal sealed partial class EditModelJson : System.Text.Json.Serialization.JsonSerializerContext;

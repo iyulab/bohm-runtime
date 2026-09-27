@@ -117,6 +117,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.LocalModel>();
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
+        builder.Services.AddSingleton<Edit.AgentModel>();
         configure?.Invoke(builder);
 
         var app = builder.Build();

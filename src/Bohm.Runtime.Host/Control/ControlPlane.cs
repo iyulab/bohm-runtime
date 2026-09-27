@@ -48,7 +48,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model }</c> — its OpenAI-compatible base address (http or https) and a model's name — and remembers it; 400 when either is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
-/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked of the organization's model server or the model on this computer; 409 with <c>{ needs: "localModel" }</c> when neither is set, 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
+/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -332,12 +333,12 @@ internal static class ControlPlane
                 await WriteAsync(response, context.RequestServices.GetRequiredService<Egress>().Snapshot(), cancel).ConfigureAwait(false);
                 break;
 
-            case ("GET", ["edit", "model"]):
-                await WriteAsync(response, EditModelViewOf(context.RequestServices.GetRequiredService<Edit.EditModel>()), cancel).ConfigureAwait(false);
+            case ("GET", ["edit" or "agent", "model"]):
+                await WriteAsync(response, EditModelViewOf(ChoiceFor(context, segments[0])), cancel).ConfigureAwait(false);
                 break;
 
-            case ("PUT" or "DELETE", ["edit", "model"]):
-                var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
+            case ("PUT" or "DELETE", ["edit" or "agent", "model"]):
+                var editModel = ChoiceFor(context, segments[0]);
                 if (request.Method == "PUT")
                 {
                     try
@@ -733,10 +734,11 @@ internal static class ControlPlane
             return;
         }
 
-        (Microsoft.Extensions.AI.IChatClient Client, string Name, bool OnThisComputer)? model;
+        var agentModel = context.RequestServices.GetRequiredService<Edit.AgentModel>();
+        Edit.ChosenEditModel? model;
         try
         {
-            model = await Agent.WebAgent.ModelAsync(context.RequestServices.GetRequiredService<CompanyModel>(), context.RequestServices.GetRequiredService<LocalModel>(), cancel).ConfigureAwait(false);
+            model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
         }
         catch (LocalModelUnavailableException e)
         {
@@ -748,7 +750,7 @@ internal static class ControlPlane
         if (model is not { } chosen)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await WriteAsync(response, new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
+            await WriteAsync(response, agentModel.Missing ?? new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
             return;
         }
 
@@ -849,7 +851,12 @@ internal static class ControlPlane
     /// <param name="Missing">What is missing before a proposal can be made, or <see langword="null"/>.</param>
     internal sealed record EditModelView(string? Provider, string? Model, Edit.EditModelMissing? Missing);
 
-    private static EditModelView EditModelViewOf(Edit.EditModel model) => new(model.Chosen?.Provider, model.Chosen?.Model, model.Missing);
+    private static EditModelView EditModelViewOf(Edit.ProviderChoice model) => new(model.Chosen?.Provider, model.Chosen?.Model, model.Missing);
+
+    /// <summary>The model choice behind <c>/__control/edit/model</c> (proposals) or <c>/__control/agent/model</c> (questions about web pages).</summary>
+    private static Edit.ProviderChoice ChoiceFor(HttpContext context, string which) => which == "agent"
+        ? context.RequestServices.GetRequiredService<Edit.AgentModel>()
+        : context.RequestServices.GetRequiredService<Edit.EditModel>();
 
     /// <param name="Model">Why the model could not start, when that is why.</param>
     /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
