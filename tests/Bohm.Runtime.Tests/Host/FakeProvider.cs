@@ -51,6 +51,21 @@ public sealed class FakeProvider : IAsyncDisposable
                 return;
             }
 
+            // Gemini's own API: the model and the verb are in the path, the answer is a candidate's parts.
+            if (context.Request.Path.Value?.Contains(":streamGenerateContent", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "text/event-stream";
+                await context.Response.WriteAsync($"data: {{\"candidates\":[{{\"content\":{{\"role\":\"model\",\"parts\":[{{\"text\":\"{Reply}\"}}]}},\"finishReason\":\"STOP\"}}]}}\n\n");
+                return;
+            }
+
+            if (context.Request.Path.Value?.Contains(":generateContent", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync($"{{\"candidates\":[{{\"content\":{{\"role\":\"model\",\"parts\":[{{\"text\":\"{Reply}\"}}]}},\"finishReason\":\"STOP\"}}]}}");
+                return;
+            }
+
             if (body.Contains("\"stream\":true", StringComparison.Ordinal))
             {
                 context.Response.ContentType = "text/event-stream";
