@@ -70,13 +70,13 @@ internal static class WebAgent
         history.AddRange(conversation.Take(conversation.Count - 1));
         var last = conversation[^1];
 
+        // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
+        // conversation without one. A question starts a turn; the host's tool results continue one.
+        var loop = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
         IList<ChatMessage> produced;
         string? text;
         if (last.Role == ChatRole.User)
         {
-            // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
-            // conversation without one.
-            var loop = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
             loop.InitializeHistory(history.Skip(1));
             var response = await loop.RunAsync(last.Text, cancellationToken).ConfigureAwait(false);
             var after = loop.History.ToList();
@@ -85,13 +85,11 @@ internal static class WebAgent
         }
         else
         {
-            // TODO(upstream: docket iyulab/ironhive-agent #523): the loop cannot continue from host tool
-            // results without a new user message, so a continuation turn asks the invoking client directly.
-            // Remove when a release with a continue API is consumed.
-            history.Add(last);
-            var response = await client.GetResponseAsync(history, new ChatOptions { Tools = [.. HostTools] }, cancellationToken).ConfigureAwait(false);
-            produced = response.Messages;
-            text = response.Text;
+            loop.InitializeHistory(history.Skip(1).Append(last));
+            var before = loop.History.Count;
+            var response = await loop.ContinueAsync(cancellationToken).ConfigureAwait(false);
+            produced = loop.History.Skip(before).ToList();
+            text = response.Content;
         }
 
         var answered = produced.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.CallId).ToHashSet(StringComparer.Ordinal);
