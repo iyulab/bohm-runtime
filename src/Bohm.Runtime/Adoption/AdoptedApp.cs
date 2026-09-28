@@ -28,8 +28,12 @@ namespace Bohm.Runtime.Adoption;
 /// When the person last left an unsaved application (closed its tab); <see langword="null"/> while it
 /// is open or for a saved one. Its retention counts from here.
 /// </param>
+/// <param name="Title">
+/// The name the runtime gave an application it made (a result's title); <see langword="null"/> for an
+/// adopted file, which is known by the file it came from.
+/// </param>
 public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
-    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null);
+    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null);
 
 /// <summary>The file a revision of an application was taken in from.</summary>
 /// <param name="Sha256">Lowercase hexadecimal SHA-256 of the adopted bytes.</param>

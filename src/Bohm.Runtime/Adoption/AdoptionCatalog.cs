@@ -72,7 +72,9 @@ public sealed class AdoptionCatalog
     /// complete or not at all: it is assembled in a staging folder and moved into place.
     /// </summary>
     /// <param name="unsaved">A result made for the person, kept only if they keep it (<see cref="AdoptedApp.Unsaved"/>).</param>
-    public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, CancellationToken cancellationToken = default)
+    /// <param name="title">The name of an application the runtime made (<see cref="AdoptedApp.Title"/>).</param>
+    public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, string? title = null,
+        CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
@@ -80,7 +82,8 @@ public sealed class AdoptionCatalog
             now,
             new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length),
             Protection: "none",
-            Unsaved: unsaved);
+            Unsaved: unsaved,
+            Title: title);
 
         var staging = Path.Combine(_root, StagingPrefix + app.Id);
         Directory.CreateDirectory(staging);
@@ -670,6 +673,7 @@ public sealed class AdoptionCatalog
             WriteSource(writer, app.Source);
             writer.WriteString("protection", app.Protection);
             if (app.ArchivedAt is not null) WriteTime(writer, "archivedAt", app.ArchivedAt);
+            if (app.Title is not null) writer.WriteString("title", app.Title);
             if (app.Unsaved)
             {
                 writer.WriteBoolean("unsaved", true);
@@ -750,6 +754,7 @@ public sealed class AdoptionCatalog
                 ArchivedAt = archivedAt,
                 Unsaved = unsaved,
                 LeftAt = leftAt,
+                Title = root.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String ? title.GetString() : null,
             };
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
