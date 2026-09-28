@@ -65,7 +65,6 @@ public sealed class EditModelTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("openai", "/v1/chat/completions")]
     [InlineData("groq", "/openai/v1/chat/completions")]
     [InlineData("openrouter", "/api/v1/chat/completions")]
     [InlineData("mistral", "/v1/chat/completions")]
@@ -130,10 +129,6 @@ public sealed class EditModelTests : IAsyncLifetime
     public async Task OpenAI_is_asked_through_its_own_Responses_API_with_its_key_and_it_is_counted_as_sent()
     {
         // OpenAI's first-party surface: the Responses API, with the tools as top-level function tools.
-        // TODO(upstream: docket #538): IronHive's OpenAI provider does not send store:false, so the Responses API
-        // would keep the application's source. OpenAI stays on Chat Completions until a release that does; then
-        // route "openai" to IronHive's OpenAIMessageGenerator in ProviderChoice.GetAsync and drop this skip.
-        Assert.Skip("Waiting on docket #538: IronHive's OpenAI provider does not send store:false.");
         using (var connect = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
         using (var chose = await ChooseAsync("openai", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
 

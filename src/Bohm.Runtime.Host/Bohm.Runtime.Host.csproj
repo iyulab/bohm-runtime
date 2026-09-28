@@ -24,6 +24,7 @@
     <PackageReference Include="IronHive.Extensions.AI" Version="0.44.0" />
     <PackageReference Include="IronHive.Providers.Anthropic" Version="0.44.0" />
     <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.44.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.44.0" />
     <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.44.0" />
     <PackageReference Include="IronProw.LMSupply" Version="0.8.9" />
     <PackageReference Include="LMSupply.Generator" Version="0.88.0" />
