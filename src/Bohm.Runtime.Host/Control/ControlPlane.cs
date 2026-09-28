@@ -54,6 +54,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model }</c> — its OpenAI-compatible base address (http or https) and a model's name — and remembers it; 400 when either is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
+/// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds); <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list. 404 when no server is set. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
 /// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
@@ -483,6 +484,18 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, CompanyModelViewOf(companyModel), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["llm", "company-model", "check"]):
+                var checkedResult = await context.RequestServices.GetRequiredService<CompanyModel>()
+                    .CheckAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy)), cancel).ConfigureAwait(false);
+                if (checkedResult is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, checkedResult, cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", "company-model", "key"]):
@@ -1022,5 +1035,6 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.CheckResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;

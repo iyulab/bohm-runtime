@@ -94,6 +94,62 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.True(JsonDocument.Parse(await key.Content.ReadAsStringAsync()).RootElement.GetProperty("keyConnected").GetBoolean());
     }
 
+    [Fact]
+    public async Task A_check_asks_the_server_for_its_models_with_the_key_and_says_whether_it_knows_the_model()
+    {
+        await using var host = await StartAsync(fixedAtStart: false);
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(ServerKey))) HttpAssert.Status(HttpStatusCode.OK, key);
+
+        _server.Refusal = (200, """{"object":"list","data":[{"id":"other-model"},{"id":"set-model"}]}""");
+        var listed = await CheckAsync(host);
+        Assert.Equal("answers", listed.GetProperty("result").GetString());
+        Assert.Equal(200, listed.GetProperty("status").GetInt32());
+        Assert.True(listed.GetProperty("modelListed").GetBoolean());
+        var request = Assert.Single(_server.Received);
+        Assert.Equal(("GET", "/v1/models"), (request.Method, request.PathAndQuery));
+        Assert.Equal($"Bearer {ServerKey}", request.Headers["Authorization"]);
+
+        _server.Refusal = (200, """{"object":"list","data":[{"id":"other-model"}]}""");
+        Assert.False((await CheckAsync(host)).GetProperty("modelListed").GetBoolean());
+        _server.Refusal = (200, "not a list");
+        Assert.Equal(JsonValueKind.Null, (await CheckAsync(host)).GetProperty("modelListed").ValueKind);
+
+        // Nothing of an application's went, but the requests left this computer.
+        var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
+    }
+
+    [Theory]
+    [InlineData(401, "key-refused")]
+    [InlineData(403, "key-refused")]
+    [InlineData(404, "not-found")]
+    [InlineData(500, "refused")]
+    public async Task A_check_tells_a_refused_key_a_wrong_address_and_other_refusals_apart(int status, string result)
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        _server.Refusal = (status, """{"error":{"message":"no"}}""");
+        var check = await CheckAsync(host);
+        Assert.Equal(result, check.GetProperty("result").GetString());
+        Assert.Equal(status, check.GetProperty("status").GetInt32());
+        Assert.False(Assert.Single(_server.Received).Headers.ContainsKey("Authorization")); // no key connected, none made up
+    }
+
+    [Fact]
+    public async Task A_check_of_a_server_that_does_not_answer_says_so_and_with_none_set_there_is_nothing_to_check()
+    {
+        await using var host = await RunningHost.StartAsync();
+        using (var none = await host.ControlClient().PostAsync("/__control/llm/company-model/check", null)) HttpAssert.Status(HttpStatusCode.NotFound, none);
+
+        using var closed = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        closed.Start();
+        var port = ((IPEndPoint)closed.LocalEndpoint).Port;
+        closed.Stop(); // nothing listens there now
+        using (var set = await SetAsync(host, $"http://127.0.0.1:{port}/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
+        var check = await CheckAsync(host);
+        Assert.Equal("unreachable", check.GetProperty("result").GetString());
+        Assert.Equal(JsonValueKind.Null, check.GetProperty("status").ValueKind);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -250,6 +306,13 @@ public sealed class CompanyModelTests : IAsyncLifetime
 
     private static async Task<JsonElement> GetAsync(RunningHost host) =>
         JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/company-model")).RootElement;
+
+    private static async Task<JsonElement> CheckAsync(RunningHost host)
+    {
+        using var check = await host.ControlClient().PostAsync("/__control/llm/company-model/check", null);
+        HttpAssert.Status(HttpStatusCode.OK, check);
+        return JsonDocument.Parse(await check.Content.ReadAsStringAsync()).RootElement.Clone();
+    }
 
     private static Task<HttpResponseMessage> SetAsync(RunningHost host, string endpoint, string model) =>
         host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(
