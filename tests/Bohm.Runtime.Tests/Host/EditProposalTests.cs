@@ -221,6 +221,7 @@ public sealed class EditProposalTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.OK, response);
         var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.True(proposal.GetProperty("complete").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, proposal.GetProperty("remaining").ValueKind);
         Assert.Equal(2, _model.Calls.Count); // one pass: nothing was left to take up again
     }
 
@@ -253,6 +254,9 @@ public sealed class EditProposalTests : IAsyncLifetime
         Assert.Contains("names whose declaration a replacement removed (db)", second, StringComparison.Ordinal);
         Assert.Contains("if (!db) return;", second, StringComparison.Ordinal);
         Assert.False(proposal.GetProperty("complete").GetBoolean());
+        var left = proposal.GetProperty("remaining");
+        Assert.Equal(["db"], left.GetProperty("names").EnumerateArray().Select(n => n.GetString()));
+        Assert.Empty(left.GetProperty("onlineLines").EnumerateArray());
     }
 
     [Theory]

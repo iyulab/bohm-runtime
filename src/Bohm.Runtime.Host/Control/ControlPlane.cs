@@ -856,7 +856,7 @@ internal static class ControlPlane
             return;
         }
 
-        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete), cancel).ConfigureAwait(false);
+        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left), cancel).ConfigureAwait(false);
     }
 
     /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
@@ -864,7 +864,8 @@ internal static class ControlPlane
     /// <param name="Edits">Each exact piece replaced and its replacement, in order; empty when nothing changed.</param>
     /// <param name="Model">Which model proposed it: <c>local</c>, or the provider and model name (<c>openai/…</c>).</param>
     /// <param name="Complete">For a named fix, whether it finished — a proposal that stopped halfway is not one to apply. <c>null</c> for a change the person asked for.</param>
-    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete);
+    /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
+    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>

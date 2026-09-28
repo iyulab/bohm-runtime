@@ -28,7 +28,13 @@ internal sealed record SourceEdit(string Old, string New);
 /// halfway is not one to apply, since half-moved storage breaks the application. <c>null</c> for a
 /// change the person asked for, which has no such test.
 /// </param>
-internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null);
+/// <param name="Left">For a named fix that did not finish, what is left — so the person, and a measurement, can see why.</param>
+internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null);
+
+/// <summary>What a storage move left: lines that still load or call the online database, and names still used whose declaration it removed.</summary>
+/// <param name="OnlineLines">1-based line numbers in the proposed source.</param>
+/// <param name="Names">Names used without a declaration any more.</param>
+internal sealed record StorageLeft(IReadOnlyList<int> OnlineLines, IReadOnlyList<string> Names);
 
 /// <summary>
 /// Turns «change this» on an element into a proposal: an agent reads the application's source
@@ -169,7 +175,9 @@ internal static partial class EditProposals
             dangling = RemovedButUsed(edits, draft);
         }
 
-        return new EditProposal(text.Restore(draft), summary, edits, Complete: !StillOnline(draft) && dangling.Count == 0);
+        var online = draft.Split('\n').Select((line, i) => (line, number: i + 1)).Where(x => OnlineUse().IsMatch(x.line)).Select(x => x.number).ToList();
+        var complete = online.Count == 0 && dangling.Count == 0;
+        return new EditProposal(text.Restore(draft), summary, edits, complete, complete ? null : new StorageLeft(online, dangling));
     }
 
     /// <summary>
