@@ -31,7 +31,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model }</c>; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, for two minutes. Nothing about the application changes.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked }</c> — errors thrown, with lines as in the previewed document, and what the content security policy refused (<c>category host</c>). 404 once it has expired or been removed.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked, askedModel }</c> — errors thrown, with lines as in the previewed document, what the content security policy refused (<c>category host</c>), and whether it called a model — declined in a preview, so errors that followed may not happen once it is taken in. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
@@ -217,7 +217,7 @@ internal static class ControlPlane
                     break;
                 }
 
-                await WriteAsync(response, new PreviewReport(preview.Errors, preview.Blocked), cancel).ConfigureAwait(false);
+                await WriteAsync(response, new PreviewReport(preview.Errors, preview.Blocked, preview.AskedModel), cancel).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var previewedApp, "previews", var removedToken]):
@@ -992,7 +992,7 @@ internal static class ControlPlane
 
     internal sealed record PreviewView(string Token, string Origin);
 
-    internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> Blocked);
+    internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> Blocked, bool AskedModel);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

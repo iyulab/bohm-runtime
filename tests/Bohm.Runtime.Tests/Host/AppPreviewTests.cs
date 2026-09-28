@@ -49,10 +49,37 @@ public sealed class AppPreviewTests : IAsyncLifetime
         // Nothing it asks for is recorded against the application.
         using var missing = await preview.GetAsync("/footer.js");
         HttpAssert.Status(HttpStatusCode.NotFound, missing);
-        using var llm = await preview.PostAsync("/__bohm/llm/api.openai.com/v1/chat/completions", new StringContent("{}"));
-        HttpAssert.Status(HttpStatusCode.NotFound, llm);
         var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
         Assert.Empty(status.GetProperty("missingFiles").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task A_preview_routes_model_calls_as_the_application_does_and_declines_them()
+    {
+        using (var set = await _host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(
+            """{"endpoint":"https://models.example.test/v1","model":"m"}""", Encoding.UTF8, "application/json"))) HttpAssert.Status(HttpStatusCode.OK, set);
+        var id = await _host.AdoptAsync(Page);
+        var (token, _) = await CreateAsync(id, Page);
+        using var preview = _host.ClientFor($"pv-{token}.localhost");
+
+        // The same calls are routed as on the application's own page: to the known providers and to the organization's server.
+        var appBoot = BootOf(await _host.ClientForApp(id).GetStringAsync("/"));
+        var previewBoot = BootOf(await preview.GetStringAsync("/"));
+        Assert.Equal(appBoot.GetProperty("llmHosts").ToString(), previewBoot.GetProperty("llmHosts").ToString());
+        Assert.Contains("api.openai.com", previewBoot.GetProperty("llmHosts").EnumerateArray().Select(h => h.GetString()));
+        Assert.Equal("https://models.example.test/v1/", previewBoot.GetProperty("companyBase").GetString());
+
+        Assert.False((await ReadAsync(id, token)).GetProperty("askedModel").GetBoolean());
+        // A relayed call is answered at once, as a provider answers a request it cannot serve, and no model is asked.
+        using var llm = await preview.PostAsync("/__bohm/llm/api.openai.com/v1/chat/completions", new StringContent("{}"));
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, llm);
+        Assert.Equal("preview", JsonDocument.Parse(await llm.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("type").GetString());
+        var report = await ReadAsync(id, token);
+        Assert.True(report.GetProperty("askedModel").GetBoolean());
+        Assert.Empty(report.GetProperty("blocked").EnumerateArray());
+
+        var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+        Assert.Empty(status.GetProperty("missingApis").EnumerateArray());
     }
 
     [Fact]
@@ -105,6 +132,14 @@ public sealed class AppPreviewTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.Created, created);
         var view = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement;
         return (view.GetProperty("token").GetString()!, view.GetProperty("origin").GetString()!);
+    }
+
+    private static JsonElement BootOf(string page)
+    {
+        var start = page.IndexOf("{\"tab\":", StringComparison.Ordinal);
+        Assert.True(start >= 0, "no boot in the page");
+        var json = new Utf8JsonReader(Encoding.UTF8.GetBytes(page[start..]));
+        return JsonElement.ParseValue(ref json);
     }
 
     private async Task<JsonElement> ReadAsync(string id, string token) =>

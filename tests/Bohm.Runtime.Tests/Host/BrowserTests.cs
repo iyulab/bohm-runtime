@@ -379,6 +379,43 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_preview_that_calls_a_model_while_loading_is_not_reported_as_blocked()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync(NotesApp);
+
+        // Asks a known provider as it loads, and goes on when the answer is not a good one.
+        using var client = _host.ControlClient();
+        using var created = await client.PostAsync($"/__control/apps/{id}/previews", new StringContent("""
+            <!doctype html><title>Summary</title>
+            <script>
+              fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', body: '{}' })
+                .then(r => { window.answer = r.status; return r.json(); })
+                .then(j => { window.said = j.error ? 'unavailable' : 'answered'; });
+            </script>
+            """));
+        var view = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement;
+        var token = view.GetProperty("token").GetString()!;
+
+        var preview = await _browser!.NewPageAsync();
+        await preview.GotoAsync(view.GetProperty("origin").GetString()!);
+        await preview.WaitForFunctionAsync("window.said !== undefined");
+        Assert.Equal(503, await preview.EvaluateAsync<int>("window.answer"));
+        Assert.Equal("unavailable", await preview.EvaluateAsync<string>("window.said"));
+
+        var report = await EventuallyAsync(async cancellation =>
+        {
+            var r = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/previews/{token}", cancellation)).RootElement;
+            return r.GetProperty("askedModel").GetBoolean() ? r : (JsonElement?)null;
+        });
+        await Task.Delay(1500); // past the page's loading window, so a late report would have arrived
+        report = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/previews/{token}")).RootElement;
+        Assert.Empty(report.GetProperty("blocked").EnumerateArray());
+        Assert.Empty(report.GetProperty("errors").EnumerateArray());
+        await preview.CloseAsync();
+    }
+
+    [Fact]
     public async Task A_module_imported_from_a_cdn_is_named_instead_of_a_bare_error()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

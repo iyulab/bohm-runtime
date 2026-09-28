@@ -11,7 +11,7 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <remarks>
 /// Nothing the preview does reaches the application: it has another origin (its own browser
 /// storage, no session cookie of the application), its writes are acknowledged and dropped, it
-/// records no use, asks no model and adds nothing to what the application is told it is missing.
+/// records no use, asks no model (a call to one is declined and noted) and adds nothing to what the application is told it is missing.
 /// Load errors and refused requests are kept on the preview, for the caller to read.
 /// </remarks>
 internal static class PreviewServing
@@ -47,6 +47,12 @@ internal static class PreviewServing
             return;
         }
 
+        if (path.StartsWithSegments("/__bohm/llm"))
+        {
+            await DeclineModelAsync(context, preview).ConfigureAwait(false);
+            return;
+        }
+
         if (path.StartsWithSegments("/__bohm/asset"))
         {
             await AssetServing.ServeCachedAsync(context, app).ConfigureAwait(false);
@@ -59,10 +65,7 @@ internal static class PreviewServing
             return;
         }
 
-        var boot = JsonSerializer.Serialize(new AdoptedAppServing.Boot("preview", app.Storage.GetItems(), Llm.LlmProviders.Placeholder(preview.AppId),
-            [], AdoptedAppServing.ShimLineCount.Value, CompanyBase: null), BootJson.Default.Boot);
-        var (body, charset) = ShimInjector.Inject(AssetServing.PointAtCache(preview.Html, app.Assets),
-            AdoptedAppServing.ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
+        var (body, charset) = AdoptedAppServing.InjectShim(context, preview.Html, app, preview.AppId, "preview");
         response.Headers.CacheControl = "no-store";
         response.ContentType = $"text/html; charset={charset}";
         response.ContentLength = body.Length;
@@ -95,6 +98,21 @@ internal static class PreviewServing
         }
 
         await context.Response.WriteAsync($$"""{"ack":{{ack}}}""", context.RequestAborted).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A call the application's page would relay to a model. The preview relays none — it would spend
+    /// the person's key and send their data for a look — and answers at once, the way a provider
+    /// answers a request it cannot serve, so the page goes on as it does when a model is unavailable.
+    /// That it asked is kept on the preview: what followed from the answer is not what taking it in would show.
+    /// </summary>
+    private static async Task DeclineModelAsync(HttpContext context, AppPreviews.Preview preview)
+    {
+        preview.MarkAskedModel();
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync("""{"error":{"type":"preview","message":"No model is asked while a revision is previewed."}}""",
+            context.RequestAborted).ConfigureAwait(false);
     }
 
     private static async Task CollectReportAsync(HttpContext context, AppPreviews.Preview preview)
