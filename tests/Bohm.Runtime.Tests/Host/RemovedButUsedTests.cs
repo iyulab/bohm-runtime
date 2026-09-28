@@ -31,6 +31,11 @@ public sealed class RemovedButUsedTests
     }
 
     [Fact]
+    public void A_condition_in_a_removed_piece_does_not_make_its_keywords_names() =>
+        Assert.Empty(Check("if (typeof db !== 'undefined') { load(); }\nready.then(async () => { await go(); });", "",
+            "<script>if (typeof crypto !== 'undefined') {}\nconst f = async () => {};</script>"));
+
+    [Fact]
     public void A_function_removed_while_still_called_is_found() =>
         Assert.Equal(["initAuth"], Check("async function initAuth() { await signIn(); }", "", "window.onload = () => initAuth();"));
 

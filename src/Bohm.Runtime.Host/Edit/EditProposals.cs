@@ -189,7 +189,7 @@ internal static partial class EditProposals
     internal static IReadOnlyList<string> RemovedButUsed(IEnumerable<SourceEdit> edits, string source)
     {
         var removed = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var edit in edits) foreach (var name in DeclaredIn(edit.Old)) removed.Add(name);
+        foreach (var edit in edits) foreach (var name in DeclaredIn(edit.Old)) if (!Keywords.Contains(name)) removed.Add(name);
         var declared = DeclaredIn(source);
         var code = ScriptCode(source);
         return removed.Where(name => !declared.Contains(name) && Regex.IsMatch(code, $@"(?<![\w$.]){Regex.Escape(name)}(?![\w$]|\s*:)")).ToList();   // not an object key
@@ -259,6 +259,15 @@ internal static partial class EditProposals
 
     [GeneratedRegex(@"<script\b(?![^>]*\bsrc\s*=)[^>]*>(?<body>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex InlineScript();
+
+    // A parenthesized condition read as a parameter list (`if (typeof x …) {`) yields a keyword, never a name.
+    private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
+    {
+        "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do",
+        "else", "export", "extends", "false", "finally", "for", "function", "if", "import", "in", "instanceof", "let",
+        "new", "null", "of", "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof",
+        "undefined", "var", "void", "while", "with", "yield",
+    };
 
     private static HashSet<string> DeclaredIn(string code)
     {
