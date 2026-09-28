@@ -66,19 +66,26 @@ internal sealed record ResultPage(string Title, string Text, IReadOnlyList<Resul
             <style>
               body { font: 16px/1.6 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: #1f2328; background: #fff; }
               h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-              .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+              .text { overflow-wrap: anywhere; }
+              .text table { border-collapse: collapse; margin: 1rem 0; }
+              .text th, .text td { border: 1px solid #d1d9e0; padding: .3rem .6rem; text-align: left; vertical-align: top; }
+              .text pre { background: #f6f8fa; padding: .75rem; overflow-x: auto; }
+              .text code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
               h2 { font-size: 1rem; margin: 2rem 0 .5rem; color: #59636e; }
-              ul { padding-left: 1.2rem; color: #59636e; }
-              .url { font-size: .85rem; overflow-wrap: anywhere; }
-              @media (prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } h2, ul { color: #9198a1; } }
+              .sources { padding-left: 1.2rem; color: #59636e; }
+              .url { font-size: .85rem; overflow-wrap: anywhere; color: #59636e; }
+              @media (prefers-color-scheme: dark) {
+                body { color: #e6edf3; background: #0d1117; } h2, .sources, .url { color: #9198a1; }
+                .text th, .text td { border-color: #3d444d; } .text pre { background: #151b23; }
+              }
             </style>
 
             """);
         html.Append("<h1>").Append(Escape(Title)).Append("</h1>\n");
-        html.Append("<div class=\"text\">").Append(Escape(Text.Trim())).Append("</div>\n");
+        html.Append("<div class=\"text\">\n").Append(AnswerMarkdown.ToHtml(Text.Trim())).Append("</div>\n");
         if (Sources.Count > 0)
         {
-            html.Append("<h2>").Append(Escape(SourcesHeading is { Length: > 0 } heading ? heading : "Sources")).Append("</h2>\n<ul>\n");
+            html.Append("<h2>").Append(Escape(SourcesHeading is { Length: > 0 } heading ? heading : "Sources")).Append("</h2>\n<ul class=\"sources\">\n");
             foreach (var source in Sources)
             {
                 html.Append("<li>").Append(Escape(source.Name));

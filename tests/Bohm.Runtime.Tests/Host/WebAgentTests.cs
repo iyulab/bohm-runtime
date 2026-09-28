@@ -54,7 +54,7 @@ public sealed class WebAgentTests : IDisposable
     [Fact]
     public async Task The_callers_tool_results_continue_the_turn_as_page_material_and_it_ends_with_the_answer()
     {
-        _model.Reply = "The page says hello.";
+        _model.Reply = "The page says **hello**.";
         await using var host = await StartWithLocalModelAsync();
 
         using var response = await TurnAsync(host, """
@@ -68,7 +68,8 @@ public sealed class WebAgentTests : IDisposable
         HttpAssert.Status(HttpStatusCode.OK, response);
         var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("done", turn.GetProperty("status").GetString());
-        Assert.Equal("The page says hello.", turn.GetProperty("text").GetString());
+        Assert.Equal("The page says **hello**.", turn.GetProperty("text").GetString());
+        Assert.Equal("<p>The page says <strong>hello</strong>.</p>\n", turn.GetProperty("html").GetString()); // shown formatted, as the answer page is
         Assert.Empty(turn.GetProperty("toolCalls").EnumerateArray());
 
         var messages = Assert.Single(_model.Calls).Messages;

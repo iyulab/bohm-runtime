@@ -21,7 +21,7 @@ public sealed class ResultPageTests : IAsyncLifetime
     public async Task An_answer_becomes_an_unsaved_page_with_its_text_escaped_and_its_sources()
     {
         var body = """
-            {"title":"Lunch <this week>","text":"Monday: rice\nTuesday: <script>alert(1)</script> noodles\n\n| a | b |","lang":"ko",
+            {"title":"Lunch <this week>","text":"Monday: rice\nTuesday: <script>alert(1)</script> noodles\n\n| Day | Menu |\n|---|---|\n| Wed | **Soup** |","lang":"ko",
              "sourcesHeading":"출처","sources":[{"name":"School menu","url":"https://school.example/menu?w=1&d=2"},{"name":"Notice"}]}
             """;
         using var made = await _host.ControlClient().PostAsync("/__control/results", new StringContent(body, Encoding.UTF8, "application/json"));
@@ -38,7 +38,8 @@ public sealed class ResultPageTests : IAsyncLifetime
         Assert.StartsWith("<!doctype html>\n<html lang=\"ko\">", html);
         Assert.Contains("<title>Lunch &lt;this week&gt;</title>", html);
         Assert.Contains("Tuesday: &lt;script&gt;alert(1)&lt;/script&gt; noodles", html);
-        Assert.Contains("Monday: rice\nTuesday:", html); // the lines as read
+        Assert.Contains("Monday: rice<br />\nTuesday:", html); // the lines as read
+        Assert.Contains("<td>Wed</td>\n<td><strong>Soup</strong></td>", html); // formatted as read: a table, emphasis
         Assert.DoesNotContain("<script", html);
         Assert.Contains("<h2>출처</h2>", html);
         Assert.Contains("<li>School menu<br><span class=\"url\">https://school.example/menu?w=1&amp;d=2</span></li>", html);
