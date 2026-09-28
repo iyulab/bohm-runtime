@@ -66,6 +66,14 @@ public sealed class FakeProvider : IAsyncDisposable
                 return;
             }
 
+            // Anthropic's own API: the Messages shape — content blocks, a stop reason, and usage.
+            if (context.Request.Path.Value?.EndsWith("/v1/messages", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync($$$"""{"id":"msg_1","type":"message","role":"assistant","model":"model-x","content":[{"type":"text","text":"{{{Reply}}}"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}""");
+                return;
+            }
+
             if (body.Contains("\"stream\":true", StringComparison.Ordinal))
             {
                 context.Response.ContentType = "text/event-stream";
