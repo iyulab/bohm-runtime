@@ -184,6 +184,22 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
     }
 
+    [Fact]
+    public async Task When_the_server_refuses_a_proposal_the_person_gets_its_status_and_its_own_message()
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        _server.Refusal = (404, """{"error":{"message":"The model fixed-model does not exist.","type":"invalid_request_error"}}""");
+
+        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(404, provider.GetProperty("status").GetInt32());
+        Assert.Equal("The model fixed-model does not exist.", provider.GetProperty("message").GetString());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
