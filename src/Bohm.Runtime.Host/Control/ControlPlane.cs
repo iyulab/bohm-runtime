@@ -16,6 +16,7 @@ namespace Bohm.Runtime.Host.Control;
 /// </summary>
 /// <remarks>
 /// <list type="table">
+/// <item><term><c>GET /__control/runtime</c></term><description>Facts about this runtime: <c>contract</c>, the edition of the application contract it serves (<see cref="AppContract"/>).</description></item>
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used.</description></item>
 /// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline), <c>damaged</c>, or <c>interruptedRemoval</c> (a removal for good stopped before the recycle bin; the folder is still there). Nothing in them is changed; one unreadable application never hides the others.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
@@ -328,6 +329,10 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, new UsageReport(UsageReport.FormatName, DateTimeOffset.Now, reported), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["runtime"]):
+                await WriteAsync(response, new RuntimeFacts(AppContract.Edition), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["egress"]):
@@ -644,6 +649,9 @@ internal static class ControlPlane
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
     internal sealed record MatchView(AppView App, string Match);
 
+    /// <param name="Contract">The edition of the application contract this runtime serves.</param>
+    internal sealed record RuntimeFacts(int Contract);
+
     /// <summary>
     /// Today's facts about one application. Structured only — turning them into sentences for a
     /// person is the caller's job, in the person's language. <c>OnlineOnlyStorage</c> names the online
@@ -911,6 +919,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<UnreadableApp>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppStatus))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RuntimeFacts))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.UsageReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
