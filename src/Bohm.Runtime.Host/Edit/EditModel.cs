@@ -6,6 +6,7 @@ using Bohm.Runtime.Host.Llm;
 using IronHive.Extensions.AI;
 using IronHive.Providers.Anthropic;
 using IronHive.Providers.GoogleAI;
+using IronHive.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 using OpenAI;
 
@@ -130,6 +131,10 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             // models out, not for real use, and leaves out what the Messages API carries.
             "anthropic" => new AnthropicMessageGenerator(new AnthropicConfig { ApiKey = key, BaseUrl = root.ToString().TrimEnd('/') })
                 .AsChatClient(chosen.Model, "anthropic"),
+            // OpenAI through its own Responses API. Every request says store:false, so the application's
+            // source is sent to be answered, not kept on OpenAI's side.
+            "openai" => new OpenAIMessageGenerator(new OpenAIConfig { ApiKey = key, BaseUrl = new Uri(root, provider.OpenAICompatiblePath).ToString().TrimEnd('/') })
+                .AsChatClient(chosen.Model, "openai"),
             _ => new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
                 new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient(),
         };
