@@ -127,6 +127,40 @@ public sealed class EditModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenAI_is_asked_through_its_own_Responses_API_with_its_key_and_it_is_counted_as_sent()
+    {
+        // OpenAI's first-party surface: the Responses API, with the tools as top-level function tools.
+        // TODO(upstream: docket #538): IronHive's OpenAI provider does not send store:false, so the Responses API
+        // would keep the application's source. OpenAI stays on Chat Completions until a release that does; then
+        // route "openai" to IronHive's OpenAIMessageGenerator in ProviderChoice.GetAsync and drop this skip.
+        Assert.Skip("Waiting on docket #538: IronHive's OpenAI provider does not send store:false.");
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("openai", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("openai/model-x", proposal.GetProperty("model").GetString());
+        Assert.Equal(FakeProvider.Reply, proposal.GetProperty("summary").GetString());
+
+        var request = Assert.Single(_provider.Received);
+        Assert.Equal("/v1/responses", request.PathAndQuery);
+        Assert.Equal($"Bearer {Key}", request.Headers["Authorization"]);
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
+        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
+        // The Responses API keeps what it is sent unless told not to; the application's source is sent to be
+        // answered, not to be kept.
+        Assert.True(body.RootElement.TryGetProperty("store", out var store), request.Body);
+        Assert.False(store.GetBoolean());
+
+        var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal("api.openai.com", sent.GetProperty("host").GetString());
+        Assert.Equal(1, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
     public async Task Anthropic_is_asked_through_its_own_Messages_API_with_its_key_and_it_is_counted_as_sent()
     {
         // Not the OpenAI-compatible base, which Anthropic keeps for evaluation only: its own API is the

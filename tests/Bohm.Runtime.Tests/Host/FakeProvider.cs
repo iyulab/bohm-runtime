@@ -66,6 +66,14 @@ public sealed class FakeProvider : IAsyncDisposable
                 return;
             }
 
+            // OpenAI's own API: the Responses shape — output items, each message's content parts.
+            if (context.Request.Path.Value?.EndsWith("/v1/responses", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync($$$"""{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"model-x","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"{{{Reply}}}","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}""");
+                return;
+            }
+
             // Anthropic's own API: the Messages shape — content blocks, a stop reason, and usage.
             if (context.Request.Path.Value?.EndsWith("/v1/messages", StringComparison.Ordinal) == true)
             {
