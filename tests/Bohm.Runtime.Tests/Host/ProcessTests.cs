@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
+using Bohm.Runtime.Credentials;
 using System.Text;
 using System.Text.Json;
 
@@ -111,41 +113,80 @@ public sealed class ProcessTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task The_organizations_model_server_given_at_start_is_fixed()
-    {
-        const string secret = "launch-secret";
-        using var process = Start(secret, extra: ["--company-model-endpoint", "http://models.example:8000/v1", "--company-model", "qwen"]);
-        try
-        {
-            var port = await ReadReadyPortAsync(process);
-            using var control = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
-            control.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
-
-            var state = JsonDocument.Parse(await control.GetStringAsync("/__control/llm/company-model")).RootElement;
-            Assert.Equal("http://models.example:8000/v1/", state.GetProperty("endpoint").GetString());
-            Assert.Equal("qwen", state.GetProperty("model").GetString());
-            Assert.True(state.GetProperty("fixed").GetBoolean());
-        }
-        finally
-        {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
-        }
-    }
-
-    [Theory]
-    [InlineData("--company-model-endpoint", "http://models.example:8000/v1")] // no model's name
-    [InlineData("--company-model", "qwen")] // no address
-    [InlineData("--company-model-endpoint", "ftp://models.example/v1", "--company-model", "qwen")]
-    public async Task A_model_server_given_only_in_part_or_unusable_stops_the_runtime_with_its_usage(params string[] extra)
-    {
-        using var process = Start("launch-secret", extra: extra);
-        using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await process.WaitForExitAsync(exited.Token);
-        Assert.Equal(2, process.ExitCode);
-    }
-
-    private Process Start(string secret, int? parentPid = null, string[]? extra = null)
+    [Fact]
+    public async Task The_organizations_model_server_given_at_start_is_fixed()
+    {
+        const string secret = "launch-secret";
+        using var process = Start(secret, extra: ["--company-model-endpoint", "http://models.example:8000/v1", "--company-model", "qwen"]);
+        try
+        {
+            var port = await ReadReadyPortAsync(process);
+            using var control = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+            control.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+
+            var state = JsonDocument.Parse(await control.GetStringAsync("/__control/llm/company-model")).RootElement;
+            Assert.Equal("http://models.example:8000/v1/", state.GetProperty("endpoint").GetString());
+            Assert.Equal("qwen", state.GetProperty("model").GetString());
+            Assert.True(state.GetProperty("fixed").GetBoolean());
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("--company-model-endpoint", "http://models.example:8000/v1")] // no model's name
+    [InlineData("--company-model", "qwen")] // no address
+    [InlineData("--company-model-endpoint", "ftp://models.example/v1", "--company-model", "qwen")]
+    public async Task A_model_server_given_only_in_part_or_unusable_stops_the_runtime_with_its_usage(params string[] extra)
+    {
+        using var process = Start("launch-secret", extra: extra);
+        using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(exited.Token);
+        Assert.Equal(2, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task A_verification_run_keeps_its_keys_under_its_own_vault_prefix_and_never_in_the_persons()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("The Windows Credential Manager is the vault only on Windows.");
+            return;
+        }
+
+        const string secret = "launch-secret";
+        var prefix = $"Bohm-verify-{Guid.NewGuid():N}";
+        var theirs = new WindowsCredentialVault(prefix);
+        var persons = new WindowsCredentialVault();
+        var personsBefore = persons.Read("llm/mistral");
+        using var process = Start(secret, environment: new() { ["BOHM_VAULT_PREFIX"] = prefix });
+        try
+        {
+            var port = await ReadReadyPortAsync(process);
+            using var control = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
+            control.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+
+            using (var put = await control.PutAsync("/__control/llm/mistral/key", new StringContent("verify-key"))) HttpAssert.Status(HttpStatusCode.OK, put);
+
+            Assert.Equal("verify-key", theirs.Read("llm/mistral"));
+            Assert.Equal(personsBefore, persons.Read("llm/mistral")); // the person's own key, if any, is untouched
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            theirs.Delete("llm/mistral");
+            // Should the prefix not hold, the person's slot is put back as it was, not left with the test's key.
+            if (persons.Read("llm/mistral") != personsBefore)
+            {
+                if (personsBefore is null) persons.Delete("llm/mistral");
+                else persons.Write("llm/mistral", personsBefore);
+            }
+        }
+    }
+
+    private Process Start(string secret, int? parentPid = null, string[]? extra = null, Dictionary<string, string>? environment = null)
     {
         var host = Path.Combine(AppContext.BaseDirectory, "Bohm.Runtime.Host.dll");
         var info = new ProcessStartInfo("dotnet")
@@ -166,6 +207,7 @@ public sealed class ProcessTests : IDisposable
         foreach (var argument in extra ?? []) info.ArgumentList.Add(argument);
 
         info.Environment["BOHM_RUNTIME_SECRET"] = secret;
+        foreach (var (name, value) in environment ?? []) info.Environment[name] = value;
         var process = Process.Start(info)!;
         process.ErrorDataReceived += (_, _) => { };
         process.BeginErrorReadLine();

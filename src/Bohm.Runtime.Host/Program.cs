@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
@@ -21,6 +22,9 @@ using Bohm.Runtime.Host;
 // administrator's policy, passed on by whoever starts the runtime). Given together or not at all.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
+// BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
+// Manager instead of Bohm/, so an automated check never reads, overwrites or deletes the person's keys
+// — and what a stopped check leaves behind is in its own space, not theirs.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-model-endpoint <url> --company-model <name>]";
 string? dataRoot = null;
 int? port = null;
@@ -61,7 +65,10 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
     CompanyModel = companyModel,
-    Discard = Environment.GetEnvironmentVariable("BOHM_DISCARD_DIR") is { Length: > 0 } discardDir
+    Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
+        ? new WindowsCredentialVault(vaultPrefix)
+        : null,
+    Discard =Environment.GetEnvironmentVariable("BOHM_DISCARD_DIR") is { Length: > 0 } discardDir
         ? (folder, _) =>
         {
             Directory.CreateDirectory(discardDir);
