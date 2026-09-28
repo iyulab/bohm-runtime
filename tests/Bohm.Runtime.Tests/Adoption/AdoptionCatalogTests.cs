@@ -99,6 +99,45 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task Archiving_an_unsaved_application_keeps_it_so_the_sweep_never_takes_it()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+        var catalog = new AdoptionCatalog(_root, clock);
+        var result = await catalog.AdoptAsync(Html, unsaved: true);
+        await catalog.SetLeftAsync(result.Id, left: true);
+
+        var archived = await catalog.SetArchivedAsync(result.Id, archived: true);
+        Assert.NotNull(archived!.ArchivedAt);
+        Assert.False(archived.Unsaved);
+        Assert.Null(archived.LeftAt);
+
+        clock.Advance(AdoptionCatalog.UnsavedRetention + TimeSpan.FromDays(1));
+        Assert.Empty(await catalog.SweepUnsavedAsync((_, _) => Task.CompletedTask));
+        Assert.False((await catalog.SetArchivedAsync(result.Id, archived: false))!.Unsaved); // restored: an application like any other
+    }
+
+    [Fact]
+    public async Task The_sweep_leaves_an_archived_record_that_still_carries_the_unsaved_mark()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+        var catalog = new AdoptionCatalog(_root, clock);
+        var result = await catalog.AdoptAsync(Html, unsaved: true);
+        await catalog.SetLeftAsync(result.Id, left: true);
+        // A record written before archiving implied keeping: both marks at once.
+        var file = Path.Combine(_root, "adopted", result.Id, "app.json");
+        var record = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(file))!.AsObject();
+        record["archivedAt"] = clock.GetUtcNow().ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+        await File.WriteAllTextAsync(file, record.ToJsonString());
+        var both = await catalog.GetAsync(result.Id);
+        Assert.True(both!.Unsaved);
+        Assert.NotNull(both.ArchivedAt);
+
+        clock.Advance(AdoptionCatalog.UnsavedRetention + TimeSpan.FromDays(1));
+        Assert.Empty(await catalog.SweepUnsavedAsync((_, _) => Task.CompletedTask));
+        Assert.NotNull(await catalog.GetAsync(result.Id));
+    }
+
+    [Fact]
     public async Task An_unsaved_application_can_be_removed_without_archiving_it_first()
     {
         var catalog = new AdoptionCatalog(_root);

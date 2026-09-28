@@ -40,6 +40,30 @@ public sealed class UnsavedAppsTests
     }
 
     [Fact]
+    public async Task Archiving_an_unsaved_result_keeps_it_and_the_next_start_leaves_it()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-unsaved-").FullName;
+        try
+        {
+            var first = await RunningHost.StartAsync(dataRoot, configure: Discarding);
+            var id = (await first.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page), unsaved: true)).Id;
+            using (var left = await first.ControlClient().PostAsync($"/__control/apps/{id}/left", null)) HttpAssert.Status(HttpStatusCode.OK, left);
+            using (var archive = await first.ControlClient().PostAsync($"/__control/apps/{id}/archive", null)) HttpAssert.Status(HttpStatusCode.OK, archive);
+            var listed = await AppAsync(first, id);
+            Assert.False(listed.GetProperty("unsaved").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, listed.GetProperty("expiresAt").ValueKind);
+            await first.StopKeepingDataAsync();
+
+            await using var second = await RunningHost.StartAsync(dataRoot, configure: Discarding);
+            Assert.NotNull((await second.Catalog.GetAsync(id))!.ArchivedAt);
+        }
+        finally
+        {
+            if (Directory.Exists(dataRoot)) Directory.Delete(dataRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Leaving_an_unsaved_result_starts_its_retention_and_opening_it_again_ends_it()
     {
         await using var host = await RunningHost.StartAsync(configure: Discarding);

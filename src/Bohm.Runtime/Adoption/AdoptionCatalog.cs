@@ -120,12 +120,16 @@ public sealed class AdoptionCatalog
     /// Puts the application away (<see cref="AdoptedApp.ArchivedAt"/>) or brings it back. Only the
     /// record changes; nothing is moved or deleted. Returns <see langword="null"/> for an unknown id.
     /// Archiving an archived application, or restoring one in use, changes nothing.
+    /// Putting away is keeping: archiving an unsaved result also keeps it (<see cref="KeepAsync"/>),
+    /// so a record is never both put away and waiting to be swept.
     /// </summary>
     public async Task<AdoptedApp?> SetArchivedAsync(string id, bool archived, CancellationToken cancellationToken = default)
     {
         if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
         if (archived == app.ArchivedAt is not null) return app;
-        return await WriteAsync(app with { ArchivedAt = archived ? _clock.GetUtcNow() : null }, cancellationToken).ConfigureAwait(false);
+        return await WriteAsync(archived
+            ? app with { ArchivedAt = _clock.GetUtcNow(), Unsaved = false, LeftAt = null }
+            : app with { ArchivedAt = null }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<AdoptedApp> WriteAsync(AdoptedApp changed, CancellationToken cancellationToken)
@@ -159,7 +163,8 @@ public sealed class AdoptionCatalog
     /// <summary>
     /// Removes the unsaved applications left for <see cref="UnsavedRetention"/> or longer, the way
     /// <see cref="RemoveAsync"/> does: the folder goes to <paramref name="discard"/> (the recycle bin),
-    /// the usage record stays. An unsaved application with no mark of being left is marked now.
+    /// the usage record stays. An unsaved application with no mark of being left is marked now. An
+    /// archived one is never swept — putting away is keeping, even on a record written before archiving implied it.
     /// </summary>
     /// <remarks>
     /// The host runs this when it starts, before any application can be open: nothing open is ever
@@ -173,7 +178,7 @@ public sealed class AdoptionCatalog
         var removed = new List<RemovedApp>();
         foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (!app.Unsaved) continue;
+            if (!app.Unsaved || app.ArchivedAt is not null) continue;
             if (app.LeftAt is not { } leftAt)
                 await WriteAsync(app with { LeftAt = now }, cancellationToken).ConfigureAwait(false);
             else if (now - leftAt >= UnsavedRetention && await RemoveAsync(app.Id, discard, cancellationToken).ConfigureAwait(false) is { } gone)
