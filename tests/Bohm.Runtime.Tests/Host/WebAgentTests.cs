@@ -190,9 +190,6 @@ public sealed class WebAgentTests : IDisposable
         var gguf = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");
         var server = Environment.GetEnvironmentVariable("BOHM_TEST_LLAMA_SERVER");
         Assert.SkipWhen(string.IsNullOrEmpty(gguf) || string.IsNullOrEmpty(server), "BOHM_TEST_GGUF and BOHM_TEST_LLAMA_SERVER are not set.");
-        // The model on this computer is not offered declaration-only tools yet (docket iyulab/iron-prow #524):
-        // it answers without reading. Unskip when a release with the fix is consumed.
-        Assert.Skip("Waiting on iyulab/iron-prow #524 — declaration-only tools do not reach the model on this computer.");
 
         await using var host = await RunningHost.StartAsync(configure: o => o with { LocalModel = new LocalModelOptions { ModelPath = gguf!, ServerPath = server } });
         await AssertReadsThePageAndAnswersAsync(host);
