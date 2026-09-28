@@ -154,6 +154,70 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
         return null;
     }
 
+    /// <summary>How long <see cref="CheckAsync"/> waits for the server before calling it unreachable.</summary>
+    public static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Asks the server once for its models (<c>GET {base}models</c>, with the key when one is connected) —
+    /// whether it answers, and whether it knows the model it was set with — so a wrong address, key or
+    /// model name shows where it was set, not at the first question. Nothing of an application's goes
+    /// with it; the request still leaves this computer, so it is counted as sent to the server's host.
+    /// </summary>
+    /// <returns><see langword="null"/> when no server is set.</returns>
+    public async Task<CheckResult?> CheckAsync(HttpClient http, CancellationToken cancellationToken)
+    {
+        if (Current is not { } server) return null;
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(server.Endpoint, "models"));
+        if (vault.Read(VaultName) is { Length: > 0 } key) request.Headers.Authorization = new("Bearer", key);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(CheckTimeout);
+        egress.Sent(server.Endpoint.Authority);
+        try
+        {
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            var status = (int)response.StatusCode;
+            if (!response.IsSuccessStatusCode)
+                return new(status is 401 or 403 ? CheckResult.KeyRefused : status == 404 ? CheckResult.NotFound : CheckResult.Refused, status, null);
+            return new(CheckResult.Answers, status, await ListsAsync(response, server.Model, timeout.Token).ConfigureAwait(false));
+        }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return new(CheckResult.Unreachable, null, null);
+        }
+    }
+
+    /// <summary>Whether an OpenAI-shaped model list (<c>{ data: [{ id }] }</c>) names <paramref name="model"/>; <see langword="null"/> when the answer is not such a list.</summary>
+    private static async Task<bool?> ListsAsync(HttpResponseMessage response, string model, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var list = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (list.RootElement.ValueKind != JsonValueKind.Object
+                || !list.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                return null;
+            return data.EnumerateArray().Any(m => m.ValueKind == JsonValueKind.Object && m.TryGetProperty("id", out var id)
+                && id.ValueKind == JsonValueKind.String && string.Equals(id.GetString(), model, StringComparison.Ordinal));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>What <see cref="CheckAsync"/> found.</summary>
+    /// <param name="Result">One of <see cref="Answers"/>, <see cref="KeyRefused"/>, <see cref="NotFound"/>, <see cref="Refused"/>, <see cref="Unreachable"/>.</param>
+    /// <param name="Status">The server's HTTP status, when it answered.</param>
+    /// <param name="ModelListed">Whether its model list names the model it was set with; <see langword="null"/> when it gave no such list.</param>
+    internal sealed record CheckResult(string Result, int? Status, bool? ModelListed)
+    {
+        public const string Answers = "answers";
+        public const string KeyRefused = "key-refused";
+        public const string NotFound = "not-found";
+        public const string Refused = "refused";
+        public const string Unreachable = "unreachable";
+    }
+
     public void Dispose()
     {
         _gate.Dispose();
