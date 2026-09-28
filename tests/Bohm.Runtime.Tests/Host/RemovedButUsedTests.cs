@@ -20,6 +20,17 @@ public sealed class RemovedButUsedTests
         Assert.Equal(["db"], Check("let db;", "", "<p>x</p>\n<script type=\"module\">if (!db) { show(`no ${db}`); }</script>"));
 
     [Fact]
+    public void Code_keeps_template_expressions_and_drops_text_comments_and_strings()
+    {
+        var code = EditProposals.CodeOnly("a(`x ${db} y ${f({ k: 1 })} z`); /* db */ b('db', \"db\"); // db\nc();");
+        Assert.Contains("db", code, StringComparison.Ordinal);                 // inside ${…}
+        Assert.Contains("f({ k: 1 })", code, StringComparison.Ordinal);        // nested braces stay code
+        Assert.DoesNotContain("x ", code, StringComparison.Ordinal);
+        Assert.Equal(1, code.Split("db").Length - 1);                          // only the expression, not the comment or strings
+        Assert.Contains("c();", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_function_removed_while_still_called_is_found() =>
         Assert.Equal(["initAuth"], Check("async function initAuth() { await signIn(); }", "", "window.onload = () => initAuth();"));
 
@@ -35,6 +46,9 @@ public sealed class RemovedButUsedTests
     [InlineData("let a, db, b;\nif (!db) {}")]                            // one of several declared together
     [InlineData("<i class=\"icon-db\"></i><p>db</p><script>save();</script>")]   // the word in markup, not in a script
     [InlineData("<script>log('db is gone'); // db removed\n</script>")]           // in a string and a comment
+    [InlineData("<script>const id = `local-db-${n}`;</script>")]                    // in a template's fixed text
+    [InlineData("<script>list.map(db => db.id);</script>")]                         // a parameter without parentheses
+    [InlineData("<script>const f = (a, db = 1, { c }) => db;</script>")]            // a parameter with a default
     public void A_name_that_is_declared_again_or_not_used_is_not_found(string sourceAfter) =>
         Assert.Empty(Check("let db;", "", sourceAfter));
 }

@@ -204,14 +204,61 @@ internal static partial class EditProposals
     {
         var scripts = InlineScript().Matches(source);
         var code = scripts.Count == 0 ? source : string.Join('\n', scripts.Select(m => m.Groups["body"].Value));
-        return CommentOrQuoted().Replace(code, " ");
+        return CodeOnly(code);
+    }
+
+    /// <summary>
+    /// Script text with comments, quoted strings and the fixed text of template literals blanked out —
+    /// what is left is code, including the expressions inside a template's <c>${…}</c>. A plain scan of
+    /// the characters: good enough to tell a use of a name from the same word in text, which is all the
+    /// check needs (a regular-expression literal is read as code).
+    /// </summary>
+    internal static string CodeOnly(string script)
+    {
+        var code = new StringBuilder(script.Length);
+        var templates = new Stack<int>();   // brace depth at which each open `${` returns to its template
+        var depth = 0;
+        for (var i = 0; i < script.Length; i++)
+        {
+            var c = script[i];
+            var next = i + 1 < script.Length ? script[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < script.Length && script[i] != '\n') i++; code.Append('\n'); continue; }
+            if (c == '/' && next == '*') { var end = script.IndexOf("*/", i + 2, StringComparison.Ordinal); i = end < 0 ? script.Length : end + 1; code.Append(' '); continue; }
+            if (c is '\'' or '"') { i = SkipQuoted(script, i, c); code.Append(' '); continue; }
+            if (c == '`' || (c == '}' && templates.Count > 0 && templates.Peek() == depth))
+            {
+                if (c == '}') templates.Pop();
+                // The fixed text of a template, up to its end or to the next `${`.
+                for (i++; i < script.Length; i++)
+                {
+                    if (script[i] == '\\') { i++; continue; }
+                    if (script[i] == '`') break;
+                    if (script[i] == '$' && i + 1 < script.Length && script[i + 1] == '{') { templates.Push(depth); i++; break; }
+                }
+                code.Append(' ');
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}') depth--;
+            code.Append(c);
+        }
+
+        return code.ToString();
+    }
+
+    private static int SkipQuoted(string script, int start, char quote)
+    {
+        for (var i = start + 1; i < script.Length; i++)
+        {
+            if (script[i] == '\\') { i++; continue; }
+            if (script[i] == quote || script[i] == '\n') return i;
+        }
+
+        return script.Length;
     }
 
     [GeneratedRegex(@"<script\b(?![^>]*\bsrc\s*=)[^>]*>(?<body>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
     private static partial Regex InlineScript();
-
-    [GeneratedRegex(@"/\*.*?\*/|//[^\n]*|'(?:[^'\\\n]|\\.)*'|""(?:[^""\\\n]|\\.)*""", RegexOptions.Singleline)]
-    private static partial Regex CommentOrQuoted();
 
     private static HashSet<string> DeclaredIn(string code)
     {
@@ -228,7 +275,8 @@ internal static partial class EditProposals
             }
         foreach (Match m in Parameters().Matches(code))
             foreach (var part in m.Groups["list"].Value.Split(','))
-                if (Identifier().Match(part.Trim()) is { Success: true } id) names.Add(id.Value);
+                if (Identifier().Match(part.Trim().TrimStart('{', '[', '.', ' ')) is { Success: true } id) names.Add(id.Value);
+        foreach (Match m in ArrowParameter().Matches(code)) names.Add(m.Groups["name"].Value);
         return names;
     }
 
@@ -242,8 +290,13 @@ internal static partial class EditProposals
     [GeneratedRegex(@"\bimport\s*\{(?<list>[^}]*)\}")]
     private static partial Regex ImportList();
 
-    [GeneratedRegex(@"\((?<list>[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\)\s*(?:=>|\{)")]
+    // `(a, b = 1, { c }, ...d) =>` · `function f(a) {` · `catch (e) {` — each name at the start of a parameter.
+    [GeneratedRegex(@"\((?<list>[^()]*)\)\s*(?:=>|\{)")]
     private static partial Regex Parameters();
+
+    // `c => c.id` — one parameter without parentheses.
+    [GeneratedRegex(@"(?<![\w$.])(?<name>[A-Za-z_$][\w$]*)\s*=>")]
+    private static partial Regex ArrowParameter();
 
     [GeneratedRegex(@"^[A-Za-z_$][\w$]*")]
     private static partial Regex Identifier();
