@@ -191,8 +191,27 @@ internal static partial class EditProposals
         var removed = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var edit in edits) foreach (var name in DeclaredIn(edit.Old)) removed.Add(name);
         var declared = DeclaredIn(source);
-        return removed.Where(name => !declared.Contains(name) && Regex.IsMatch(source, $@"(?<![\w$.]){Regex.Escape(name)}(?![\w$]|\s*:)")).ToList();   // not an object key
+        var code = ScriptCode(source);
+        return removed.Where(name => !declared.Contains(name) && Regex.IsMatch(code, $@"(?<![\w$.]){Regex.Escape(name)}(?![\w$]|\s*:)")).ToList();   // not an object key
     }
+
+    /// <summary>
+    /// Where a name can be used: the inline scripts, without their comments and quoted strings — not
+    /// the markup, where the same word turns up in a class or a label. A source with no script element
+    /// is taken as code whole.
+    /// </summary>
+    private static string ScriptCode(string source)
+    {
+        var scripts = InlineScript().Matches(source);
+        var code = scripts.Count == 0 ? source : string.Join('\n', scripts.Select(m => m.Groups["body"].Value));
+        return CommentOrQuoted().Replace(code, " ");
+    }
+
+    [GeneratedRegex(@"<script\b(?![^>]*\bsrc\s*=)[^>]*>(?<body>.*?)</script>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    private static partial Regex InlineScript();
+
+    [GeneratedRegex(@"/\*.*?\*/|//[^\n]*|'(?:[^'\\\n]|\\.)*'|""(?:[^""\\\n]|\\.)*""", RegexOptions.Singleline)]
+    private static partial Regex CommentOrQuoted();
 
     private static HashSet<string> DeclaredIn(string code)
     {

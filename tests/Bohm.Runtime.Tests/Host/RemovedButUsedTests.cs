@@ -16,6 +16,10 @@ public sealed class RemovedButUsedTests
         Assert.Equal(["db"], Check("let db;\nlet auth;", "", "function save() { if (!db) return; }"));
 
     [Fact]
+    public void A_name_used_in_an_inline_script_of_a_document_is_found() =>
+        Assert.Equal(["db"], Check("let db;", "", "<p>x</p>\n<script type=\"module\">if (!db) { show(`no ${db}`); }</script>"));
+
+    [Fact]
     public void A_function_removed_while_still_called_is_found() =>
         Assert.Equal(["initAuth"], Check("async function initAuth() { await signIn(); }", "", "window.onload = () => initAuth();"));
 
@@ -29,6 +33,8 @@ public sealed class RemovedButUsedTests
     [InlineData("const store = { db: 1 }; store.db = 2;")]               // a property, not the name
     [InlineData("function save() { return 1; }")]                        // no longer used
     [InlineData("let a, db, b;\nif (!db) {}")]                            // one of several declared together
+    [InlineData("<i class=\"icon-db\"></i><p>db</p><script>save();</script>")]   // the word in markup, not in a script
+    [InlineData("<script>log('db is gone'); // db removed\n</script>")]           // in a string and a comment
     public void A_name_that_is_declared_again_or_not_used_is_not_found(string sourceAfter) =>
         Assert.Empty(Check("let db;", "", sourceAfter));
 }
