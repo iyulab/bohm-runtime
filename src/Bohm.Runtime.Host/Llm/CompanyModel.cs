@@ -1,10 +1,9 @@
-using System.ClientModel;
-using System.ClientModel.Primitives;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
+using IronHive.Extensions.AI;
+using IronHive.Providers.OpenAI.Compatible;
 using Microsoft.Extensions.AI;
-using OpenAI;
 
 namespace Bohm.Runtime.Host.Llm;
 
@@ -58,7 +57,9 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     private const string FileName = "company-model.json";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Lock _clientLock = new();
     private CompanyModelOptions? _chosen = Read(options);
+    private (CompanyModelOptions Server, string? Key, IChatClient Client)? _client;
 
     /// <summary>Whether the server was fixed by whoever started the runtime, so the person cannot change it.</summary>
     public bool Fixed => options.CompanyModel is not null;
@@ -107,17 +108,29 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
         }
     }
 
-    /// <summary>A client for the server, or <see langword="null"/> when none is set. Every request is counted as sent.</summary>
+    /// <summary>
+    /// A client for the server, or <see langword="null"/> when none is set. Every request is counted as sent.
+    /// </summary>
+    /// <remarks>
+    /// Through IronHive's OpenAI-compatible provider: it speaks Chat Completions the way self-hosted
+    /// servers do (a reasoning model's <c>reasoning_content</c>, no key for a server that asks for none)
+    /// and keeps a refusal's HTTP status. The client owns its connections, so one is kept while the
+    /// server, model and key stay the same, instead of a new one per request.
+    /// </remarks>
     public IChatClient? Client()
     {
         if (Current is not { } current) return null;
         var key = vault.Read(VaultName);
-        var clientOptions = new OpenAIClientOptions { Endpoint = current.Endpoint };
-        // Many servers on an organization's network ask for no key; the client library insists on one,
-        // so without a key the header it would carry is taken off instead of sending a made-up value.
-        if (string.IsNullOrEmpty(key)) clientOptions.AddPolicy(new WithoutAuthorization(), PipelinePosition.BeforeTransport);
-        var client = new OpenAI.Chat.ChatClient(current.Model, new ApiKeyCredential(string.IsNullOrEmpty(key) ? "-" : key), clientOptions).AsIChatClient();
-        return new CountedAsSent(client, egress, current.Endpoint.Authority);
+        if (string.IsNullOrEmpty(key)) key = null;
+        lock (_clientLock)
+        {
+            if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
+            // The whole address the person gave is the base — no API path is added to it.
+            var generator = new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = current.Endpoint.AbsoluteUri, Path = "", ApiKey = key });
+            var client = new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), egress, current.Endpoint.Authority);
+            _client = (current, key, client);
+            return client;
+        }
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
@@ -141,24 +154,13 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
         return null;
     }
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        _gate.Dispose();
+        _client?.Client.Dispose();
+    }
 
     internal sealed record Stored(string Format, string Endpoint, string Model);
-
-    private sealed class WithoutAuthorization : PipelinePolicy
-    {
-        public override void Process(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
-        {
-            message.Request.Headers.Remove("Authorization");
-            ProcessNext(message, pipeline, currentIndex);
-        }
-
-        public override ValueTask ProcessAsync(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
-        {
-            message.Request.Headers.Remove("Authorization");
-            return ProcessNextAsync(message, pipeline, currentIndex);
-        }
-    }
 }
 
 /// <summary>Counts each request to a model as the application's data sent to its host.</summary>
