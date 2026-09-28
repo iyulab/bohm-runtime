@@ -161,11 +161,7 @@ internal static class AdoptedAppServing
             return;
         }
 
-        var boot = JsonSerializer.Serialize(new Boot(sessions.IssueTab(appId), app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
-            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value,
-            context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
-        var (body, charset) = ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets),
-            ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
+        var (body, charset) = InjectShim(context, html, app, appId, sessions.IssueTab(appId));
 
         response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
         {
@@ -186,6 +182,20 @@ internal static class AdoptedAppServing
                 await catalog.SetLeftAsync(appId, left: false, context.RequestAborted).ConfigureAwait(false);
             await response.Body.WriteAsync(body, context.RequestAborted).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// <paramref name="html"/> with the injected script in front, booted with <paramref name="appId"/>'s
+    /// data as it is now. The one place the boot is put together, so a page served for a look
+    /// (<see cref="PreviewServing"/>) routes the same calls the application's own page would.
+    /// </summary>
+    internal static (byte[] Body, string Charset) InjectShim(HttpContext context, byte[] html, OpenApp app, string appId, string tab)
+    {
+        var boot = JsonSerializer.Serialize(new Boot(tab, app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
+            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value,
+            context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
+        return ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets),
+            ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
     }
 
     /// <param name="LineOffset">Lines the injected script adds before the document's own first line.</param>

@@ -36,6 +36,16 @@ internal sealed class AppPreviews(TimeProvider time)
         /// <summary>What the content security policy refused, as <c>category host</c>.</summary>
         public IReadOnlyList<string> Blocked { get { lock (_errors) return [.. _blocked]; } }
 
+        /// <summary>Whether the document called a model while it was served. None was asked; see <see cref="PreviewServing"/>.</summary>
+        public bool AskedModel { get { lock (_errors) return _askedModel; } }
+
+        private bool _askedModel;
+
+        public void MarkAskedModel()
+        {
+            lock (_errors) _askedModel = true;
+        }
+
         public void AddError(string message)
         {
             lock (_errors) if (_errors.Count + _blocked.Count < MaxReports && !_errors.Contains(message)) _errors.Add(message);
