@@ -1,4 +1,3 @@
-using System.ClientModel;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
@@ -7,8 +6,8 @@ using IronHive.Extensions.AI;
 using IronHive.Providers.Anthropic;
 using IronHive.Providers.GoogleAI;
 using IronHive.Providers.OpenAI;
+using IronHive.Providers.OpenAI.Compatible;
 using Microsoft.Extensions.AI;
-using OpenAI;
 
 namespace Bohm.Runtime.Host.Edit;
 
@@ -29,9 +28,10 @@ internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnT
 /// person chose a connected provider and one of its models, remembered in a file at the data root.
 /// </summary>
 /// <remarks>
-/// A provider is reached at its OpenAI-compatible base (<see cref="LlmProvider.OpenAICompatiblePath"/>),
-/// except Gemini and Anthropic, which are reached through their own APIs. Choosing a provider sends what the agent works on there, which
-/// is why it is the person's choice and never the default; every request is counted as sent.
+/// OpenAI, Anthropic and Gemini are reached through their own APIs, the rest at their OpenAI-compatible
+/// base (<see cref="LlmProvider.OpenAICompatiblePath"/>). Choosing a provider sends what the agent works on
+/// there, which is why it is the person's choice and never the default; every request is counted as sent.
+/// A provider's client owns its connections, so one is kept while the provider, model and key stay the same.
 /// </remarks>
 internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
 {
@@ -48,6 +48,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     public const string CompanyName = "company";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Lock _clientLock = new();
+    private (EditModelChoice Choice, string Key, IChatClient Client)? _client;
     private EditModelChoice? _read;
     private bool _wasRead;
 
@@ -119,6 +121,12 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         var key = vault.Read(provider.VaultName);
         if (string.IsNullOrEmpty(key)) return null;
 
+        lock (_clientLock)
+        {
+            if (_client is { } kept && kept.Choice == chosen && kept.Key == key)
+                return new(kept.Client, $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
+        }
+
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
         var client = provider.Id switch
         {
@@ -135,10 +143,15 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             // source is sent to be answered, not kept on OpenAI's side.
             "openai" => new OpenAIMessageGenerator(new OpenAIConfig { ApiKey = key, BaseUrl = new Uri(root, provider.OpenAICompatiblePath).ToString().TrimEnd('/') })
                 .AsChatClient(chosen.Model, "openai"),
-            _ => new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
-                new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient(),
+            // The rest speak Chat Completions at an OpenAI-compatible base — the same provider as the
+            // organization's server (a reasoning model's reasoning_content, a refusal's status).
+            _ => new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = new Uri(root, provider.OpenAICompatiblePath).AbsoluteUri, Path = "", ApiKey = key })
+                .AsChatClient(chosen.Model, "openai-compatible"),
         };
-        return new(new CountedAsSent(client, egress, provider.Host), $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
+        var counted = new CountedAsSent(client, egress, provider.Host);
+        lock (_clientLock)
+            _client = (chosen, key, counted);
+        return new(counted, $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
@@ -162,7 +175,11 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         return null;
     }
 
-    public void Dispose() => _gate.Dispose();
+    public void Dispose()
+    {
+        _gate.Dispose();
+        _client?.Client.Dispose();
+    }
 
     internal sealed record Stored(string Format, string Provider, string Model);
 }

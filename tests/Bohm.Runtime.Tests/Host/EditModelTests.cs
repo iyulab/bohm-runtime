@@ -126,6 +126,21 @@ public sealed class EditModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_key_connected_again_is_the_one_the_next_proposal_goes_with()
+    {
+        // The provider's client is kept between proposals; a new key must not be answered by the old client.
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/groq/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("groq", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        var app = await _host.AdoptAsync(App);
+        using (var first = await ProposeAsync(app)) HttpAssert.Status(HttpStatusCode.OK, first);
+
+        using (var reconnect = await _host.ControlClient().PutAsync("/__control/llm/groq/key", new StringContent(Key + "-new"))) HttpAssert.Status(HttpStatusCode.OK, reconnect);
+        using (var second = await ProposeAsync(app)) HttpAssert.Status(HttpStatusCode.OK, second);
+
+        Assert.Equal([$"Bearer {Key}", $"Bearer {Key}-new"], _provider.Received.Select(r => r.Headers["Authorization"]));
+    }
+
+    [Fact]
     public async Task OpenAI_is_asked_through_its_own_Responses_API_with_its_key_and_it_is_counted_as_sent()
     {
         // OpenAI's first-party surface: the Responses API, with the tools as top-level function tools.
