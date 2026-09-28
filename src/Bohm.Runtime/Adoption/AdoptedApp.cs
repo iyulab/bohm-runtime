@@ -19,8 +19,17 @@ namespace Bohm.Runtime.Adoption;
 /// changes nothing but this mark: the code, the data, the revisions and the usage record stay where
 /// they are, so restoring it brings back exactly what was there.
 /// </param>
+/// <param name="Unsaved">
+/// A result made for the person (a generated page) that they have not kept yet. It stays out of the
+/// person's applications until kept; once left, it goes after <see cref="AdoptionCatalog.UnsavedRetention"/>.
+/// An application the person adopted themselves is never unsaved.
+/// </param>
+/// <param name="LeftAt">
+/// When the person last left an unsaved application (closed its tab); <see langword="null"/> while it
+/// is open or for a saved one. Its retention counts from here.
+/// </param>
 public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
-    DateTimeOffset? ArchivedAt = null);
+    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null);
 
 /// <summary>The file a revision of an application was taken in from.</summary>
 /// <param name="Sha256">Lowercase hexadecimal SHA-256 of the adopted bytes.</param>

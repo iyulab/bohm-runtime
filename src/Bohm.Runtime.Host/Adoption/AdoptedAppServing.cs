@@ -181,6 +181,9 @@ internal static class AdoptedAppServing
         if (HttpMethods.IsGet(context.Request.Method))
         {
             app.Usage.Record(UsageSignal.Opened);
+            // An unsaved result opened again is no longer left: its retention starts over when it is next left.
+            if (record.Unsaved && record.LeftAt is not null)
+                await catalog.SetLeftAsync(appId, left: false, context.RequestAborted).ConfigureAwait(false);
             await response.Body.WriteAsync(body, context.RequestAborted).ConfigureAwait(false);
         }
     }

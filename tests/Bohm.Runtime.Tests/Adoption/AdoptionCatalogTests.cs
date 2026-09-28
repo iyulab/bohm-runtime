@@ -28,6 +28,89 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task An_unsaved_adoption_is_marked_and_keeping_it_makes_it_an_ordinary_application()
+    {
+        var catalog = new AdoptionCatalog(_root);
+
+        var app = await catalog.AdoptAsync(Html, unsaved: true);
+        Assert.True(app.Unsaved);
+        Assert.Null(app.LeftAt);
+        Assert.Equal(app, await new AdoptionCatalog(_root).GetAsync(app.Id)); // survives a restart
+
+        var kept = await catalog.KeepAsync(app.Id);
+        Assert.Equal(app with { Unsaved = false }, kept);
+        Assert.Equal(kept, await new AdoptionCatalog(_root).GetAsync(app.Id));
+        Assert.Equal(kept, await catalog.KeepAsync(app.Id)); // again: no change
+        Assert.Null(await catalog.KeepAsync("0123456789abcdef0123456789abcdef"));
+    }
+
+    [Fact]
+    public async Task An_adoption_is_saved_unless_asked_and_its_record_says_nothing_new()
+    {
+        // Records written before unsaved applications existed carry no such field: they read as saved.
+        var catalog = new AdoptionCatalog(_root);
+
+        var app = await catalog.AdoptAsync(Html, "todo.html");
+
+        Assert.False(app.Unsaved);
+        var record = await File.ReadAllTextAsync(Path.Combine(_root, "adopted", app.Id, "app.json"));
+        Assert.DoesNotContain("unsaved", record);
+        Assert.DoesNotContain("leftAt", record);
+    }
+
+    [Fact]
+    public async Task Leaving_marks_only_an_unsaved_application_and_coming_back_clears_the_mark()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+        var catalog = new AdoptionCatalog(_root, clock);
+        var unsaved = await catalog.AdoptAsync(Html, unsaved: true);
+        var saved = await catalog.AdoptAsync(Html);
+
+        Assert.Equal(clock.GetUtcNow(), (await catalog.SetLeftAsync(unsaved.Id, left: true))!.LeftAt);
+        Assert.Equal(saved, await catalog.SetLeftAsync(saved.Id, left: true));
+        Assert.Null((await catalog.SetLeftAsync(unsaved.Id, left: false))!.LeftAt);
+        Assert.Null(await catalog.SetLeftAsync("0123456789abcdef0123456789abcdef", left: true));
+    }
+
+    [Fact]
+    public async Task Unsaved_applications_left_for_the_retention_period_go_at_the_sweep_and_the_rest_stay()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+        var catalog = new AdoptionCatalog(_root, clock);
+        var old = await catalog.AdoptAsync(Html, unsaved: true);
+        await catalog.SetLeftAsync(old.Id, left: true);
+        clock.Advance(TimeSpan.FromDays(2));
+        var recent = await catalog.AdoptAsync(Html, unsaved: true);
+        await catalog.SetLeftAsync(recent.Id, left: true);
+        var neverLeft = await catalog.AdoptAsync(Html, unsaved: true); // the shell ended with its tab open
+        var saved = await catalog.AdoptAsync(Html);
+        clock.Advance(AdoptionCatalog.UnsavedRetention - TimeSpan.FromDays(1)); // old: 15 days since it was left · recent: 13
+
+        var discarded = new List<string>();
+        var swept = await catalog.SweepUnsavedAsync((folder, _) => { discarded.Add(folder); Directory.Delete(folder, recursive: true); return Task.CompletedTask; });
+
+        Assert.Equal([old.Id], swept.Select(r => r.Id));
+        Assert.Single(discarded);
+        Assert.Null(await catalog.GetAsync(old.Id));
+        Assert.Contains(await catalog.ListRemovedAsync(), r => r.Id == old.Id);
+        Assert.NotNull(await catalog.GetAsync(recent.Id));
+        Assert.Equal(clock.GetUtcNow(), (await catalog.GetAsync(neverLeft.Id))!.LeftAt);
+        Assert.Equal(saved, await catalog.GetAsync(saved.Id));
+    }
+
+    [Fact]
+    public async Task An_unsaved_application_can_be_removed_without_archiving_it_first()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var unsaved = await catalog.AdoptAsync(Html, unsaved: true);
+        var saved = await catalog.AdoptAsync(Html);
+        static Task Discard(string folder, CancellationToken _) { Directory.Delete(folder, recursive: true); return Task.CompletedTask; }
+
+        Assert.NotNull(await catalog.RemoveAsync(unsaved.Id, Discard));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.RemoveAsync(saved.Id, Discard));
+    }
+
+    [Fact]
     public async Task Archiving_marks_the_record_only_and_restoring_brings_back_everything()
     {
         var catalog = new AdoptionCatalog(_root);

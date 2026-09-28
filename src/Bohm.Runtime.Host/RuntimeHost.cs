@@ -90,6 +90,24 @@ public static class RuntimeHost
     /// <summary>The wait between those attempts — together about two seconds, longer than a normal stop.</summary>
     private static readonly TimeSpan RememberedPortRetryDelay = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// Removes the unsaved results left longer than their retention (<see cref="AdoptionCatalog.SweepUnsavedAsync"/>),
+    /// before the host listens — so no application can be open while it runs. Their folders go where a
+    /// removal sends them (the recycle bin): nobody is asked, so the way back is the operating system's.
+    /// A data root that cannot be read now is left for the next start.
+    /// </summary>
+    private static async Task SweepUnsavedAsync(RuntimeHostOptions options)
+    {
+        try
+        {
+            await new AdoptionCatalog(options.DataRoot).SweepUnsavedAsync(ControlPlane.DiscardOf(options)).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Nothing removed that could not be; the next start tries again.
+        }
+    }
+
     /// <summary>Builds (but does not start) the host.</summary>
     public static WebApplication Build(RuntimeHostOptions options, Action<WebApplicationBuilder>? configure = null)
     {
@@ -174,6 +192,7 @@ public static class RuntimeHost
     public static async Task<StartedRuntime> StartAsync(RuntimeHostOptions options, Action<WebApplicationBuilder>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        await SweepUnsavedAsync(options).ConfigureAwait(false);
         if (options.Port is not null)
         {
             var fixedApp = Build(options, configure);
