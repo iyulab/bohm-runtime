@@ -337,6 +337,48 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_preview_shows_the_error_a_proposed_revision_would_load_with_and_leaves_the_application_alone()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync(NotesApp);
+        var app = await OpenAsync(id);
+        await app.FillAsync("#note", "keep me");
+        await app.ClickAsync("#save");
+        await ReloadUntilAsync(app, "localStorage.getItem('lastSaved') === '1'");
+        await app.CloseAsync();
+
+        // The proposed revision reads the data, writes over it, and has a script that does not parse (line 3).
+        using var client = _host.ControlClient();
+        using var created = await client.PostAsync($"/__control/apps/{id}/previews", new StringContent("""
+            <!doctype html><title>Notes</title>
+            <script>window.seen = localStorage.getItem('notes'); localStorage.setItem('notes', '["overwritten"]'); localStorage.clear();</script>
+            <script>render(</script>
+            """));
+        var view = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement;
+        var token = view.GetProperty("token").GetString()!;
+
+        var preview = await _browser!.NewPageAsync();
+        await preview.GotoAsync(view.GetProperty("origin").GetString()!);
+        Assert.Equal("[\"keep me\"]", await preview.EvaluateAsync<string>("window.seen"));
+
+        var report = await EventuallyAsync(async cancellation =>
+        {
+            var r = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/previews/{token}", cancellation)).RootElement;
+            return r.GetProperty("errors").GetArrayLength() > 0 ? r : (JsonElement?)null;
+        });
+        var error = Assert.Single(report.GetProperty("errors").EnumerateArray()).GetString()!;
+        Assert.Contains("SyntaxError", error, StringComparison.Ordinal);
+        Assert.EndsWith("(line 3)", error, StringComparison.Ordinal); // as numbered in the proposed document
+        await preview.CloseAsync();
+
+        // The application's data and record are as they were.
+        var again = await OpenAsync(id);
+        Assert.Equal("[\"keep me\"]", await again.EvaluateAsync<string>("localStorage.getItem('notes')"));
+        var status = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+        Assert.Empty(status.GetProperty("recentLoadErrors").EnumerateArray());
+    }
+
+    [Fact]
     public async Task A_module_imported_from_a_cdn_is_named_instead_of_a_bare_error()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
