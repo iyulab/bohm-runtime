@@ -14,7 +14,11 @@ internal sealed record HostToolCall(string Id, string Name, JsonElement Argument
 /// What a turn ended with: an answer (<c>done</c>), or calls for the host to make and send back
 /// (<c>requires_action</c>) — with any text the model wrote before them.
 /// </summary>
-internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model);
+internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model)
+{
+    /// <summary>The text as HTML to show (<see cref="Adoption.AnswerMarkdown"/>) — nothing in it runs or loads.</summary>
+    public string? Html => Text is { Length: > 0 } text ? Adoption.AnswerMarkdown.ToHtml(text) : null;
+}
 
 /// <summary>
 /// Questions about the web pages open in the person's browser, answered by a model that reads them
