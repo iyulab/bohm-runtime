@@ -128,6 +128,7 @@ public static class RuntimeHost
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
         builder.Services.AddSingleton<AppSessions>();
         builder.Services.AddSingleton<OpenApps>();
+        builder.Services.AddSingleton<AppPreviews>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Activity>();
         builder.Services.AddSingleton<AssetFetcher>();
@@ -145,6 +146,10 @@ public static class RuntimeHost
             // including a public name rebound to the loopback address — is not served.
             if (AdoptedAppServing.AppIdOf(context.Request) is { } appId)
                 return AdoptedAppServing.ServeAsync(context, appId);
+
+            // A proposed document shown before it is taken in: its own origin, never the application's.
+            if (AppPreviews.TokenOf(context.Request) is { } previewToken)
+                return PreviewServing.ServeAsync(context, previewToken);
 
             if (ControlPlane.IsControlHost(context.Request))
                 return ControlPlane.HandleAsync(context, options.ControlSecret);

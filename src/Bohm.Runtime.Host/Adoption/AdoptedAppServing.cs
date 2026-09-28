@@ -48,14 +48,14 @@ internal static class AdoptedAppServing
 
     private const string LocalhostSuffix = ".localhost";
 
-    private static readonly Lazy<string> ShimTemplate = new(() =>
+    internal static readonly Lazy<string> ShimTemplate = new(() =>
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Bohm.Runtime.Host.shim.js")!;
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     });
 
-    private static readonly Lazy<int> ShimLineCount = new(() => ShimTemplate.Value.Count(c => c == '\n'));
+    internal static readonly Lazy<int> ShimLineCount = new(() => ShimTemplate.Value.Count(c => c == '\n'));
 
     /// <summary>The application a request is addressed to, from its <c>Host</c> header.</summary>
     public static string? AppIdOf(HttpRequest request)

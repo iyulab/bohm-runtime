@@ -30,6 +30,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model }</c>; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, for two minutes. Nothing about the application changes.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked }</c> — errors thrown, with lines as in the previewed document, and what the content security policy refused (<c>category host</c>). 404 once it has expired or been removed.</description></item>
+/// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
@@ -186,6 +189,40 @@ internal static class ControlPlane
 
             case ("POST", ["apps", var proposalFor, "proposals"]):
                 await ProposeAsync(context, proposalFor, cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var previewOf, "previews"]):
+                if (await catalog.GetAsync(previewOf, cancel).ConfigureAwait(false) is not { ArchivedAt: null })
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var previewHtml = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                if (previewHtml.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var previewToken = context.RequestServices.GetRequiredService<AppPreviews>().Create(previewOf, previewHtml);
+                response.StatusCode = StatusCodes.Status201Created;
+                await WriteAsync(response, new PreviewView(previewToken, AppPreviews.Origin(previewToken, port).AbsoluteUri), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var previewedId, "previews", var readToken]):
+                if (context.RequestServices.GetRequiredService<AppPreviews>().Find(previewedId, readToken) is not { } preview)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new PreviewReport(preview.Errors, preview.Blocked), cancel).ConfigureAwait(false);
+                break;
+
+            case ("DELETE", ["apps", var previewedApp, "previews", var removedToken]):
+                response.StatusCode = context.RequestServices.GetRequiredService<AppPreviews>().Remove(previewedApp, removedToken)
+                    ? StatusCodes.Status204NoContent : StatusCodes.Status404NotFound;
                 break;
 
             case ("POST", ["apps", var revertedId, "revisions", "revert"]):
@@ -952,6 +989,10 @@ internal static class ControlPlane
     internal sealed record DrainResult(bool Quiet);
 
     internal sealed record TabView(long Ack, long Issued, bool Left);
+
+    internal sealed record PreviewView(string Token, string Origin);
+
+    internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> Blocked);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
@@ -979,5 +1020,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;
