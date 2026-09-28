@@ -64,18 +64,23 @@ public sealed class AdoptionCatalog
         Directory.CreateDirectory(_root);
     }
 
+    /// <summary>How long an unsaved application stays after the person left it, before <see cref="SweepUnsavedAsync"/> removes it.</summary>
+    public static readonly TimeSpan UnsavedRetention = TimeSpan.FromDays(14);
+
     /// <summary>
     /// Adopts <paramref name="html"/> as a new application. The application appears in the catalog
     /// complete or not at all: it is assembled in a staging folder and moved into place.
     /// </summary>
-    public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, CancellationToken cancellationToken = default)
+    /// <param name="unsaved">A result made for the person, kept only if they keep it (<see cref="AdoptedApp.Unsaved"/>).</param>
+    public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
             Guid.CreateVersion7(now).ToString("n"),
             now,
             new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length),
-            Protection: "none");
+            Protection: "none",
+            Unsaved: unsaved);
 
         var staging = Path.Combine(_root, StagingPrefix + app.Id);
         Directory.CreateDirectory(staging);
@@ -117,9 +122,62 @@ public sealed class AdoptionCatalog
     {
         if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
         if (archived == app.ArchivedAt is not null) return app;
-        var changed = app with { ArchivedAt = archived ? _clock.GetUtcNow() : null };
-        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(changed), cancellationToken).ConfigureAwait(false);
+        return await WriteAsync(app with { ArchivedAt = archived ? _clock.GetUtcNow() : null }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<AdoptedApp> WriteAsync(AdoptedApp changed, CancellationToken cancellationToken)
+    {
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(changed.Id), RecordFile), WriteRecord(changed), cancellationToken).ConfigureAwait(false);
         return changed;
+    }
+
+    /// <summary>
+    /// Keeps an unsaved application: from now on it is one of the person's applications like any
+    /// other, with its data. Returns <see langword="null"/> for an unknown id; keeping a saved one changes nothing.
+    /// </summary>
+    public async Task<AdoptedApp?> KeepAsync(string id, CancellationToken cancellationToken = default)
+    {
+        if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
+        if (!app.Unsaved) return app;
+        return await WriteAsync(app with { Unsaved = false, LeftAt = null }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records that the person left an unsaved application (<paramref name="left"/>) or came back to it.
+    /// A saved application has nothing to record. Returns <see langword="null"/> for an unknown id.
+    /// </summary>
+    public async Task<AdoptedApp?> SetLeftAsync(string id, bool left, CancellationToken cancellationToken = default)
+    {
+        if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
+        if (!app.Unsaved || left == app.LeftAt is not null) return app;
+        return await WriteAsync(app with { LeftAt = left ? _clock.GetUtcNow() : null }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes the unsaved applications left for <see cref="UnsavedRetention"/> or longer, the way
+    /// <see cref="RemoveAsync"/> does: the folder goes to <paramref name="discard"/> (the recycle bin),
+    /// the usage record stays. An unsaved application with no mark of being left is marked now.
+    /// </summary>
+    /// <remarks>
+    /// The host runs this when it starts, before any application can be open: nothing open is ever
+    /// removed, and one whose tab was still open when the shell ended counts from this start.
+    /// </remarks>
+    /// <returns>The applications removed.</returns>
+    public async Task<IReadOnlyList<RemovedApp>> SweepUnsavedAsync(Func<string, CancellationToken, Task> discard, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(discard);
+        var now = _clock.GetUtcNow();
+        var removed = new List<RemovedApp>();
+        foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!app.Unsaved) continue;
+            if (app.LeftAt is not { } leftAt)
+                await WriteAsync(app with { LeftAt = now }, cancellationToken).ConfigureAwait(false);
+            else if (now - leftAt >= UnsavedRetention && await RemoveAsync(app.Id, discard, cancellationToken).ConfigureAwait(false) is { } gone)
+                removed.Add(gone);
+        }
+
+        return removed;
     }
 
     /// <summary>
@@ -130,7 +188,7 @@ public sealed class AdoptionCatalog
     /// how it was used outlives the application, as a judgment of "no longer used" needs it.
     /// </summary>
     /// <returns>The removed application, or <see langword="null"/> for an unknown id.</returns>
-    /// <exception cref="InvalidOperationException">The application is not archived: only an application put away can be removed.</exception>
+    /// <exception cref="InvalidOperationException">The application is neither archived nor unsaved: only an application put away, or a result never kept, can be removed.</exception>
     /// <remarks>
     /// The folder is first renamed out of the catalog, so the application disappears at once and
     /// completely; if <paramref name="discard"/> then fails, it is renamed back and nothing changed.
@@ -139,7 +197,7 @@ public sealed class AdoptionCatalog
     {
         ArgumentNullException.ThrowIfNull(discard);
         if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
-        if (app.ArchivedAt is null) throw new InvalidOperationException("Only an archived application can be removed.");
+        if (app.ArchivedAt is null && !app.Unsaved) throw new InvalidOperationException("Only an archived or unsaved application can be removed.");
 
         var removed = new RemovedApp(app.Id, app.AdoptedAt, app.Revision, app.ArchivedAt, _clock.GetUtcNow());
         var kept = Path.Combine(_removed, id);
@@ -612,6 +670,12 @@ public sealed class AdoptionCatalog
             WriteSource(writer, app.Source);
             writer.WriteString("protection", app.Protection);
             if (app.ArchivedAt is not null) WriteTime(writer, "archivedAt", app.ArchivedAt);
+            if (app.Unsaved)
+            {
+                writer.WriteBoolean("unsaved", true);
+                WriteTime(writer, "leftAt", app.LeftAt);
+            }
+
             writer.WriteEndObject();
         }
 
@@ -676,11 +740,16 @@ public sealed class AdoptionCatalog
             var revisedAt = root.GetProperty("revisedAt");
             // Absent in records written before archiving existed — and while the application is in use.
             var archivedAt = root.TryGetProperty("archivedAt", out var archived) && archived.ValueKind == JsonValueKind.String ? ParseTime(archived.GetString()!) : (DateTimeOffset?)null;
+            // Absent for every application the person adopted themselves, and in records written before unsaved results existed.
+            var unsaved = root.TryGetProperty("unsaved", out var unsavedMark) && unsavedMark.ValueKind == JsonValueKind.True;
+            var leftAt = unsaved && root.TryGetProperty("leftAt", out var left) && left.ValueKind == JsonValueKind.String ? ParseTime(left.GetString()!) : (DateTimeOffset?)null;
             return app with
             {
                 Revision = root.GetProperty("revision").GetInt32(),
                 RevisedAt = revisedAt.ValueKind == JsonValueKind.Null ? null : ParseTime(revisedAt.GetString()!),
                 ArchivedAt = archivedAt,
+                Unsaved = unsaved,
+                LeftAt = leftAt,
             };
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)

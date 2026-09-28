@@ -17,15 +17,17 @@ namespace Bohm.Runtime.Host.Control;
 /// <remarks>
 /// <list type="table">
 /// <item><term><c>GET /__control/runtime</c></term><description>Facts about this runtime: <c>contract</c>, the edition of the application contract it serves (<see cref="AppContract"/>).</description></item>
-/// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used.</description></item>
+/// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used; an unsaved result says so, with when it was left and when it expires.</description></item>
 /// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline), <c>damaged</c>, or <c>interruptedRemoval</c> (a removal for good stopped before the recycle bin; the folder is still there). Nothing in them is changed; one unreadable application never hides the others.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/keep</c></term><description>Keeps an unsaved result: it becomes one of the person's applications, with its data. 404 for an unknown id.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/left</c></term><description>The person left an unsaved result (closed its tab): its retention counts from now, and serving its page again ends it. Nothing changes for a saved application.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
-/// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
+/// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model }</c>; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
@@ -111,7 +113,7 @@ internal static class ControlPlane
                     break;
                 }
 
-                var adopted = await catalog.AdoptAsync(html, OriginalPath(request), cancel).ConfigureAwait(false);
+                var adopted = await catalog.AdoptAsync(html, OriginalPath(request), cancellationToken: cancel).ConfigureAwait(false);
                 if (context.RequestServices.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
                     context.RequestServices.GetRequiredService<AssetFetcher>().Start(adopted.Id);
                 response.StatusCode = StatusCodes.Status201Created;
@@ -195,6 +197,28 @@ internal static class ControlPlane
                 await WriteAsync(response, View(marked, port, await catalog.CanRevertAsync(marked, cancel).ConfigureAwait(false), catalog.OpenUsage(marked.Id).LastUsedOn), cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["apps", var keptId, "keep"]):
+                var kept = await catalog.KeepAsync(keptId, cancel).ConfigureAwait(false);
+                if (kept is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, View(kept, port, await catalog.CanRevertAsync(kept, cancel).ConfigureAwait(false), catalog.OpenUsage(kept.Id).LastUsedOn), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var leftId, "left"]):
+                var left = await catalog.SetLeftAsync(leftId, left: true, cancel).ConfigureAwait(false);
+                if (left is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, View(left, port, await catalog.CanRevertAsync(left, cancel).ConfigureAwait(false), catalog.OpenUsage(left.Id).LastUsedOn), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["apps", var exportId, "export"]):
                 var target = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
                 if (!Path.IsPathFullyQualified(target))
@@ -230,7 +254,7 @@ internal static class ControlPlane
                 RemovedApp? removed;
                 try
                 {
-                    if (await catalog.GetAsync(removeId, cancel).ConfigureAwait(false) is { ArchivedAt: not null })
+                    if (await catalog.GetAsync(removeId, cancel).ConfigureAwait(false) is { ArchivedAt: not null } or { Unsaved: true })
                         await context.RequestServices.GetRequiredService<OpenApps>().CloseAsync(removeId).ConfigureAwait(false);
                     removed = await catalog.RemoveAsync(removeId, DiscardOf(context.RequestServices.GetRequiredService<RuntimeHostOptions>()), cancel).ConfigureAwait(false);
                 }
@@ -616,7 +640,8 @@ internal static class ControlPlane
 
     private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
-            app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt);
+            app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt,
+            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention);
 
     private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -641,10 +666,12 @@ internal static class ControlPlane
     /// <summary>
     /// An adopted application. <c>Sha256</c>, <c>OriginalPath</c> and <c>Size</c> describe the revision in use;
     /// <c>CanRevert</c> says whether there is a previous revision to go back to. <c>LastUsed</c>
-    /// (local <c>yyyy-MM-dd</c>) is filled in the listing only.
+    /// (local <c>yyyy-MM-dd</c>) is filled in the listing only. <c>Unsaved</c> marks a result not kept yet;
+    /// <c>LeftAt</c> is when the person last left it and <c>ExpiresAt</c> when the next start after it removes it.
     /// </summary>
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
-        int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null);
+        int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
+        bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
     internal sealed record MatchView(AppView App, string Match);
@@ -695,7 +722,7 @@ internal static class ControlPlane
 
     internal sealed record ExportedView(string Id, string Path);
 
-    private static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
+    internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
         {
             if (Bohm.Runtime.Files.RecycleBin.Available)
