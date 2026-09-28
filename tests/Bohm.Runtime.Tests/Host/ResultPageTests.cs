@@ -29,6 +29,9 @@ public sealed class ResultPageTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.Created, made);
         var app = JsonDocument.Parse(await made.Content.ReadAsStringAsync()).RootElement;
         Assert.True(app.GetProperty("unsaved").GetBoolean());
+        Assert.Equal("Lunch <this week>", app.GetProperty("title").GetString());
+        Assert.Equal(JsonValueKind.Null, app.GetProperty("originalPath").ValueKind);
+        Assert.Equal("Lunch <this week>", (await new Bohm.Runtime.Adoption.AdoptionCatalog(_host.DataRoot).GetAsync(app.GetProperty("id").GetString()!))!.Title); // kept in its record
         var id = app.GetProperty("id").GetString()!;
 
         var html = Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id));
