@@ -286,8 +286,24 @@ internal static partial class EditProposals
             foreach (var part in m.Groups["list"].Value.Split(','))
                 if (Identifier().Match(part.Trim().TrimStart('{', '[', '.', ' ')) is { Success: true } id) names.Add(id.Value);
         foreach (Match m in ArrowParameter().Matches(code)) names.Add(m.Groups["name"].Value);
+        // Every word in a pattern counts: a key renamed (`data: d`) declares only its new name, but counting
+        // the key too only errs toward finding nothing.
+        foreach (Match m in PatternDeclaration().Matches(code))
+            foreach (Match word in Word().Matches(PatternDefault().Replace(m.Groups["pattern"].Value, "")))
+                names.Add(word.Value);
         return names;
     }
+
+    // `const [d, setD] = …` · `let { data: d, x = 1 } = …` · `for (const [k, d] of …)` — one level of pattern.
+    [GeneratedRegex(@"\b(?:const|let|var)\s*(?<pattern>\[[^\[\]]*\]|\{[^{}]*\})")]
+    private static partial Regex PatternDeclaration();
+
+    // The value after `=` in a pattern is an expression, not a name being declared.
+    [GeneratedRegex(@"=[^,\]}]*")]
+    private static partial Regex PatternDefault();
+
+    [GeneratedRegex(@"(?<![\w$.])[A-Za-z_$][\w$]*")]
+    private static partial Regex Word();
 
     [GeneratedRegex(@"\b(?:function\*?|class)\s+(?<name>[A-Za-z_$][\w$]*)")]
     private static partial Regex Declaration();

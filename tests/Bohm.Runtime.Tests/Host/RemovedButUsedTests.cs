@@ -54,6 +54,10 @@ public sealed class RemovedButUsedTests
     [InlineData("<script>const id = `local-db-${n}`;</script>")]                    // in a template's fixed text
     [InlineData("<script>list.map(db => db.id);</script>")]                         // a parameter without parentheses
     [InlineData("<script>const f = (a, db = 1, { c }) => db;</script>")]            // a parameter with a default
+    [InlineData("<script>const [db, setDb] = useState([]);</script>")]              // an array pattern (a React state)
+    [InlineData("<script>const { data: db, other } = load();</script>")]            // an object pattern with a new name
+    [InlineData("<script>let { db = 1 } = options; use(db);</script>")]             // an object pattern with a default
+    [InlineData("<script>for (const [key, db] of entries) use(db);</script>")]      // a pattern in a loop
     public void A_name_that_is_declared_again_or_not_used_is_not_found(string sourceAfter) =>
         Assert.Empty(Check("let db;", "", sourceAfter));
 }
