@@ -154,20 +154,72 @@ internal static partial class EditProposals
         var draft = text.Lf;
         var edits = new List<SourceEdit>();
         var summary = "";
-        // A model may stop after a few places, saying what it will do next. Each pass shows it what is left.
-        for (var pass = 0; pass < MaxStoragePasses && StillOnline(draft); pass++)
+        // A model may stop after a few places, saying what it will do next, or remove a declaration that
+        // other code still uses. Each pass shows it what is left: the database, and the names it took away.
+        IReadOnlyList<string> dangling = [];
+        for (var pass = 0; pass < MaxStoragePasses && (StillOnline(draft) || dangling.Count > 0); pass++)
         {
             var step = await RunAsync(model, onThisComputer, draft, StorageSystemPrompt, MaxStorageRounds,
                 onThisComputer ? MaxStorageOutputTokensHere : MaxStorageOutputTokensProvider,
-                StoragePrompt(draft.Split('\n'), again: pass > 0), cancellationToken).ConfigureAwait(false);
+                StoragePrompt(draft.Split('\n'), again: pass > 0, dangling), cancellationToken).ConfigureAwait(false);
             if (step.Edits.Count == 0) break;
             draft = step.Html;
             edits.AddRange(step.Edits);
             summary = step.Summary;
+            dangling = RemovedButUsed(edits, draft);
         }
 
-        return new EditProposal(text.Restore(draft), summary, edits, Complete: !StillOnline(draft));
+        return new EditProposal(text.Restore(draft), summary, edits, Complete: !StillOnline(draft) && dangling.Count == 0);
     }
+
+    /// <summary>
+    /// Names a replacement took the declaration of away while the source still uses them — what makes
+    /// a moved application stop with «… is not defined». Read from the text, like everything here: a
+    /// name counts as declared when anything declares it (a variable, a function, a class, an import
+    /// or a parameter list naming it), so the check errs toward finding nothing.
+    /// </summary>
+    internal static IReadOnlyList<string> RemovedButUsed(IEnumerable<SourceEdit> edits, string source)
+    {
+        var removed = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var edit in edits) foreach (var name in DeclaredIn(edit.Old)) removed.Add(name);
+        var declared = DeclaredIn(source);
+        return removed.Where(name => !declared.Contains(name) && Regex.IsMatch(source, $@"(?<![\w$.]){Regex.Escape(name)}(?![\w$]|\s*:)")).ToList();   // not an object key
+    }
+
+    private static HashSet<string> DeclaredIn(string code)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in Declaration().Matches(code)) names.Add(m.Groups["name"].Value);
+        foreach (Match m in DeclarationList().Matches(code))
+            foreach (var part in m.Groups["list"].Value.Split(','))
+                if (Identifier().Match(part.Split('=')[0].Trim()) is { Success: true } id && id.Length == part.Split('=')[0].Trim().Length) names.Add(id.Value);
+        foreach (Match m in ImportList().Matches(code))
+            foreach (var part in m.Groups["list"].Value.Split(','))
+            {
+                var alias = part.Split(" as ", StringSplitOptions.TrimEntries);
+                if (alias[^1].Length > 0) names.Add(alias[^1]);
+            }
+        foreach (Match m in Parameters().Matches(code))
+            foreach (var part in m.Groups["list"].Value.Split(','))
+                if (Identifier().Match(part.Trim()) is { Success: true } id) names.Add(id.Value);
+        return names;
+    }
+
+    [GeneratedRegex(@"\b(?:function\*?|class)\s+(?<name>[A-Za-z_$][\w$]*)")]
+    private static partial Regex Declaration();
+
+    // `let db, auth;` · `const a = 1, b = 2;` — each name before its `=`.
+    [GeneratedRegex(@"\b(?:const|let|var)\s+(?<list>[A-Za-z_$][\w$]*(?:\s*=[^,;\n]*)?(?:\s*,\s*[A-Za-z_$][\w$]*(?:\s*=[^,;\n]*)?)*)")]
+    private static partial Regex DeclarationList();
+
+    [GeneratedRegex(@"\bimport\s*\{(?<list>[^}]*)\}")]
+    private static partial Regex ImportList();
+
+    [GeneratedRegex(@"\((?<list>[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)\)\s*(?:=>|\{)")]
+    private static partial Regex Parameters();
+
+    [GeneratedRegex(@"^[A-Za-z_$][\w$]*")]
+    private static partial Regex Identifier();
 
     /// <summary>
     /// Whether the source still loads or calls the online database — its SDK, its setup, or the
@@ -259,13 +311,14 @@ internal static partial class EditProposals
         return prompt.ToString();
     }
 
-    private static string StoragePrompt(string[] lines, bool again)
+    private static string StoragePrompt(string[] lines, bool again, IReadOnlyList<string> dangling)
     {
-        // Each line that uses the database, with a few lines around it; nearby places share one block.
+        // Each line that uses the database or a name taken away, with a few lines around it; nearby places share one block.
+        var gone = dangling.Count == 0 ? null : new Regex($@"(?<![\w$.])(?:{string.Join('|', dangling.Select(Regex.Escape))})(?![\w$])");
         var blocks = new List<(int From, int To)>();
         for (var i = 1; i <= lines.Length; i++)
         {
-            if (!UsesOnlineDatabase().IsMatch(lines[i - 1])) continue;
+            if (!UsesOnlineDatabase().IsMatch(lines[i - 1]) && gone?.IsMatch(lines[i - 1]) != true) continue;
             var (from, to) = (Math.Max(1, i - StorageContextLines), Math.Min(lines.Length, i + StorageContextLines));
             if (blocks.Count > 0 && from <= blocks[^1].To + 1) blocks[^1] = (blocks[^1].From, to);
             else blocks.Add((from, to));
@@ -273,7 +326,11 @@ internal static partial class EditProposals
 
         var prompt = new StringBuilder();
         prompt.Append(CultureInfo.InvariantCulture, $"The application's source has {lines.Length} lines. ");
-        prompt.Append(again ? "Part of it has been moved already; the places that still use the online database:\n" : "The places that use the online database:\n");
+        prompt.Append(again ? "Part of it has been moved already; the places that still use the online database" : "The places that use the online database");
+        if (dangling.Count > 0)
+            prompt.Append(", and the places that still use names whose declaration a replacement removed (").Append(string.Join(", ", dangling))
+                .Append(") — declare them again as local ones or change the code that uses them");
+        prompt.Append(":\n");
         var shown = 0;
         foreach (var (from, to) in blocks)
         {

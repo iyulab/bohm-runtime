@@ -224,6 +224,37 @@ public sealed class EditProposalTests : IAsyncLifetime
         Assert.Equal(2, _model.Calls.Count); // one pass: nothing was left to take up again
     }
 
+    [Fact]
+    public async Task A_storage_move_that_removes_a_name_still_in_use_is_shown_it_and_is_not_complete_while_it_remains()
+    {
+        var id = await _host.AdoptAsync("""
+            <script type="module">
+            import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+            let db = getFirestore();
+            </script>
+            <script>function save() { if (!db) return; }</script>
+            """);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = """
+                import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+                let db = getFirestore();
+                """,
+            ["new_text"] = "// kept in localStorage",
+        }));
+        _model.Script.Enqueue(new TextContent("Removed the database."));
+        _model.Script.Enqueue(new TextContent("Done.")); // shown `db`, changes nothing
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals",
+            new StringContent("""{"fix":"local-storage"}""", Encoding.UTF8, "application/json"));
+
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var second = _model.Calls[2].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("names whose declaration a replacement removed (db)", second, StringComparison.Ordinal);
+        Assert.Contains("if (!db) return;", second, StringComparison.Ordinal);
+        Assert.False(proposal.GetProperty("complete").GetBoolean());
+    }
+
     [Theory]
     [InlineData("""{"fix":"local-storage"}""")]
     [InlineData("""{"fix":"something-else"}""")]
