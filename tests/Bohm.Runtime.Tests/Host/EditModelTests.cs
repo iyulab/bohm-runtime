@@ -66,7 +66,6 @@ public sealed class EditModelTests : IAsyncLifetime
 
     [Theory]
     [InlineData("openai", "/v1/chat/completions")]
-    [InlineData("anthropic", "/v1/chat/completions")]
     [InlineData("groq", "/openai/v1/chat/completions")]
     [InlineData("openrouter", "/api/v1/chat/completions")]
     [InlineData("mistral", "/v1/chat/completions")]
@@ -125,6 +124,49 @@ public sealed class EditModelTests : IAsyncLifetime
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal("generativelanguage.googleapis.com", sent.GetProperty("host").GetString());
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Anthropic_is_asked_through_its_own_Messages_API_with_its_key_and_it_is_counted_as_sent()
+    {
+        // Not the OpenAI-compatible base, which Anthropic keeps for evaluation only: its own API is the
+        // one it supports, with the key in x-api-key and the tools as input schemas.
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("anthropic", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("anthropic/model-x", proposal.GetProperty("model").GetString());
+        Assert.Equal(FakeProvider.Reply, proposal.GetProperty("summary").GetString());
+
+        var request = Assert.Single(_provider.Received);
+        Assert.Equal("/v1/messages", request.PathAndQuery);
+        Assert.Equal(Key, request.Headers["x-api-key"]);
+        Assert.False(request.Headers.ContainsKey("Authorization"));
+        using var body = JsonDocument.Parse(request.Body);
+        Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
+        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
+
+        var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal("api.anthropic.com", sent.GetProperty("host").GetString());
+        Assert.Equal(1, sent.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Anthropics_refusal_reaches_the_person_as_its_status_and_its_own_message()
+    {
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("anthropic", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        _provider.Refusal = (404, """{"type":"error","error":{"type":"not_found_error","message":"model: model-x"}}""");
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(404, provider.GetProperty("status").GetInt32());
+        Assert.Equal("model: model-x", provider.GetProperty("message").GetString());
     }
 
     [Fact]

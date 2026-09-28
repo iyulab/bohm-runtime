@@ -20,6 +20,9 @@ internal sealed record ProviderRefusal(int Status, string? Message)
         {
             if (e is ClientResultException { Status: > 0 } refused)
                 return new ProviderRefusal(refused.Status, MessageOf(refused.GetRawResponse()?.Content?.ToString()));
+            // Anthropic through its own API: one exception type per status, all carrying the raw body.
+            if (e is Anthropic.Exceptions.AnthropicApiException { StatusCode: > 0 } anthropic)
+                return new ProviderRefusal((int)anthropic.StatusCode, MessageOf(anthropic.ResponseBody));
             // Gemini through its own API: the SDK has already read the provider's message out of the body.
             if (e is Google.GenAI.ClientError { StatusCode: > 0 } client)
                 return new ProviderRefusal(client.StatusCode, Bounded(client.Message));

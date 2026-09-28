@@ -182,6 +182,30 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal("local", JsonDocument.Parse(await fourth.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
     }
 
+    [Fact]
+    public async Task A_web_question_to_Anthropic_offers_the_page_tools_through_its_own_Messages_API()
+    {
+        // The page tools are declarations the caller runs; they must reach the provider as tools all the same.
+        await using var provider = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync(configure: o => o with
+        {
+            LlmEndpoints = LlmProviders.All.ToDictionary(p => p.Host, _ => provider.Address),
+        });
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent("sk-ant-real-0123456789"))) HttpAssert.Status(HttpStatusCode.OK, key);
+        using (var chose = await host.ControlClient().PutAsync("/__control/agent/model", Json("""{"provider":"anthropic","model":"for-pages"}"""))) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var turn = await TurnAsync(host, """{"messages":[{"role":"user","text":"What is on the page?"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, turn);
+        var answer = JsonDocument.Parse(await turn.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("anthropic/for-pages", answer.GetProperty("model").GetString());
+        Assert.Equal(FakeProvider.Reply, answer.GetProperty("text").GetString());
+        var request = Assert.Single(provider.Received);
+        Assert.Equal("/v1/messages", request.PathAndQuery);
+        Assert.Equal(["list_tabs", "read_page"], JsonDocument.Parse(request.Body).RootElement.GetProperty("tools").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString()).Order());
+    }
+
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
     [Fact]

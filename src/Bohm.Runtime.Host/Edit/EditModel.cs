@@ -4,6 +4,7 @@ using System.Text.Json;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Llm;
 using IronHive.Extensions.AI;
+using IronHive.Providers.Anthropic;
 using IronHive.Providers.GoogleAI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -28,7 +29,7 @@ internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnT
 /// </summary>
 /// <remarks>
 /// A provider is reached at its OpenAI-compatible base (<see cref="LlmProvider.OpenAICompatiblePath"/>),
-/// so one client serves them all. Choosing a provider sends what the agent works on there, which
+/// except Gemini and Anthropic, which are reached through their own APIs. Choosing a provider sends what the agent works on there, which
 /// is why it is the person's choice and never the default; every request is counted as sent.
 /// </remarks>
 internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
@@ -118,14 +119,20 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         if (string.IsNullOrEmpty(key)) return null;
 
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        var client = provider.Id == "google"
+        var client = provider.Id switch
+        {
             // Gemini through its own API: its models sign each tool call and refuse the next turn without
             // the signature, which the OpenAI-compatible base drops on the way back. IronHive's Gemini
             // provider carries the signatures through the tool loop.
-            ? new GoogleAIMessageGenerator(new GoogleAIConfig { ApiKey = key, HttpOptions = new Google.GenAI.Types.HttpOptions { BaseUrl = root.ToString().TrimEnd('/') } })
-                .AsChatClient(chosen.Model, "googleai")
-            : new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
-                new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient();
+            "google" => new GoogleAIMessageGenerator(new GoogleAIConfig { ApiKey = key, HttpOptions = new Google.GenAI.Types.HttpOptions { BaseUrl = root.ToString().TrimEnd('/') } })
+                .AsChatClient(chosen.Model, "googleai"),
+            // Anthropic through its own Messages API: its OpenAI-compatible base is meant for trying
+            // models out, not for real use, and leaves out what the Messages API carries.
+            "anthropic" => new AnthropicMessageGenerator(new AnthropicConfig { ApiKey = key, BaseUrl = root.ToString().TrimEnd('/') })
+                .AsChatClient(chosen.Model, "anthropic"),
+            _ => new OpenAI.Chat.ChatClient(chosen.Model, new ApiKeyCredential(key),
+                new OpenAIClientOptions { Endpoint = new Uri(root, provider.OpenAICompatiblePath) }).AsIChatClient(),
+        };
         return new(new CountedAsSent(client, egress, provider.Host), $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
     }
 
