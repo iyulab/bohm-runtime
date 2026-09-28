@@ -1,3 +1,4 @@
+using Bohm.Runtime;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -389,6 +390,14 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         var list = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/apps")).RootElement;
 
         Assert.Equal([a, b], list.EnumerateArray().Select(e => e.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public async Task The_runtime_says_which_edition_of_the_application_contract_it_serves()
+    {
+        var facts = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/runtime")).RootElement;
+
+        Assert.Equal(AppContract.Edition, facts.GetProperty("contract").GetInt32());
     }
 
     [Fact]
