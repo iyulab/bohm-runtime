@@ -29,8 +29,10 @@ namespace Bohm.Runtime.Adoption;
 /// is open or for a saved one. Its retention counts from here.
 /// </param>
 /// <param name="Title">
-/// The name the runtime gave an application it made (a result's title); <see langword="null"/> for an
-/// adopted file, which is known by the file it came from.
+/// The application's name when it is not read from a file: the name the runtime gave an application it
+/// made (a result's title), or — once a revision was taken in without a file (an applied change) — the
+/// name the application had from the file it came from. <see langword="null"/> for an adopted file whose
+/// revisions all came from files, which is known by the file of the revision in use. Once set, it stays.
 /// </param>
 public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
     DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null);

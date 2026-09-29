@@ -410,7 +410,9 @@ public sealed class AdoptionCatalog
     /// <remarks>
     /// A path match only means «a file at this path was adopted before»: the bytes differ, so it may
     /// be a revised version of the same application or an unrelated file saved under the same name.
-    /// The catalog does not decide which — it reports, and the person decides.
+    /// The catalog does not decide which — it reports, and the person decides. Every file an
+    /// application was taken in from counts, not only its current revision's: a revision made without
+    /// a file (an applied change) must not cut the application off from the file it came from.
     /// </remarks>
     public async Task<IReadOnlyList<AdoptionMatch>> FindEarlierAdoptionsAsync(ReadOnlyMemory<byte> html, string? originalPath = null, CancellationToken cancellationToken = default)
     {
@@ -419,7 +421,8 @@ public sealed class AdoptionCatalog
         foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
         {
             if (app.Source.Sha256 == sha256) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameBytes));
-            else if (SamePath(app.Source.OriginalPath, originalPath)) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
+            else if (originalPath is not null && (await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false)).Any(p => SamePath(p, originalPath)))
+                matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
         }
 
         return matches;
@@ -509,7 +512,10 @@ public sealed class AdoptionCatalog
             throw;
         }
 
-        var revised = app with { Source = source, Revision = number, RevisedAt = now };
+        // A revision taken in without a file (an applied change) has no file to be known by: the
+        // application keeps the name it had. Once it has one, a name stays — later revisions do not rename it.
+        var title = app.Title ?? (originalPath is null ? NameOf(await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false)) : null);
+        var revised = app with { Source = source, Revision = number, RevisedAt = now, Title = title };
         await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(revised), cancellationToken).ConfigureAwait(false);
         return revised;
     }
@@ -584,6 +590,33 @@ public sealed class AdoptionCatalog
             return null;
         }
     }
+
+    /// <summary>
+    /// The files application <paramref name="app"/> was taken in from, oldest revision first: the
+    /// original path of every recorded revision and of the one in use. Revisions made without a file add nothing.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> PathsTakenInAsync(AdoptedApp app, CancellationToken cancellationToken)
+    {
+        var paths = new List<string>();
+        var revisions = Path.Combine(AppDirectory(app.Id), RevisionsDirectory);
+        if (Directory.Exists(revisions))
+        {
+            var numbers = Directory.EnumerateDirectories(revisions)
+                .Select(d => int.TryParse(Path.GetFileName(d), NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : 0)
+                .Where(n => n > 0)
+                .Order();
+            foreach (var number in numbers)
+                if ((await ReadRevisionAsync(RevisionFolder(app.Id, number), cancellationToken).ConfigureAwait(false))?.Source.OriginalPath is { Length: > 0 } path)
+                    paths.Add(path);
+        }
+
+        if (app.Source.OriginalPath is { Length: > 0 } current) paths.Add(current);
+        return paths;
+    }
+
+    /// <summary>The name an application is known by from the last file it was taken in from, or <see langword="null"/> when it never came from one.</summary>
+    private static string? NameOf(IReadOnlyList<string> pathsTakenIn) =>
+        pathsTakenIn.Count == 0 ? null : Path.GetFileNameWithoutExtension(pathsTakenIn[^1]) is { Length: > 0 } name ? name : null;
 
     /// <summary>The highest number among the revision folders, including one left by an interrupted revision.</summary>
     private static int HighestRevisionFolder(string revisions) =>
