@@ -286,7 +286,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         var path = Path.Combine(_root, "Downloads", "Team loans.html");
         var app = await catalog.AdoptAsync(Html, path);
         var only = Assert.Single(await catalog.ListRevisionsAsync(app.Id)); // never revised: one revision, no folder yet
-        Assert.Equal((1, (int?)null, app.AdoptedAt, true, false), (only.Revision, only.Previous, only.TakenInAt, only.InUse, only.DataUndone));
+        Assert.Equal((1, (int?)null, app.AdoptedAt, true, (UndoneData?)null), (only.Revision, only.Previous, only.TakenInAt, only.InUse, only.Undone));
 
         await using var storage = await catalog.OpenStorageAsync(app.Id);
         await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), Path.Combine(_root, "Downloads", "Team loans (1).html"), storage);
@@ -299,8 +299,51 @@ public sealed class AdoptionCatalogTests : IDisposable
         Assert.Equal([null, 1, 2], history.Select(r => r.Previous));
         Assert.Equal([path, Path.Combine(_root, "Downloads", "Team loans (1).html"), null], history.Select(r => r.Source.OriginalPath));
         Assert.Equal([false, true, false], history.Select(r => r.InUse));      // put back to 2
-        Assert.Equal([false, false, true], history.Select(r => r.DataUndone)); // what 3 wrote is kept aside
+        // What 3 wrote is kept aside — and revision 2's code never names its key, so it stays a file.
+        Assert.Equal([null, null, UndoneData.Diverged], history.Select(r => r.Undone));
         Assert.Equal(app.AdoptedAt, history[0].TakenInAt);
+    }
+
+    [Fact]
+    public async Task Data_a_revision_wrote_can_be_taken_back_in_only_while_nothing_was_written_since_and_given_back()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var reads = Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>");
+        var app = await catalog.AdoptAsync(reads, Path.Combine(_root, "loans.html"));
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        await storage.ApplyAsync([StorageOperation.Set("loans", "1")]);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans'); localStorage.getItem('notes')</script>"), null, storage);
+        await storage.ApplyAsync([StorageOperation.Set("loans", "2"), StorageOperation.Set("notes", "x")]);
+        await catalog.RevertAsync(app.Id, storage); // back to 1: loans=1; what 2 wrote is kept aside
+
+        // Revision 1 does not name «notes»: taking it in would carry a key the code never reads.
+        Assert.Equal(UndoneData.Diverged, (await catalog.ListRevisionsAsync(app.Id))[1].Undone);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ImportUndoneAsync(app.Id, 2, storage));
+
+        // Revision 2 without «notes»: the code in use reads every kept key, and nothing was written since.
+        var other = await catalog.AdoptAsync(reads, Path.Combine(_root, "other.html"));
+        await using var otherStorage = await catalog.OpenStorageAsync(other.Id);
+        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "1")]);
+        await catalog.ReviseAsync(other.Id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('loans')</script>"), null, otherStorage);
+        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "5")]);
+        await catalog.RevertAsync(other.Id, otherStorage);
+        Assert.Equal(UndoneData.Importable, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.UndoImportAsync(other.Id, 2, otherStorage)); // nothing taken in yet
+
+        await catalog.ImportUndoneAsync(other.Id, 2, otherStorage);
+        Assert.Equal("5", otherStorage.GetItems()["loans"]);
+        Assert.Equal(UndoneData.Imported, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
+        Assert.Equal(1, (await catalog.GetAsync(other.Id))!.Revision); // the code stays
+
+        await catalog.UndoImportAsync(other.Id, 2, otherStorage); // the other way
+        Assert.Equal("1", otherStorage.GetItems()["loans"]);
+        Assert.Equal(UndoneData.Importable, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
+
+        // Something written since going back: taking the kept data in would lose it.
+        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "2")]);
+        Assert.Equal(UndoneData.Diverged, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ImportUndoneAsync(other.Id, 2, otherStorage));
+        Assert.Equal("2", otherStorage.GetItems()["loans"]);
     }
 
     [Fact]

@@ -615,20 +615,101 @@ public sealed partial class AdoptionCatalog
                 .Select(d => int.TryParse(Path.GetFileName(d), NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : 0)
                 .Where(n => n > 0)
                 .Order();
+            IReadOnlyDictionary<string, string>? now = null;   // read once, only if some revision kept data aside
             foreach (var number in numbers)
             {
                 var folder = RevisionFolder(id, number);
                 if (await ReadRevisionAsync(folder, cancellationToken).ConfigureAwait(false) is not { } record) continue;
-                revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source,
-                    record.Revision == app.Revision, File.Exists(Path.Combine(folder, DataUndoneFile))));
+                UndoneData? undone = null;
+                if (File.Exists(Path.Combine(folder, DataUndoneFile)))
+                {
+                    now ??= await AppStorage.PeekAsync(Path.Combine(AppDirectory(id), StorageDirectory), cancellationToken).ConfigureAwait(false);
+                    undone = await UndoneStateAsync(app, number, now, cancellationToken).ConfigureAwait(false);
+                }
+
+                revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source, record.Revision == app.Revision, undone));
             }
         }
 
         // The first revision has no folder of its own until another replaces it.
         if (!revisions.Exists(r => r.Revision == app.Revision))
-            revisions.Add(new AppRevision(app.Revision, null, app.RevisedAt ?? app.AdoptedAt, app.Source, true, false));
+            revisions.Add(new AppRevision(app.Revision, null, app.RevisedAt ?? app.AdoptedAt, app.Source, true, null));
         revisions.Sort((a, b) => a.Revision.CompareTo(b.Revision));
         return revisions;
+    }
+
+    /// <summary>
+    /// Takes the data revision <paramref name="revision"/> wrote — kept aside when the application was put
+    /// back from it — back in, replacing the data now. Only while that loses nothing: nothing was written
+    /// since going back, and the code in use reads every key of the kept data (<see cref="UndoneData.Importable"/>).
+    /// The data it replaces stays in the storage's previous snapshots and is what <see cref="UndoImportAsync"/> restores.
+    /// </summary>
+    /// <remarks><paramref name="storage"/> must be this application's open storage — the one writer of its files.</remarks>
+    /// <exception cref="InvalidOperationException">The kept data is not <see cref="UndoneData.Importable"/>.</exception>
+    public async Task<AdoptedApp> ImportUndoneAsync(string id, int revision, AppStorage storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        var app = await UndoneAppAsync(id, revision, storage, UndoneData.Importable, cancellationToken).ConfigureAwait(false);
+        await storage.RestoreAsync(Path.Combine(RevisionFolder(id, revision), DataUndoneFile), cancellationToken).ConfigureAwait(false);
+        return app;
+    }
+
+    /// <summary>
+    /// Undoes <see cref="ImportUndoneAsync"/>: while the data is still exactly what was taken back in, puts
+    /// back the data it replaced — the data the application was restored to when it went back from <paramref name="revision"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The data is not <see cref="UndoneData.Imported"/> (it changed since, or was never taken back in).</exception>
+    public async Task<AdoptedApp> UndoImportAsync(string id, int revision, AppStorage storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        var app = await UndoneAppAsync(id, revision, storage, UndoneData.Imported, cancellationToken).ConfigureAwait(false);
+        await storage.RestoreAsync(Path.Combine(RevisionFolder(id, revision), DataBeforeFile), cancellationToken).ConfigureAwait(false);
+        return app;
+    }
+
+    private async Task<AdoptedApp> UndoneAppAsync(string id, int revision, AppStorage storage, UndoneData required, CancellationToken cancellationToken)
+    {
+        RequireValidId(id);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        if (revision <= 0 || !File.Exists(Path.Combine(RevisionFolder(id, revision), DataUndoneFile)))
+            throw new InvalidOperationException("No data was kept aside for this revision.");
+        var state = await UndoneStateAsync(app, revision, storage.GetItems(), cancellationToken).ConfigureAwait(false);
+        return state == required ? app : throw new InvalidOperationException($"The kept data is {state}, not {required}.");
+    }
+
+    /// <summary>
+    /// Where the data revision <paramref name="revision"/> kept aside stands against <paramref name="now"/>.
+    /// Going back from it restored <c>data-before.json</c>; data still equal to that means nothing was
+    /// written since. The code in use reads a key when the restored data had it or its source names it as
+    /// a quoted literal (<see cref="UsesStoredKeys"/>). A kept file that cannot be read counts as diverged.
+    /// </summary>
+    private async Task<UndoneData> UndoneStateAsync(AdoptedApp app, int revision, IReadOnlyDictionary<string, string> now, CancellationToken cancellationToken)
+    {
+        var folder = RevisionFolder(app.Id, revision);
+        if (await ReadSnapshotAsync(Path.Combine(folder, DataUndoneFile), cancellationToken).ConfigureAwait(false) is not { } undone
+            || await ReadSnapshotAsync(Path.Combine(folder, DataBeforeFile), cancellationToken).ConfigureAwait(false) is not { } before)
+            return UndoneData.Diverged;
+        if (SameItems(now, undone)) return UndoneData.Imported;
+        if (!SameItems(now, before)) return UndoneData.Diverged;
+        var unread = new SortedSet<string>(undone.Keys.Where(k => !before.ContainsKey(k)), StringComparer.Ordinal);
+        if (unread.Count == 0) return UndoneData.Importable;
+        var source = Encoding.UTF8.GetString(await ReadHtmlAsync(app.Id, cancellationToken).ConfigureAwait(false));
+        return UsesStoredKeys(source, unread) ? UndoneData.Importable : UndoneData.Diverged;
+
+        static bool SameItems(IReadOnlyDictionary<string, string> a, IReadOnlyDictionary<string, string> b) =>
+            a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && string.Equals(v, p.Value, StringComparison.Ordinal));
+    }
+
+    private static async Task<IReadOnlyDictionary<string, string>?> ReadSnapshotAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return StorageFormat.TryReadSnapshot(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false), out _, out var items) ? items : null;
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Whether <see cref="RevertAsync"/> has an earlier revision to go back to.</summary>
