@@ -264,6 +264,23 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_repeated_download_beside_the_file_is_reported_by_name()
+    {
+        using var v1 = new ByteArrayContent(Encoding.UTF8.GetBytes(Page));
+        v1.Headers.Add("X-Bohm-Original-Path", Uri.EscapeDataString("다운로드/도서대출.html"));
+        using var adopted = await _host.ControlClient().PostAsync("/__control/apps", v1);
+        var first = JsonDocument.Parse(await adopted.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString();
+
+        using var v2 = new ByteArrayContent(Encoding.UTF8.GetBytes(Page + "<button>반납</button>"));
+        v2.Headers.Add("X-Bohm-Original-Path", Uri.EscapeDataString("다운로드/도서대출 (1).html"));
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/matches", v2);
+
+        var match = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement[0];
+        Assert.Equal(first, match.GetProperty("app").GetProperty("id").GetString());
+        Assert.Equal("sameName", match.GetProperty("match").GetString());
+    }
+
+    [Fact]
     public async Task A_new_revision_runs_new_code_on_the_same_data_and_the_old_page_can_no_longer_write()
     {
         var id = await _host.AdoptAsync(Page);
