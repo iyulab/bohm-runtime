@@ -220,6 +220,35 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task A_repeated_download_beside_the_file_is_reported_as_a_name_match()
+    {
+        // Browsers number a repeated download instead of replacing the file: «loans (1).html» beside «loans.html».
+        var catalog = new AdoptionCatalog(_root);
+        var downloads = Path.Combine(_root, "Downloads");
+        var app = await catalog.AdoptAsync(Html, Path.Combine(downloads, "Team loans.html"));
+        var revised = Encoding.UTF8.GetBytes("<p>revised</p>");
+
+        var numbered = Assert.Single(await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(downloads, "Team loans (1).html")));
+        var unspaced = Assert.Single(await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(downloads, "team loans(12).html")));
+        var elsewhere = await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(_root, "Desktop", "Team loans (1).html"));
+        var otherName = await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(downloads, "Team loans 2.html"));
+        var samePath = Assert.Single(await catalog.FindEarlierAdoptionsAsync(revised, Path.Combine(downloads, "Team loans.html")));
+
+        Assert.Equal((app.Id, AdoptionMatchKind.SameName), (numbered.App.Id, numbered.Kind));
+        Assert.Equal(AdoptionMatchKind.SameName, unspaced.Kind);
+        Assert.Empty(elsewhere);
+        Assert.Empty(otherName);
+        Assert.Equal(AdoptionMatchKind.SameOriginalPath, samePath.Kind);
+
+        // The numbered file taken in as a new revision: the original file still finds the application by name, too.
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        var taken = await catalog.ReviseAsync(app.Id, revised, Path.Combine(downloads, "Team loans (1).html"), storage);
+        Assert.Equal("Team loans", taken.Title); // a numbered download does not rename the application
+        var back = Assert.Single(await catalog.FindEarlierAdoptionsAsync(Encoding.UTF8.GetBytes("<p>v3</p>"), Path.Combine(downloads, "Team loans (2).html")));
+        Assert.Equal(AdoptionMatchKind.SameName, back.Kind);
+    }
+
+    [Fact]
     public async Task A_change_applied_without_a_file_keeps_the_name_and_the_file_it_came_from()
     {
         // An applied change is a revision with no file behind it. The application must stay known by the
@@ -438,7 +467,7 @@ public sealed class AdoptionCatalogTests : IDisposable
 
         var back = await catalog.RevertAsync(v1.Id, storage);
 
-        Assert.Equal(v1, back);
+        Assert.Equal(v1 with { Title = "loans" }, back); // the name the first revision fixed stays
         Assert.Equal(Html, await catalog.ReadHtmlAsync(v1.Id));
         Assert.Equal(new Dictionary<string, string> { ["loan"] = "3" }, storage.GetItems());
         Assert.False(await catalog.CanRevertAsync(v1.Id));

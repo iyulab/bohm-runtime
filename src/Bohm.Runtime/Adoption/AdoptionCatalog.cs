@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Bohm.Runtime.Assets;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
@@ -20,7 +21,7 @@ namespace Bohm.Runtime.Adoption;
 /// adopted again. It reports earlier adoptions through <see cref="FindEarlierAdoptionsAsync"/>, saying
 /// how each one matches, and whoever talks to the person asks them what to do.
 /// </remarks>
-public sealed class AdoptionCatalog
+public sealed partial class AdoptionCatalog
 {
     /// <summary>Format identifier written into every <c>app.json</c>. Changes when the record's shape does.</summary>
     public const string RecordFormat = "bohm.adopted/1";
@@ -404,8 +405,9 @@ public sealed class AdoptionCatalog
     }
 
     /// <summary>
-    /// Applications adopted earlier from these bytes, or from a file at the same original path,
-    /// oldest first. An application matching both is reported as <see cref="AdoptionMatchKind.SameBytes"/>.
+    /// Applications adopted earlier from these bytes, from a file at the same original path, or from a
+    /// file in the same folder under the same name but for a browser's download number, oldest first.
+    /// Each application is reported once, by its closest match: bytes, then path, then name.
     /// </summary>
     /// <remarks>
     /// A path match only means «a file at this path was adopted before»: the bytes differ, so it may
@@ -421,8 +423,11 @@ public sealed class AdoptionCatalog
         foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
         {
             if (app.Source.Sha256 == sha256) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameBytes));
-            else if (originalPath is not null && (await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false)).Any(p => SamePath(p, originalPath)))
-                matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
+            else if (originalPath is not null && await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false) is { Count: > 0 } paths)
+            {
+                if (paths.Any(p => SamePath(p, originalPath))) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
+                else if (paths.Any(p => SameName(p, originalPath))) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameName));
+            }
         }
 
         return matches;
@@ -444,6 +449,32 @@ public sealed class AdoptionCatalog
             catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return path; }
         }
     }
+
+    /// <summary>
+    /// Whether two paths name files in the same folder with the same name once the number a browser adds
+    /// to a repeated download is set aside — <c>loans (1).html</c>, <c>loans(2).html</c> and <c>loans.html</c>
+    /// share one. Equal paths are <see cref="SamePath"/>'s.
+    /// </summary>
+    private static bool SameName(string a, string b)
+    {
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        try
+        {
+            return string.Equals(Path.GetDirectoryName(Path.GetFullPath(a)), Path.GetDirectoryName(Path.GetFullPath(b)), comparison)
+                && string.Equals(Path.GetExtension(a), Path.GetExtension(b), comparison)
+                && string.Equals(Stem(a), Stem(b), comparison);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+
+        static string Stem(string path) => DownloadNumber().Replace(Path.GetFileNameWithoutExtension(path), "");
+    }
+
+    /// <summary>The number browsers append to a repeated download: <c> (1)</c>, or <c>(1)</c> without the space.</summary>
+    [GeneratedRegex(@"\s?\(\d{1,4}\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DownloadNumber();
 
     /// <summary>The bytes of the revision of application <paramref name="id"/> in use, exactly as they were taken in.</summary>
     public async Task<byte[]> ReadHtmlAsync(string id, CancellationToken cancellationToken = default)
@@ -512,9 +543,10 @@ public sealed class AdoptionCatalog
             throw;
         }
 
-        // A revision taken in without a file (an applied change) has no file to be known by: the
-        // application keeps the name it had. Once it has one, a name stays — later revisions do not rename it.
-        var title = app.Title ?? (originalPath is null ? NameOf(await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false)) : null);
+        // A new revision is the same application, so it keeps the name it had — whether the revision came
+        // from no file (an applied change) or from a file under another name («loans (1).html» downloaded
+        // again). From the first revision on, the name is held in Title and later revisions do not rename it.
+        var title = app.Title ?? NameOf(await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false));
         var revised = app with { Source = source, Revision = number, RevisedAt = now, Title = title };
         await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(revised), cancellationToken).ConfigureAwait(false);
         return revised;

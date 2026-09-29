@@ -19,7 +19,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/runtime</c></term><description>Facts about this runtime: <c>contract</c>, the edition of the application contract it serves (<see cref="AppContract"/>).</description></item>
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used; an unsaved result says so, with when it was left and when it expires.</description></item>
 /// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline), <c>damaged</c>, or <c>interruptedRemoval</c> (a removal for good stopped before the recycle bin; the folder is still there). Nothing in them is changed; one unreadable application never hides the others.</description></item>
-/// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, or of a file at the same path (optional <c>X-Bohm-Original-Path</c>), each with how it matches.</description></item>
+/// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, of a file at the same path (optional <c>X-Bohm-Original-Path</c>), or of a file beside it under the same name but for a browser's download number, each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
@@ -674,6 +674,7 @@ internal static class ControlPlane
         {
             AdoptionMatchKind.SameBytes => "sameBytes",
             AdoptionMatchKind.SameOriginalPath => "sameOriginalPath",
+            AdoptionMatchKind.SameName => "sameName",
             _ => throw new ArgumentOutOfRangeException(nameof(match)),
         });
 
@@ -737,7 +738,7 @@ internal static class ControlPlane
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
         bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null);
 
-    /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c> or <c>"sameOriginalPath"</c>.</summary>
+    /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c> or <c>"sameName"</c> (same folder, same name but for a browser's download number).</summary>
     internal sealed record MatchView(AppView App, string Match);
 
     /// <param name="Contract">The edition of the application contract this runtime serves.</param>
