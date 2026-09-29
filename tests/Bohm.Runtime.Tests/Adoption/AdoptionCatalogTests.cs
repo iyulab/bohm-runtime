@@ -249,6 +249,37 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task A_file_that_reads_every_stored_key_is_reported_as_a_stored_keys_match()
+    {
+        // A revised copy saved elsewhere under another name: no path ties it to the application, but its code
+        // names the keys the application's data is under. Every key, as a quoted literal.
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, Path.Combine(_root, "Downloads", "Team loans.html"));
+        var empty = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>never stored anything</p>"), Path.Combine(_root, "notes.html"));
+        await using (var storage = await catalog.OpenStorageAsync(app.Id))
+        {
+            await storage.ApplyAsync([StorageOperation.Set("teamShelf.loans", "[]"), StorageOperation.Set("teamShelf.members", "[]")]);
+
+            var elsewhere = Path.Combine(_root, "Desktop", "shelf v2.html");
+            var both = Encoding.UTF8.GetBytes("<script>load('teamShelf.loans'); load(\"teamShelf.members\")</script>");
+            var match = Assert.Single(await catalog.FindEarlierAdoptionsAsync(both, elsewhere)); // storage still open: peeked, not reopened
+            Assert.Equal((app.Id, AdoptionMatchKind.SameStoredKeys), (match.App.Id, match.Kind));
+            Assert.Equal(AdoptionMatchKind.SameStoredKeys, Assert.Single(await catalog.FindEarlierAdoptionsAsync(both)).Kind); // no path at all
+
+            var one = Encoding.UTF8.GetBytes("<script>load('teamShelf.loans')</script>");
+            var unquoted = Encoding.UTF8.GetBytes("<p>teamShelf.loans and teamShelf.members</p>");
+            Assert.Empty(await catalog.FindEarlierAdoptionsAsync(one, elsewhere));
+            Assert.Empty(await catalog.FindEarlierAdoptionsAsync(unquoted, elsewhere));
+
+            // A closer match wins: the same path is reported as a path match, once.
+            var samePath = Assert.Single(await catalog.FindEarlierAdoptionsAsync(both, Path.Combine(_root, "Downloads", "Team loans.html")));
+            Assert.Equal(AdoptionMatchKind.SameOriginalPath, samePath.Kind);
+        }
+
+        Assert.DoesNotContain(await catalog.FindEarlierAdoptionsAsync(Encoding.UTF8.GetBytes("<p>anything</p>")), m => m.App.Id == empty.Id);
+    }
+
+    [Fact]
     public async Task A_change_applied_without_a_file_keeps_the_name_and_the_file_it_came_from()
     {
         // An applied change is a revision with no file behind it. The application must stay known by the

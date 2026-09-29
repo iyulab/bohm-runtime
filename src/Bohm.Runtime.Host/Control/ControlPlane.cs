@@ -675,6 +675,7 @@ internal static class ControlPlane
             AdoptionMatchKind.SameBytes => "sameBytes",
             AdoptionMatchKind.SameOriginalPath => "sameOriginalPath",
             AdoptionMatchKind.SameName => "sameName",
+            AdoptionMatchKind.SameStoredKeys => "sameStoredKeys",
             _ => throw new ArgumentOutOfRangeException(nameof(match)),
         });
 
@@ -738,7 +739,7 @@ internal static class ControlPlane
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
         bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null);
 
-    /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c> or <c>"sameName"</c> (same folder, same name but for a browser's download number).</summary>
+    /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c>, <c>"sameName"</c> (same folder, same name but for a browser's download number) or <c>"sameStoredKeys"</c> (the source names every key the application stored).</summary>
     internal sealed record MatchView(AppView App, string Match);
 
     /// <param name="Contract">The edition of the application contract this runtime serves.</param>

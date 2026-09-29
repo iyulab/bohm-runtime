@@ -61,6 +61,12 @@ public enum AdoptionMatchKind
     /// for the number a browser adds to a repeated download: <c>loans (1).html</c> next to <c>loans.html</c>.
     /// </summary>
     SameName,
+
+    /// <summary>
+    /// Different bytes, from no path this application was taken in from, whose source names every key the
+    /// application has stored — a revised copy saved under another name, or moved, that would read its data.
+    /// </summary>
+    SameStoredKeys,
 }
 
 /// <summary>An earlier adoption reported by <see cref="AdoptionCatalog.FindEarlierAdoptionsAsync"/>.</summary>
