@@ -105,6 +105,30 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_follow_up_whose_model_reused_a_call_id_still_runs_and_marks_each_result()
+    {
+        // Small models number their calls afresh each turn, so the same id appears once per question.
+        _model.Reply = "Stew again.";
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """
+            {"messages":[
+              {"role":"user","text":"What is for lunch?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Lunch: stew"},
+              {"role":"assistant","text":"Stew."},
+              {"role":"user","text":"And tomorrow?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-2"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Tomorrow: stew <again>"}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var results = Assert.Single(_model.Calls).Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.Result).ToList();
+        Assert.Equal(["<tab-material>\nLunch: stew\n</tab-material>", "<tab-material>\nTomorrow: stew &lt;again&gt;\n</tab-material>"], results);
+    }
+
+    [Fact]
     public async Task A_follow_up_question_carries_the_conversation_with_one_system_prompt()
     {
         _model.Reply = "Yes.";
