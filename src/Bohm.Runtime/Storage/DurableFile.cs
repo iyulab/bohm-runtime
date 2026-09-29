@@ -8,30 +8,40 @@ internal static class DurableFile
     /// <summary>
     /// Replaces <paramref name="path"/> with <paramref name="contents"/> so that a crash leaves
     /// either the old file or the complete new one, never a partial file: the bytes are written to
-    /// a sibling temporary file, flushed to the device, then renamed over the destination.
+    /// a sibling temporary file, flushed to the device, then renamed over the destination. Each write
+    /// has a temporary file of its own, so two writes of the same file at once both complete (the
+    /// later rename wins) instead of one overwriting or moving away the other's bytes.
     /// </summary>
     public static async Task WriteAtomicallyAsync(string path, ReadOnlyMemory<byte> contents, CancellationToken cancellationToken)
     {
-        var temporary = path + ".tmp";
-        await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
         {
-            await stream.WriteAsync(contents, cancellationToken).ConfigureAwait(false);
-            stream.Flush(flushToDisk: true);
-        }
+            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await stream.WriteAsync(contents, cancellationToken).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
 
-        // Windows refuses to rename over a file while anyone has it open — here, usually another request
-        // reading the same record for a few milliseconds. Wait for the read to end rather than fail the write.
-        for (var attempt = 1; ; attempt++)
+            // Windows refuses to rename over a file while anyone has it open — here, usually another request
+            // reading the same record for a few milliseconds. Wait for the read to end rather than fail the write.
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temporary, path, overwrite: true);
+                    return;
+                }
+                catch (Exception e) when (e is UnauthorizedAccessException or IOException && attempt < ReplaceAttempts)
+                {
+                    await Task.Delay(ReplaceRetryDelay * attempt, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch
         {
-            try
-            {
-                File.Move(temporary, path, overwrite: true);
-                return;
-            }
-            catch (Exception e) when (e is UnauthorizedAccessException or IOException && attempt < ReplaceAttempts && File.Exists(temporary))
-            {
-                await Task.Delay(ReplaceRetryDelay * attempt, cancellationToken).ConfigureAwait(false);
-            }
+            File.Delete(temporary); // the destination is untouched; do not leave the unfinished copy beside it
+            throw;
         }
     }
 

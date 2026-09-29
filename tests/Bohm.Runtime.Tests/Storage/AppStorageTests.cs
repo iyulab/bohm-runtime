@@ -146,6 +146,28 @@ public sealed class AppStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_writes_of_the_same_file_at_once_both_complete()
+    {
+        // Two requests rewriting one record while a third reads it: neither write may be lost to the other.
+        var record = Path.Combine(_directory, "app.json");
+        await DurableFile.WriteAtomicallyAsync(record, "old"u8.ToArray(), CancellationToken.None);
+
+        Task first, second;
+        await using (DurableFile.OpenShared(record))
+        {
+            first = DurableFile.WriteAtomicallyAsync(record, "one"u8.ToArray(), CancellationToken.None);
+            await Task.Delay(50);
+            second = DurableFile.WriteAtomicallyAsync(record, "two"u8.ToArray(), CancellationToken.None);
+            await Task.Delay(100);
+        }
+
+        await Task.WhenAll(first, second);
+        var last = Encoding.UTF8.GetString(await DurableFile.ReadAsync(record, CancellationToken.None));
+        Assert.True(last is "one" or "two", last);
+        Assert.Equal(["app.json"], Directory.GetFiles(_directory).Select(Path.GetFileName)); // no temporary file left behind
+    }
+
+    [Fact]
     public async Task Keys_can_be_peeked_while_the_storage_is_open_and_across_a_checkpoint()
     {
         await using var storage = await AppStorage.OpenAsync(_directory);
