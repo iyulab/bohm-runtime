@@ -85,6 +85,73 @@ public sealed class AppStorage : IAsyncDisposable
         return storage;
     }
 
+    /// <summary>
+    /// The keys stored in <paramref name="directory"/>, read without opening the storage: nothing is
+    /// written, truncated or set aside, and it works while another <see cref="AppStorage"/> is the open
+    /// writer of that directory.
+    /// </summary>
+    /// <remarks>
+    /// What cannot be read is skipped rather than repaired — repair belongs to <see cref="OpenAsync"/>.
+    /// An incomplete final journal line (a write in progress) is ignored, and replay stops at the first
+    /// unreadable line. The journal is read before the snapshot: a checkpoint that happens in between
+    /// writes a snapshot that already holds what the journal said, so no acknowledged key is missed.
+    /// A directory that was never written has no keys.
+    /// </remarks>
+    public static async Task<IReadOnlySet<string>> PeekKeysAsync(string directory, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(directory);
+        var journal = await ReadSharedAsync(Path.Combine(directory, JournalFile), cancellationToken).ConfigureAwait(false);
+
+        var snapshotSequence = 0L;
+        var items = new Dictionary<string, string>(StringComparer.Ordinal);
+        // The current snapshot, or — between a checkpoint's two renames, or when it is unreadable — the newest readable version.
+        var versions = Directory.Exists(Path.Combine(directory, VersionsDirectory)) ? ListVersions(directory).Select(v => v.Path) : [];
+        foreach (var path in versions.Prepend(Path.Combine(directory, SnapshotFile)))
+        {
+            if (await ReadSharedAsync(path, cancellationToken).ConfigureAwait(false) is { } bytes
+                && StorageFormat.TryReadSnapshot(bytes, out var sequence, out var read))
+            {
+                (snapshotSequence, items) = (sequence, read);
+                break;
+            }
+        }
+
+        if (journal is not null)
+        {
+            var last = snapshotSequence;
+            var position = 0;
+            while (position < journal.Length)
+            {
+                var newline = Array.IndexOf(journal, (byte)'\n', position);
+                if (newline < 0) break;
+                var line = journal.AsSpan(position, newline - position);
+                position = newline + 1;
+                if (line.IsEmpty) continue;
+                if (!StorageFormat.TryReadJournalLine(line, out var sequence, out var operation)) break;
+                if (sequence <= last) continue;
+                operation!.ApplyTo(items);
+                last = sequence;
+            }
+        }
+
+        return new SortedSet<string>(items.Keys, StringComparer.Ordinal);
+
+        static async Task<byte[]?> ReadSharedAsync(string path, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+                return buffer.ToArray();
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return null;
+            }
+        }
+    }
+
     /// <summary>Returns a copy of the current items, sorted by key.</summary>
     public IReadOnlyDictionary<string, string> GetItems()
     {

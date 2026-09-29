@@ -124,6 +124,34 @@ public sealed class AppStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task Keys_can_be_peeked_while_the_storage_is_open_and_across_a_checkpoint()
+    {
+        await using var storage = await AppStorage.OpenAsync(_directory);
+        await storage.ApplyAsync([StorageOperation.Set("loans", "[]"), StorageOperation.Set("members", "[]")]);
+        await storage.CheckpointAsync();
+        await storage.ApplyAsync([StorageOperation.Set("settings", "{}"), StorageOperation.Remove("members")]);
+
+        Assert.Equal(["loans", "settings"], await AppStorage.PeekKeysAsync(_directory)); // snapshot + journal, the writer still open
+        Assert.Equal(["loans", "settings"], storage.GetItems().Keys);
+    }
+
+    [Fact]
+    public async Task Peeking_repairs_nothing_it_skips_what_it_cannot_read()
+    {
+        await using (var storage = await AppStorage.OpenAsync(_directory))
+            await storage.ApplyAsync([StorageOperation.Set("kept", "yes")]);
+        await File.AppendAllTextAsync(Journal, "{\"seq\":2,\"op\":\"set\",\"key\":\"lost\",\"va");
+        var before = Directory.GetFileSystemEntries(_directory, "*", SearchOption.AllDirectories).Order().ToList();
+        var journal = await File.ReadAllBytesAsync(Journal);
+
+        Assert.Equal(["kept"], await AppStorage.PeekKeysAsync(_directory));
+        Assert.Equal(before, Directory.GetFileSystemEntries(_directory, "*", SearchOption.AllDirectories).Order().ToList());
+        Assert.Equal(journal, await File.ReadAllBytesAsync(Journal)); // the unfinished line is still there for OpenAsync to report
+
+        Assert.Empty(await AppStorage.PeekKeysAsync(Path.Combine(_directory, "never-written")));
+    }
+
+    [Fact]
     public async Task An_incomplete_final_journal_line_is_discarded_and_the_rest_kept()
     {
         await using (var storage = await AppStorage.OpenAsync(_directory))

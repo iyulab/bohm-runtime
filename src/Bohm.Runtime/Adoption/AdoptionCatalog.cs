@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -405,9 +406,10 @@ public sealed partial class AdoptionCatalog
     }
 
     /// <summary>
-    /// Applications adopted earlier from these bytes, from a file at the same original path, or from a
-    /// file in the same folder under the same name but for a browser's download number, oldest first.
-    /// Each application is reported once, by its closest match: bytes, then path, then name.
+    /// Applications adopted earlier from these bytes, from a file at the same original path, from a
+    /// file in the same folder under the same name but for a browser's download number, or whose stored
+    /// data these bytes would read (every stored key named in the source), oldest first.
+    /// Each application is reported once, by its closest match: bytes, then path, then name, then keys.
     /// </summary>
     /// <remarks>
     /// A path match only means «a file at this path was adopted before»: the bytes differ, so it may
@@ -419,19 +421,38 @@ public sealed partial class AdoptionCatalog
     public async Task<IReadOnlyList<AdoptionMatch>> FindEarlierAdoptionsAsync(ReadOnlyMemory<byte> html, string? originalPath = null, CancellationToken cancellationToken = default)
     {
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(html.Span));
+        string? source = null;   // decoded only when a stored-keys comparison is reached
         var matches = new List<AdoptionMatch>();
         foreach (var app in await ListAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (app.Source.Sha256 == sha256) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameBytes));
-            else if (originalPath is not null && await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false) is { Count: > 0 } paths)
+            if (app.Source.Sha256 == sha256) { matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameBytes)); continue; }
+            if (originalPath is not null && await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false) is { Count: > 0 } paths)
             {
-                if (paths.Any(p => SamePath(p, originalPath))) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath));
-                else if (paths.Any(p => SameName(p, originalPath))) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameName));
+                if (paths.Any(p => SamePath(p, originalPath))) { matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameOriginalPath)); continue; }
+                if (paths.Any(p => SameName(p, originalPath))) { matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameName)); continue; }
             }
+
+            var keys = await AppStorage.PeekKeysAsync(Path.Combine(AppDirectory(app.Id), StorageDirectory), cancellationToken).ConfigureAwait(false);
+            source ??= Encoding.UTF8.GetString(html.Span);
+            if (UsesStoredKeys(source, keys)) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameStoredKeys));
         }
 
         return matches;
     }
+
+    /// <summary>
+    /// Whether <paramref name="source"/> names every one of an application's stored <paramref name="keys"/>
+    /// as a quoted string literal (<c>"key"</c>, <c>'key'</c> or <c>`key`</c>) — code that would read the data
+    /// that application left. An application that stored nothing matches no file: there is no data to
+    /// carry, and an empty set would match everything.
+    /// </summary>
+    /// <remarks>
+    /// Every key, not any: a revised file keeps reading its data, while an unrelated file can share one
+    /// common word. A quoted literal, not a substring: <c>items</c> appears in almost any page's text.
+    /// </remarks>
+    private static bool UsesStoredKeys(string source, IReadOnlySet<string> keys) =>
+        keys.Count > 0 && keys.All(key => source.Contains($"\"{key}\"", StringComparison.Ordinal)
+            || source.Contains($"'{key}'", StringComparison.Ordinal) || source.Contains($"`{key}`", StringComparison.Ordinal));
 
     /// <summary>
     /// Whether two recorded original paths name the same file. Both are normalized; the comparison
