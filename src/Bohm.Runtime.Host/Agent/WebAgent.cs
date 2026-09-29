@@ -115,12 +115,15 @@ internal static class WebAgent
     /// </summary>
     private static async Task<IReadOnlyList<ChatMessage>> GuardToolResultsAsync(IReadOnlyList<ChatMessage> conversation, CancellationToken cancellationToken)
     {
-        var calls = conversation.SelectMany(m => m.Contents).OfType<FunctionCallContent>().ToDictionary(c => c.CallId, StringComparer.Ordinal);
+        // A result answers the latest call with its id: models reuse ids from turn to turn ("c1", "call_0"), so an
+        // id is only unique between one assistant message and its results.
+        var calls = new Dictionary<string, FunctionCallContent>(StringComparer.Ordinal);
         var guarded = new List<ChatMessage>(conversation.Count);
         foreach (var message in conversation)
         {
             if (message.Role != ChatRole.Tool)
             {
+                foreach (var call in message.Contents.OfType<FunctionCallContent>()) calls[call.CallId] = call;
                 guarded.Add(message);
                 continue;
             }
