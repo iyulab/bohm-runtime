@@ -55,6 +55,24 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_revision_history_names_files_without_their_folders()
+    {
+        var folder = Path.Combine(_host.DataRoot, "..", "Downloads");
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page), Path.Combine(folder, "loans.html"))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+            await _host.Catalog.ReviseAsync(id, Encoding.UTF8.GetBytes("<p>changed</p>"), null, storage);
+        using var client = _host.ControlClient();
+
+        var revisions = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/revisions")).RootElement.EnumerateArray().ToList();
+        using var unknown = await client.GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/revisions");
+
+        Assert.Equal(["loans.html", null], revisions.Select(r => r.GetProperty("file").GetString()));
+        Assert.Equal([false, true], revisions.Select(r => r.GetProperty("inUse").GetBoolean()));
+        Assert.Equal(2, revisions[1].GetProperty("revision").GetInt32());
+        HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+    }
+
+    [Fact]
     public async Task A_suspected_loss_is_counted_in_the_application_usage_record()
     {
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;

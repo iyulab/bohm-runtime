@@ -34,6 +34,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked, askedModel }</c> — errors thrown, with lines as in the previewed document, what the content security policy refused (<c>category host</c>), and whether it called a model — declined in a preview, so errors that followed may not happen once it is taken in. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and whether data it wrote was kept aside when the application was put back from it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page (<c>ack</c>) and the highest sequence the page reported having issued (<c>issued</c>); <c>left</c> once the page's report sent after leaving has arrived, which makes <c>issued</c> final. A host closing the page waits until <c>ack</c> reaches both the sequence it read before the page left and <c>issued</c>; 404 when the page is not (or no longer) the application's.</description></item>
@@ -333,6 +334,19 @@ internal static class ControlPlane
 
                 // Read from the file, like the listing: looking at the record does not open the application.
                 await WriteAsync(response, UsageOf(catalog.OpenUsage(usageFor)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var revisionsOf, "revisions"]):
+                if (await catalog.GetAsync(revisionsOf, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // File names only — where a file was is the person's, and the list is for telling revisions apart.
+                await WriteAsync(response, (await catalog.ListRevisionsAsync(revisionsOf, cancel).ConfigureAwait(false))
+                    .Select(r => new RevisionView(r.Revision, r.Previous, r.TakenInAt, r.Source.OriginalPath is { Length: > 0 } p ? Path.GetFileName(p) : null, r.InUse, r.DataUndone))
+                    .ToList(), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", var tabOf, "tabs", var tabId]):
@@ -786,6 +800,9 @@ internal static class ControlPlane
 
     internal sealed record RemovedView(string Id, DateTimeOffset RemovedAt);
 
+    /// <summary>One revision in an application's history: <c>file</c> is the name of the file it came from, <see langword="null"/> for an applied change.</summary>
+    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, bool DataUndone);
+
     internal sealed record ExportedView(string Id, string Path);
 
     internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
@@ -1034,6 +1051,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.RevisionView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]

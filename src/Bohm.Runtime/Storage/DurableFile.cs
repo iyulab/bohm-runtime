@@ -19,8 +19,40 @@ internal static class DurableFile
             stream.Flush(flushToDisk: true);
         }
 
-        File.Move(temporary, path, overwrite: true);
+        // Windows refuses to rename over a file while anyone has it open — here, usually another request
+        // reading the same record for a few milliseconds. Wait for the read to end rather than fail the write.
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, path, overwrite: true);
+                return;
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or IOException && attempt < ReplaceAttempts && File.Exists(temporary))
+            {
+                await Task.Delay(ReplaceRetryDelay * attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
+
+    private const int ReplaceAttempts = 10;
+    private static readonly TimeSpan ReplaceRetryDelay = TimeSpan.FromMilliseconds(20);   // 20 ms, 40 ms, … — under a second in all
+
+    /// <summary>
+    /// Reads a file that may be written or replaced at the same moment, sharing every kind of access so
+    /// the read never makes another opener fail. A replacement waits for the read to end (see
+    /// <see cref="WriteAtomicallyAsync"/>); the reader keeps the bytes of whichever file it opened.
+    /// </summary>
+    public static async Task<byte[]> ReadAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = OpenShared(path);
+        var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+        return buffer.ToArray();
+    }
+
+    /// <summary>Opens <paramref name="path"/> for reading, sharing every kind of access (see <see cref="ReadAsync"/>).</summary>
+    public static FileStream OpenShared(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
     /// <summary>
     /// Renames an unreadable file out of the way instead of deleting it, so whatever it holds can

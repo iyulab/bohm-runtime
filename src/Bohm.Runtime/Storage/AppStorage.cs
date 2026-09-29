@@ -140,10 +140,7 @@ public sealed class AppStorage : IAsyncDisposable
         {
             try
             {
-                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                var buffer = new MemoryStream();
-                await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-                return buffer.ToArray();
+                return await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
             {

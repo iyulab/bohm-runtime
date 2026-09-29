@@ -124,6 +124,28 @@ public sealed class AppStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task A_file_being_read_can_still_be_replaced_atomically()
+    {
+        // A record read by one request while another rewrites it: the rename over it must not be refused.
+        var record = Path.Combine(_directory, "app.json");
+        await DurableFile.WriteAtomicallyAsync(record, "old"u8.ToArray(), CancellationToken.None);
+
+        Task write;
+        await using (var reader = DurableFile.OpenShared(record))
+        {
+            write = DurableFile.WriteAtomicallyAsync(record, "new"u8.ToArray(), CancellationToken.None);
+            await Task.Delay(100); // Windows refuses the rename while the file is open: the write waits
+            var held = new byte[3];
+            await reader.ReadExactlyAsync(held);
+            Assert.Equal("old"u8.ToArray(), held); // the reader keeps the file it opened
+        }
+
+        await write;
+
+        Assert.Equal("new"u8.ToArray(), await DurableFile.ReadAsync(record, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Keys_can_be_peeked_while_the_storage_is_open_and_across_a_checkpoint()
     {
         await using var storage = await AppStorage.OpenAsync(_directory);

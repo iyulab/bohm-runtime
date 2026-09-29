@@ -115,7 +115,7 @@ public sealed partial class AdoptionCatalog
         if (!IsValidId(id)) return null;
         var path = Path.Combine(AppDirectory(id), RecordFile);
         if (!File.Exists(path)) return null;
-        return ReadRecord(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+        return ReadRecord(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -286,7 +286,7 @@ public sealed partial class AdoptionCatalog
         AdoptedApp? app;
         try
         {
-            app = ReadRecord(await File.ReadAllBytesAsync(recordPath, cancellationToken).ConfigureAwait(false));
+            app = ReadRecord(await DurableFile.ReadAsync(recordPath, cancellationToken).ConfigureAwait(false));
         }
         catch (JsonException e)
         {
@@ -340,7 +340,7 @@ public sealed partial class AdoptionCatalog
             if (!IsValidId(Path.GetFileName(folder)) || !File.Exists(path) || Directory.Exists(AppDirectory(Path.GetFileName(folder)))) continue;
             try
             {
-                if (ReadRemoved(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)) is { } app) list.Add(app);
+                if (ReadRemoved(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false)) is { } app) list.Add(app);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
             {
@@ -598,6 +598,39 @@ public sealed partial class AdoptionCatalog
         return reverted;
     }
 
+    /// <summary>
+    /// Every revision application <paramref name="id"/> has had, oldest first — including revisions it was
+    /// put back from, which stay on disk with the data they wrote. An application never revised has one.
+    /// A revision folder whose record cannot be read is left out rather than guessed at.
+    /// </summary>
+    public async Task<IReadOnlyList<AppRevision>> ListRevisionsAsync(string id, CancellationToken cancellationToken = default)
+    {
+        RequireValidId(id);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        var revisions = new List<AppRevision>();
+        var directory = Path.Combine(AppDirectory(id), RevisionsDirectory);
+        if (Directory.Exists(directory))
+        {
+            var numbers = Directory.EnumerateDirectories(directory)
+                .Select(d => int.TryParse(Path.GetFileName(d), NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : 0)
+                .Where(n => n > 0)
+                .Order();
+            foreach (var number in numbers)
+            {
+                var folder = RevisionFolder(id, number);
+                if (await ReadRevisionAsync(folder, cancellationToken).ConfigureAwait(false) is not { } record) continue;
+                revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source,
+                    record.Revision == app.Revision, File.Exists(Path.Combine(folder, DataUndoneFile))));
+            }
+        }
+
+        // The first revision has no folder of its own until another replaces it.
+        if (!revisions.Exists(r => r.Revision == app.Revision))
+            revisions.Add(new AppRevision(app.Revision, null, app.RevisedAt ?? app.AdoptedAt, app.Source, true, false));
+        revisions.Sort((a, b) => a.Revision.CompareTo(b.Revision));
+        return revisions;
+    }
+
     /// <summary>Whether <see cref="RevertAsync"/> has an earlier revision to go back to.</summary>
     public async Task<bool> CanRevertAsync(string id, CancellationToken cancellationToken = default) =>
         await GetAsync(id, cancellationToken).ConfigureAwait(false) is { } app && await CanRevertAsync(app, cancellationToken).ConfigureAwait(false);
@@ -627,7 +660,7 @@ public sealed partial class AdoptionCatalog
         if (!File.Exists(path)) return null;
         try
         {
-            using var document = JsonDocument.Parse(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+            using var document = JsonDocument.Parse(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
             var root = document.RootElement;
             if (root.GetProperty("format").GetString() != RevisionFormat) return null;
             var previous = root.GetProperty("previous");
