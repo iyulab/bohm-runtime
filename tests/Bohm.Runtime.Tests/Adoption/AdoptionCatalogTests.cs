@@ -280,6 +280,30 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task The_revision_history_lists_every_revision_including_one_put_back_from()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var path = Path.Combine(_root, "Downloads", "Team loans.html");
+        var app = await catalog.AdoptAsync(Html, path);
+        var only = Assert.Single(await catalog.ListRevisionsAsync(app.Id)); // never revised: one revision, no folder yet
+        Assert.Equal((1, (int?)null, app.AdoptedAt, true, false), (only.Revision, only.Previous, only.TakenInAt, only.InUse, only.DataUndone));
+
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), Path.Combine(_root, "Downloads", "Team loans (1).html"), storage);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v3</p>"), null, storage); // an applied change
+        await storage.ApplyAsync([StorageOperation.Set("written-in-v3", "yes")]);
+        await catalog.RevertAsync(app.Id, storage);
+
+        var history = await catalog.ListRevisionsAsync(app.Id);
+        Assert.Equal([1, 2, 3], history.Select(r => r.Revision));
+        Assert.Equal([null, 1, 2], history.Select(r => r.Previous));
+        Assert.Equal([path, Path.Combine(_root, "Downloads", "Team loans (1).html"), null], history.Select(r => r.Source.OriginalPath));
+        Assert.Equal([false, true, false], history.Select(r => r.InUse));      // put back to 2
+        Assert.Equal([false, false, true], history.Select(r => r.DataUndone)); // what 3 wrote is kept aside
+        Assert.Equal(app.AdoptedAt, history[0].TakenInAt);
+    }
+
+    [Fact]
     public async Task A_change_applied_without_a_file_keeps_the_name_and_the_file_it_came_from()
     {
         // An applied change is a revision with no file behind it. The application must stay known by the

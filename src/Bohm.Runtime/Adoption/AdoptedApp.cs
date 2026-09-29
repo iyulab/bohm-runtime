@@ -47,6 +47,18 @@ public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSou
 /// <param name="Size">Length of the adopted bytes.</param>
 public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Size);
 
+/// <summary>One revision of an application, as its history shows it.</summary>
+/// <param name="Revision">The revision's number.</param>
+/// <param name="Previous">The revision it was taken in over; <see langword="null"/> for the first.</param>
+/// <param name="TakenInAt">When it was taken in (for the first revision, when the application was adopted).</param>
+/// <param name="Source">Where its bytes came from — <see cref="AdoptionSource.OriginalPath"/> is <see langword="null"/> for a revision made without a file (an applied change).</param>
+/// <param name="InUse">Whether it is the revision the application runs now.</param>
+/// <param name="DataUndone">
+/// Whether the application was put back from this revision to the one before it, and the data this
+/// revision had written was kept aside at that moment (<c>data-undone.json</c> in its folder).
+/// </param>
+public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, bool DataUndone);
+
 /// <summary>How an earlier adoption matches a file about to be adopted.</summary>
 public enum AdoptionMatchKind
 {
