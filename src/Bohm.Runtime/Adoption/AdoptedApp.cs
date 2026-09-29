@@ -53,11 +53,31 @@ public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Si
 /// <param name="TakenInAt">When it was taken in (for the first revision, when the application was adopted).</param>
 /// <param name="Source">Where its bytes came from — <see cref="AdoptionSource.OriginalPath"/> is <see langword="null"/> for a revision made without a file (an applied change).</param>
 /// <param name="InUse">Whether it is the revision the application runs now.</param>
-/// <param name="DataUndone">
-/// Whether the application was put back from this revision to the one before it, and the data this
-/// revision had written was kept aside at that moment (<c>data-undone.json</c> in its folder).
+/// <param name="Undone">
+/// When the application was put back from this revision to the one before it, the data this revision
+/// had written was kept aside (<c>data-undone.json</c> in its folder); this says where that data stands
+/// against the data now. <see langword="null"/> when the application was never put back from it.
 /// </param>
-public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, bool DataUndone);
+public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, UndoneData? Undone);
+
+/// <summary>Where the data a revision wrote, kept aside when the application was put back from it, stands against the data now.</summary>
+public enum UndoneData
+{
+    /// <summary>
+    /// Nothing was written since going back (the data is still what it was restored to), and the code in
+    /// use reads every key of the kept data: taking it back in replaces nothing the person made since.
+    /// </summary>
+    Importable,
+
+    /// <summary>The data now is the kept data — it was taken back in. Undoing that restores the data it replaced.</summary>
+    Imported,
+
+    /// <summary>
+    /// Something was written since going back, or the code in use does not read the kept data's keys:
+    /// taking it back in would lose or misread data, so it stays a file in the application's folder.
+    /// </summary>
+    Diverged,
+}
 
 /// <summary>How an earlier adoption matches a file about to be adopted.</summary>
 public enum AdoptionMatchKind

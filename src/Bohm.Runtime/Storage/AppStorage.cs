@@ -85,10 +85,14 @@ public sealed class AppStorage : IAsyncDisposable
         return storage;
     }
 
+    /// <summary>The keys stored in <paramref name="directory"/>, read the way <see cref="PeekAsync"/> reads.</summary>
+    public static async Task<IReadOnlySet<string>> PeekKeysAsync(string directory, CancellationToken cancellationToken = default) =>
+        new SortedSet<string>((await PeekAsync(directory, cancellationToken).ConfigureAwait(false)).Keys, StringComparer.Ordinal);
+
     /// <summary>
-    /// The keys stored in <paramref name="directory"/>, read without opening the storage: nothing is
-    /// written, truncated or set aside, and it works while another <see cref="AppStorage"/> is the open
-    /// writer of that directory.
+    /// The items stored in <paramref name="directory"/>, sorted by key, read without opening the storage:
+    /// nothing is written, truncated or set aside, and it works while another <see cref="AppStorage"/> is
+    /// the open writer of that directory.
     /// </summary>
     /// <remarks>
     /// What cannot be read is skipped rather than repaired — repair belongs to <see cref="OpenAsync"/>.
@@ -97,7 +101,7 @@ public sealed class AppStorage : IAsyncDisposable
     /// writes a snapshot that already holds what the journal said, so no acknowledged key is missed.
     /// A directory that was never written has no keys.
     /// </remarks>
-    public static async Task<IReadOnlySet<string>> PeekKeysAsync(string directory, CancellationToken cancellationToken = default)
+    public static async Task<IReadOnlyDictionary<string, string>> PeekAsync(string directory, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(directory);
         var journal = await ReadSharedAsync(Path.Combine(directory, JournalFile), cancellationToken).ConfigureAwait(false);
@@ -134,7 +138,7 @@ public sealed class AppStorage : IAsyncDisposable
             }
         }
 
-        return new SortedSet<string>(items.Keys, StringComparer.Ordinal);
+        return new SortedDictionary<string, string>(items, StringComparer.Ordinal);
 
         static async Task<byte[]?> ReadSharedAsync(string path, CancellationToken cancellationToken)
         {

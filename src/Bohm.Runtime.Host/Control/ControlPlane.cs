@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -34,7 +35,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked, askedModel }</c> — errors thrown, with lines as in the previewed document, what the content security policy refused (<c>category host</c>), and whether it called a model — declined in a preview, so errors that followed may not happen once it is taken in. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and whether data it wrote was kept aside when the application was put back from it.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions/{n}/import</c></term><description>Takes the data revision <c>n</c> wrote back in, replacing the data now — only while nothing was written since going back and the code in use reads its keys; 409 otherwise. <c>…/undo-import</c> puts back the data it replaced, while the data is still what was taken in.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page (<c>ack</c>) and the highest sequence the page reported having issued (<c>issued</c>); <c>left</c> once the page's report sent after leaving has arrived, which makes <c>issued</c> final. A host closing the page waits until <c>ack</c> reaches both the sequence it read before the page left and <c>issued</c>; 404 when the page is not (or no longer) the application's.</description></item>
@@ -182,7 +184,7 @@ internal static class ControlPlane
 
                 var revisedPath = OriginalPath(request);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
-                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), reverted: false).ConfigureAwait(false);
+                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["agent", "turns"]):
@@ -235,7 +237,21 @@ internal static class ControlPlane
                 }
 
                 await ChangeRevisionAsync(context, revertedId, StatusCodes.Status200OK,
-                    storage => catalog.RevertAsync(revertedId, storage, cancel), reverted: true).ConfigureAwait(false);
+                    storage => catalog.RevertAsync(revertedId, storage, cancel), app => app.Usage.RecordRevision(reverted: true)).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var importedTo, "revisions", var keptBy, "import" or "undo-import"]):
+                if (await catalog.GetAsync(importedTo, cancel).ConfigureAwait(false) is null
+                    || !int.TryParse(keptBy, NumberStyles.None, CultureInfo.InvariantCulture, out var keptRevision))
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // The same lossless order as a revision change: the code stays, the data is replaced, pages reload.
+                await ChangeRevisionAsync(context, importedTo, StatusCodes.Status200OK, segments[4] == "import"
+                    ? storage => catalog.ImportUndoneAsync(importedTo, keptRevision, storage, cancel)
+                    : storage => catalog.UndoImportAsync(importedTo, keptRevision, storage, cancel), record: null).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var archiveId, "archive" or "restore"]):
@@ -345,7 +361,13 @@ internal static class ControlPlane
 
                 // File names only — where a file was is the person's, and the list is for telling revisions apart.
                 await WriteAsync(response, (await catalog.ListRevisionsAsync(revisionsOf, cancel).ConfigureAwait(false))
-                    .Select(r => new RevisionView(r.Revision, r.Previous, r.TakenInAt, r.Source.OriginalPath is { Length: > 0 } p ? Path.GetFileName(p) : null, r.InUse, r.DataUndone))
+                    .Select(r => new RevisionView(r.Revision, r.Previous, r.TakenInAt, r.Source.OriginalPath is { Length: > 0 } p ? Path.GetFileName(p) : null, r.InUse, r.Undone switch
+                    {
+                        UndoneData.Importable => "importable",
+                        UndoneData.Imported => "imported",
+                        UndoneData.Diverged => "diverged",
+                        _ => null,
+                    }))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -622,7 +644,7 @@ internal static class ControlPlane
     /// the new revision may load different code.
     /// </summary>
     private static async Task ChangeRevisionAsync(HttpContext context, string appId, int successStatus,
-        Func<Runtime.Storage.AppStorage, Task<AdoptedApp>> change, bool reverted)
+        Func<Runtime.Storage.AppStorage, Task<AdoptedApp>> change, Action<OpenApp>? record)
     {
         var services = context.RequestServices;
         var response = context.Response;
@@ -647,7 +669,7 @@ internal static class ControlPlane
             }
 
             app.ForgetObservations();
-            app.Usage.RecordRevision(reverted);
+            record?.Invoke(app);
         }
         finally
         {
@@ -800,8 +822,12 @@ internal static class ControlPlane
 
     internal sealed record RemovedView(string Id, DateTimeOffset RemovedAt);
 
-    /// <summary>One revision in an application's history: <c>file</c> is the name of the file it came from, <see langword="null"/> for an applied change.</summary>
-    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, bool DataUndone);
+    /// <summary>
+    /// One revision in an application's history: <c>file</c> is the name of the file it came from, <see langword="null"/> for an applied change.
+    /// <c>undone</c>, for a revision the application was put back from, is where the data it wrote stands: <c>"importable"</c>,
+    /// <c>"imported"</c> or <c>"diverged"</c> (see <see cref="UndoneData"/>).
+    /// </summary>
+    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone);
 
     internal sealed record ExportedView(string Id, string Path);
 

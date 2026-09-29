@@ -73,6 +73,37 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Kept_data_is_taken_back_in_and_given_back_through_the_control_api()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>"))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+        {
+            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("loans", "1")]);
+            await _host.Catalog.ReviseAsync(id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('loans')</script>"), null, storage);
+            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("loans", "5")]);
+            await _host.Catalog.RevertAsync(id, storage);
+        }
+
+        using var client = _host.ControlClient();
+        async Task<string?> UndoneAsync() =>
+            JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/revisions")).RootElement[1].GetProperty("undone").GetString();
+
+        Assert.Equal("importable", await UndoneAsync());
+        using (var undoFirst = await client.PostAsync($"/__control/apps/{id}/revisions/2/undo-import", null))
+            HttpAssert.Status(HttpStatusCode.Conflict, undoFirst);
+        using (var taken = await client.PostAsync($"/__control/apps/{id}/revisions/2/import", null))
+            HttpAssert.Status(HttpStatusCode.OK, taken);
+        Assert.Equal("imported", await UndoneAsync());
+        using (var again = await client.PostAsync($"/__control/apps/{id}/revisions/2/import", null))
+            HttpAssert.Status(HttpStatusCode.Conflict, again);
+        using (var back = await client.PostAsync($"/__control/apps/{id}/revisions/2/undo-import", null))
+            HttpAssert.Status(HttpStatusCode.OK, back);
+        Assert.Equal("importable", await UndoneAsync());
+        using (var none = await client.PostAsync($"/__control/apps/{id}/revisions/1/import", null))
+            HttpAssert.Status(HttpStatusCode.Conflict, none);
+    }
+
+    [Fact]
     public async Task A_suspected_loss_is_counted_in_the_application_usage_record()
     {
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
