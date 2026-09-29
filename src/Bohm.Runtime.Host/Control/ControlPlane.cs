@@ -731,7 +731,7 @@ internal static class ControlPlane
     /// <c>CanRevert</c> says whether there is a previous revision to go back to. <c>LastUsed</c>
     /// (local <c>yyyy-MM-dd</c>) is filled in the listing only. <c>Unsaved</c> marks a result not kept yet;
     /// <c>LeftAt</c> is when the person last left it and <c>ExpiresAt</c> when the next start after it removes it.
-    /// <c>Title</c> names an application the runtime made; an adopted file is known by <c>OriginalPath</c>.
+    /// <c>Title</c> names an application when no file does — one the runtime made, or one whose change was applied without a file; otherwise an adopted file is known by <c>OriginalPath</c>.
     /// </summary>
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,

@@ -220,6 +220,45 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task A_change_applied_without_a_file_keeps_the_name_and_the_file_it_came_from()
+    {
+        // An applied change is a revision with no file behind it. The application must stay known by the
+        // name it had, and a revised copy of its original file must still find it.
+        var catalog = new AdoptionCatalog(_root);
+        var path = Path.Combine(_root, "Downloads", "Team loans.html");
+        var app = await catalog.AdoptAsync(Html, path);
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+
+        var changed = await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<h1>Our shelf</h1>"), null, storage);
+        var fromFileAgain = Encoding.UTF8.GetBytes("<h1>Team loans v3</h1>");
+        var match = Assert.Single(await catalog.FindEarlierAdoptionsAsync(fromFileAgain, path));
+
+        Assert.Null(app.Title);
+        Assert.Null(changed.Source.OriginalPath);
+        Assert.Equal("Team loans", changed.Title);
+        Assert.Equal(changed, await new AdoptionCatalog(_root).GetAsync(app.Id)); // survives a restart
+        Assert.Equal(app.Id, match.App.Id);
+        Assert.Equal(AdoptionMatchKind.SameOriginalPath, match.Kind);
+
+        // Once named, the name stays through later revisions and a revert.
+        var again = await catalog.ReviseAsync(app.Id, fromFileAgain, Path.Combine(_root, "Downloads", "Team loans (1).html"), storage);
+        Assert.Equal("Team loans", again.Title);
+        Assert.Equal("Team loans", (await catalog.RevertAsync(app.Id, storage)).Title);
+    }
+
+    [Fact]
+    public async Task A_made_application_keeps_its_title_through_a_change()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, originalPath: null, unsaved: false, title: "Summary");
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+
+        var changed = await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), null, storage);
+
+        Assert.Equal("Summary", changed.Title);
+    }
+
+    [Fact]
     public async Task Same_bytes_at_the_same_path_is_a_bytes_match_and_paths_are_normalized()
     {
         var catalog = new AdoptionCatalog(_root);
