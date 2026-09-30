@@ -1,7 +1,7 @@
 using System.Text.Json;
+using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Host.Agent;
@@ -149,11 +149,19 @@ internal static class WebAgent
     }
 
     /// <summary>
-    /// Puts every tool result through <see cref="PageMaterialGuard"/> the way the upstream invoker does for
-    /// tools it runs itself — these ran in the host, so the rule is applied here, on the way in. A call id that
+    /// Puts every tool result through <see cref="HostResults"/> (<see cref="PageMaterialGuard"/>) — these ran in the
+    /// host, so the rule is applied here, on the way in. A call id that
     /// repeats an earlier one is renamed (with the results that answer it), so every call in what the model reads
-    /// has its own id — a provider that joins calls and results by id would otherwise keep only one of them.
+    /// has its own id: a conversation begun with a model that numbers its calls afresh each turn can be continued
+    /// with another after the person changes the answering AI, and some providers refuse a request whose call ids
+    /// repeat (Anthropic's Messages API answers 400).
     /// </summary>
+    /// <summary>
+    /// The result stage every page result goes through — the host's own tool loop, since the tools ran here. The whole
+    /// conversation comes back each turn, so every result in it is put through, not only the ones since the last turn.
+    /// </summary>
+    private static readonly ToolInvocationPipeline HostResults = new([], [new ToolResultGuardMiddleware(PageMaterialGuard.Instance)]);
+
     private static async Task<IReadOnlyList<ChatMessage>> GuardToolResultsAsync(IReadOnlyList<ChatMessage> conversation, CancellationToken cancellationToken)
     {
         // A result answers the latest call with its id: models reuse ids from turn to turn ("c1", "call_0"), so an
@@ -200,8 +208,15 @@ internal static class WebAgent
                 }
 
                 var call = calls.GetValueOrDefault(result.CallId);
-                var seen = await ToolResultGuardedFunctionInvoker.ApplyAsync(PageMaterialGuard.Instance, call?.Name ?? "", call?.Arguments ?? new Dictionary<string, object?>(),
-                    result.Result ?? "", NullLogger.Instance, cancellationToken).ConfigureAwait(false);
+                var seen = await HostResults.ProcessResultAsync(new ToolResultContext
+                {
+                    ToolName = call?.Name ?? "",
+                    CallId = call?.CallId ?? result.CallId,
+                    Arguments = call?.Arguments?.AsReadOnly(),
+                    Result = result.Result ?? "",
+                    Messages = guarded,
+                    IsHostResult = true,
+                }, cancellationToken).ConfigureAwait(false);
                 contents.Add(new FunctionResultContent(call?.CallId ?? result.CallId, seen is ToolCallRefusal refusal ? refusal.Message : seen));
             }
 

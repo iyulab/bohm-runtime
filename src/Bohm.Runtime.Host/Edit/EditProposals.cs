@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
 using IronHive.Agent.Permissions;
@@ -387,13 +388,11 @@ internal static partial class EditProposals
             options.MaxOutputTokens ??= maxOutputTokens;
         });
 
+        var pipeline = new ToolInvocationPipeline(
+            [new ApprovalGateMiddleware(new ModeToolFilter(permissions), approvalService: null)],
+            [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
         var client = builder
-            .UseFunctionInvocation(configure: invoking =>
-            {
-                invoking.MaximumIterationsPerRequest = maxRounds;
-                invoking.FunctionInvoker = ApprovalGatedFunctionInvoker.Create(new ModeToolFilter(permissions), approvalService: null,
-                    inner: ToolResultGuardedFunctionInvoker.Create(SourceIsMaterial.Instance));
-            })
+            .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
             .Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [readSource, replace], SystemPrompt = systemPrompt });
 
