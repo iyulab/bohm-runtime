@@ -306,6 +306,40 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_conversation_whose_model_reused_a_call_id_reaches_Anthropic_with_one_id_per_call()
+    {
+        // The Messages API refuses a request whose tool_use ids repeat (400) — and a conversation begun with a model
+        // that numbers its calls afresh each turn may be continued with Anthropic after the person changes the answering AI.
+        await using var provider = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync(configure: o => o with
+        {
+            LlmEndpoints = LlmProviders.All.ToDictionary(p => p.Host, _ => provider.Address),
+        });
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent("sk-ant-real-0123456789"))) HttpAssert.Status(HttpStatusCode.OK, key);
+        using (var chose = await host.ControlClient().PutAsync("/__control/agent/model", Json("""{"provider":"anthropic","model":"for-pages"}"""))) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var turn = await TurnAsync(host, """
+            {"messages":[
+              {"role":"user","text":"What is for lunch?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Lunch: stew"},
+              {"role":"assistant","text":"Stew."},
+              {"role":"user","text":"And tomorrow?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-2"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Tomorrow: noodles"}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, turn);
+        var contents = JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("messages").EnumerateArray()
+            .Where(m => m.GetProperty("content").ValueKind == JsonValueKind.Array).SelectMany(m => m.GetProperty("content").EnumerateArray()).ToList();
+        var uses = contents.Where(c => c.GetProperty("type").GetString() == "tool_use").Select(c => c.GetProperty("id").GetString()).ToList();
+        var results = contents.Where(c => c.GetProperty("type").GetString() == "tool_result").Select(c => c.GetProperty("tool_use_id").GetString()).ToList();
+        Assert.Equal(2, uses.Distinct().Count());
+        Assert.Equal(uses, results);   // each result still answers its own call
+    }
+
+    [Fact]
     public async Task Asked_for_lines_the_answer_arrives_in_pieces_as_it_is_written_and_then_the_turn()
     {
         _model.Chunks = ["The page ", "says ", "**hello**."];
