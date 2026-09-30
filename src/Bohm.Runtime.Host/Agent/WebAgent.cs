@@ -101,30 +101,65 @@ internal static class WebAgent
         }
 
         var answered = produced.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.CallId).ToHashSet(StringComparer.Ordinal);
+        // A call id names one call in the whole conversation — models often number their calls afresh each turn
+        // ("c1" again), so a new call that repeats an earlier id goes back to the host under a free one.
+        var taken = conversation.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Select(c => c.CallId).ToHashSet(StringComparer.Ordinal);
         var pending = produced.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
             .Where(call => !answered.Contains(call.CallId))
-            .Select(call => new HostToolCall(call.CallId, call.Name, JsonSerializer.SerializeToElement(call.Arguments ?? new Dictionary<string, object?>(), AgentJson.Default.IDictionaryStringObject)))
+            .Select(call => new HostToolCall(FreeId(call.CallId, taken), call.Name, JsonSerializer.SerializeToElement(call.Arguments ?? new Dictionary<string, object?>(), AgentJson.Default.IDictionaryStringObject)))
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName) : new("done", text ?? "", [], modelName);
     }
 
+    /// <summary><paramref name="id"/>, or the first of <c>id-2</c>, <c>id-3</c>, … not yet in <paramref name="taken"/> — which it joins.</summary>
+    private static string FreeId(string id, HashSet<string> taken)
+    {
+        var free = id;
+        for (var n = 2; taken.Contains(free); n++) free = $"{id}-{n}";
+        taken.Add(free);
+        return free;
+    }
+
     /// <summary>
     /// Puts every tool result through <see cref="PageMaterialGuard"/> the way the upstream invoker does for
-    /// tools it runs itself — these ran in the host, so the rule is applied here, on the way in.
+    /// tools it runs itself — these ran in the host, so the rule is applied here, on the way in. A call id that
+    /// repeats an earlier one is renamed (with the results that answer it), so every call in what the model reads
+    /// has its own id — a provider that joins calls and results by id would otherwise keep only one of them.
     /// </summary>
     private static async Task<IReadOnlyList<ChatMessage>> GuardToolResultsAsync(IReadOnlyList<ChatMessage> conversation, CancellationToken cancellationToken)
     {
         // A result answers the latest call with its id: models reuse ids from turn to turn ("c1", "call_0"), so an
         // id is only unique between one assistant message and its results.
         var calls = new Dictionary<string, FunctionCallContent>(StringComparer.Ordinal);
+        var taken = new HashSet<string>(StringComparer.Ordinal);
         var guarded = new List<ChatMessage>(conversation.Count);
         foreach (var message in conversation)
         {
             if (message.Role != ChatRole.Tool)
             {
-                foreach (var call in message.Contents.OfType<FunctionCallContent>()) calls[call.CallId] = call;
-                guarded.Add(message);
+                if (!message.Contents.OfType<FunctionCallContent>().Any())
+                {
+                    guarded.Add(message);
+                    continue;
+                }
+
+                var renamed = new List<AIContent>();
+                foreach (var content in message.Contents)
+                {
+                    if (content is FunctionCallContent call)
+                    {
+                        var own = new FunctionCallContent(FreeId(call.CallId, taken), call.Name, call.Arguments);
+                        calls[call.CallId] = own;   // results that follow answer this call
+                        renamed.Add(own);
+                    }
+                    else
+                    {
+                        renamed.Add(content);
+                    }
+                }
+
+                guarded.Add(new ChatMessage(message.Role, renamed));
                 continue;
             }
 
@@ -140,7 +175,7 @@ internal static class WebAgent
                 var call = calls.GetValueOrDefault(result.CallId);
                 var seen = await ToolResultGuardedFunctionInvoker.ApplyAsync(PageMaterialGuard.Instance, call?.Name ?? "", call?.Arguments ?? new Dictionary<string, object?>(),
                     result.Result ?? "", NullLogger.Instance, cancellationToken).ConfigureAwait(false);
-                contents.Add(new FunctionResultContent(result.CallId, seen is ToolCallRefusal refusal ? refusal.Message : seen));
+                contents.Add(new FunctionResultContent(call?.CallId ?? result.CallId, seen is ToolCallRefusal refusal ? refusal.Message : seen));
             }
 
             guarded.Add(new ChatMessage(ChatRole.Tool, contents));
