@@ -42,7 +42,7 @@ public sealed class RemovedButUsedTests
 
     [Fact]
     public void A_letter_of_a_regular_expression_escape_is_not_a_use_of_a_removed_name() =>
-        // A removed callback's parameter `d`, and `\d` in a pattern that stayed (cycle-379 — a finished move was held back).
+        // A removed callback's parameter `d`, and `\d` in a pattern that stayed — a finished move must not be reported unfinished because of it.
         Assert.Empty(Check("snap.forEach((d) => list.push(d.data()));", "",
             "<script>const n = str.match(/(\\d+)\\s*반/); if (/^\\d+$/.test(str)) save(n);</script>"));
 
