@@ -55,8 +55,7 @@ internal static class LlmProxy
 
         // Requests come from the application's own fetch calls, which cannot carry the script's
         // custom header; the origin-scoped session cookie and the Origin check stand in for it.
-        var sessions = context.RequestServices.GetRequiredService<AppSessions>();
-        if (!sessions.IsSession(appId, request.Cookies[AdoptedAppServing.SessionCookie]) || !SameOriginOrAbsent(request))
+        if (!PageRequests.IsFromTheApp(context, appId))
         {
             response.StatusCode = StatusCodes.Status403Forbidden;
             return;
@@ -296,12 +295,6 @@ internal static class LlmProxy
     /// <summary>The organization's model server as a provider for relaying and for errors: OpenAI-shaped, keyed with a bearer token.</summary>
     private static LlmProvider CompanyModelShape(CompanyModelOptions server) =>
         new(CompanyModelSegment, server.Endpoint.Authority, "The organization's AI model server", KeyStyle.Bearer, "");
-
-    private static bool SameOriginOrAbsent(HttpRequest request)
-    {
-        var origin = request.Headers.Origin.ToString();
-        return origin.Length == 0 || string.Equals(origin, $"{request.Scheme}://{request.Host}", StringComparison.OrdinalIgnoreCase);
-    }
 
     /// <summary>An error in the shape the provider's own API uses, so the application's error handling applies.</summary>
     private static Task WriteErrorAsync(HttpResponse response, LlmProvider provider, HttpStatusCode status, string type, string message)

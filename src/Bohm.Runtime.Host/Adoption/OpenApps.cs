@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Assets;
+using Bohm.Runtime.Sources;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
 
@@ -20,8 +21,8 @@ internal sealed record BlockedResource(string Category, string Host);
 /// <param name="Path">The path asked for.</param>
 internal sealed record MissingApi(string Method, string Path);
 
-/// <summary>An adopted application while the host is running: its storage, its usage record and recent load failures.</summary>
-internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache assets)
+/// <summary>An adopted application while the host is running: its storage, its usage record, its sources and recent load failures.</summary>
+internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache assets, AppSources sources)
 {
     private const int KeptLoadErrors = 5;
     private readonly Queue<string> _loadErrors = new();
@@ -34,6 +35,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
     public AppStorage Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
     public AssetCache Assets { get; } = assets;
+    public AppSources Sources { get; } = sources;
 
     /// <summary>One asset fetch at a time per application — an adoption's background fetch and an explicit one must not interleave.</summary>
     public SemaphoreSlim AssetFetch { get; } = new(1, 1);
@@ -200,7 +202,7 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
             LogRepair(logger, appId, repair.Kind, repair.Detail);
             usage.RecordRepaired();
         }
-        return new OpenApp(storage, usage, catalog.OpenAssets(appId));
+        return new OpenApp(storage, usage, catalog.OpenAssets(appId), catalog.OpenSources(appId));
     }
 
     public async ValueTask DisposeAsync()
@@ -216,6 +218,7 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         if (!opening.IsCompletedSuccessfully) return;
         try
         {
+            opening.Result.Sources.Dispose();
             await opening.Result.Storage.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ObjectDisposedException)

@@ -11,6 +11,7 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <remarks>
 /// Nothing the preview does reaches the application: it has another origin (its own browser
 /// storage, no session cookie of the application), its writes are acknowledged and dropped, it
+/// reads the application's sources as they are,
 /// records no use, asks no model (a call to one is declined and noted) and adds nothing to what the application is told it is missing.
 /// Load errors and refused requests are kept on the preview, for the caller to read.
 /// </remarks>
@@ -56,6 +57,12 @@ internal static class PreviewServing
         if (path.StartsWithSegments("/__bohm/asset"))
         {
             await AssetServing.ServeCachedAsync(context, app).ConfigureAwait(false);
+            return;
+        }
+
+        if (path.StartsWithSegments(SourcesServing.PathPrefix))
+        {
+            await SourcesServing.ServeToPreviewAsync(context, app).ConfigureAwait(false);
             return;
         }
 
