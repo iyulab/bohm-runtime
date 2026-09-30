@@ -57,8 +57,13 @@ internal static class WebAgent
         stand for &, < and >; write them plainly when you quote a page.
         """;
 
-    /// <summary>Runs one turn of <paramref name="conversation"/>, which ends with the person's question or with the host's tool results.</summary>
-    public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, IReadOnlyList<ChatMessage> conversation, CancellationToken cancellationToken)
+    /// <summary>
+    /// Runs one turn of <paramref name="conversation"/>, which ends with the person's question or with the host's tool results.
+    /// The model's text reaches <paramref name="onText"/> piece by piece as it is written, when one is given — the result still
+    /// carries all of it.
+    /// </summary>
+    public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, IReadOnlyList<ChatMessage> conversation,
+        Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken)
     {
         var builder = model.AsBuilder();
         if (onThisComputer)
@@ -81,24 +86,34 @@ internal static class WebAgent
         // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
         // conversation without one. A question starts a turn; the host's tool results continue one.
         var loop = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
-        IList<ChatMessage> produced;
-        string? text;
+        // Streamed either way: one path to the model, and the text is there to pass on as it comes.
+        IAsyncEnumerable<AgentResponseChunk> chunks;
+        var before = 0;
         if (last.Role == ChatRole.User)
         {
             loop.InitializeHistory(history.Skip(1));
-            var response = await loop.RunAsync(last.Text, cancellationToken).ConfigureAwait(false);
-            var after = loop.History.ToList();
-            produced = after.Skip(after.FindLastIndex(m => m.Role == ChatRole.User) + 1).ToList();
-            text = response.Content;
+            chunks = loop.RunStreamingAsync(last.Text, cancellationToken);
         }
         else
         {
             loop.InitializeHistory(history.Skip(1).Append(last));
-            var before = loop.History.Count;
-            var response = await loop.ContinueAsync(cancellationToken).ConfigureAwait(false);
-            produced = loop.History.Skip(before).ToList();
-            text = response.Content;
+            before = loop.History.Count;
+            chunks = loop.ContinueStreamingAsync(cancellationToken);
         }
+
+        var written = new System.Text.StringBuilder();
+        await foreach (var chunk in chunks.ConfigureAwait(false))
+        {
+            if (chunk.TextDelta is not { Length: > 0 } delta) continue;
+            written.Append(delta);
+            if (onText is not null) await onText(delta, cancellationToken).ConfigureAwait(false);
+        }
+
+        // What this turn added: after the question the loop took in, or after the results it was given.
+        var after = loop.History.ToList();
+        if (last.Role == ChatRole.User) before = after.FindLastIndex(m => m.Role == ChatRole.User) + 1;
+        IList<ChatMessage> produced = after.Skip(before).ToList();
+        string? text = written.ToString();
 
         var answered = produced.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.CallId).ToHashSet(StringComparer.Ordinal);
         // A call id names one call in the whole conversation — models often number their calls afresh each turn

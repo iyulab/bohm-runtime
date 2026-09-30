@@ -60,7 +60,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds); <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list. 404 when no server is set. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
-/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model }</c>, or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to <c>list_tabs</c> or <c>read_page</c> for the caller to make and send back. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -902,20 +902,61 @@ internal static class ControlPlane
             return;
         }
 
-        Agent.TurnResult turn;
-        try
+        if (!AcceptsLines(context.Request))
         {
-            turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation, cancel).ConfigureAwait(false);
-        }
-        catch (Exception e) when (!cancel.IsCancellationRequested)
-        {
-            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+            Agent.TurnResult turn;
+            try
+            {
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation, null, cancel).ConfigureAwait(false);
+            }
+            catch (Exception e) when (!cancel.IsCancellationRequested)
+            {
+                response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+                return;
+            }
+
+            await WriteAsync(response, turn, cancel).ConfigureAwait(false);
             return;
         }
 
-        await WriteAsync(response, turn, cancel).ConfigureAwait(false);
+        // One JSON object per line, sent as the model writes: { text } for each piece of its text, then the turn as the
+        // plain answer has it — or, since the status went out before the model was asked, { status: "failed", … } with what
+        // a 503 would carry.
+        response.ContentType = NdJson;
+        await response.StartAsync(cancel).ConfigureAwait(false);
+        try
+        {
+            var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation,
+                (text, token) => WriteLineAsync(response, new TurnText(text), token), cancel).ConfigureAwait(false);
+            await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            await WriteLineAsync(response, new TurnFailure("failed", null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+        }
     }
+
+    private const string NdJson = "application/x-ndjson";
+
+    private static readonly byte[] NewLine = [(byte)'\n'];
+
+    private static bool AcceptsLines(HttpRequest request) =>
+        request.GetTypedHeaders().Accept.Any(accept => string.Equals(accept.MediaType.Value, NdJson, StringComparison.OrdinalIgnoreCase));
+
+    private static async Task WriteLineAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken)
+    {
+        var line = JsonSerializer.SerializeToUtf8Bytes(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!);
+        await response.Body.WriteAsync(line, cancellationToken).ConfigureAwait(false);
+        await response.Body.WriteAsync(NewLine, cancellationToken).ConfigureAwait(false);
+        await response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>A piece of the answer's text, as the model wrote it.</summary>
+    internal sealed record TurnText(string Text);
+
+    /// <summary>A streamed turn the model could not finish — the fields of <see cref="ProposalFailure"/>, with the status a turn line has.</summary>
+    internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider);
 
     private static async Task ProposeAsync(HttpContext context, string appId, CancellationToken cancel)
     {
@@ -1076,6 +1117,8 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnText))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnFailure))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.RevisionView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]

@@ -262,7 +262,9 @@ public sealed class WebAgentTests : IDisposable
 
         using var second = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
         HttpAssert.Status(HttpStatusCode.OK, second);
-        Assert.Equal("openai/for-pages", JsonDocument.Parse(await second.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
+        var answered = JsonDocument.Parse(await second.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("openai/for-pages", answered.GetProperty("model").GetString());
+        Assert.Equal(FakeProvider.Reply, answered.GetProperty("text").GetString());
         Assert.Equal("for-pages", JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("model").GetString());
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal("api.openai.com", sent.GetProperty("host").GetString());
@@ -303,6 +305,80 @@ public sealed class WebAgentTests : IDisposable
             .Select(t => t.GetProperty("name").GetString()).Order());
     }
 
+    [Fact]
+    public async Task Asked_for_lines_the_answer_arrives_in_pieces_as_it_is_written_and_then_the_turn()
+    {
+        _model.Chunks = ["The page ", "says ", "**hello**."];
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnLinesAsync(host, """
+            {"messages":[
+              {"role":"user","text":"Summarize tab 1."},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Title: Greeting"}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType?.MediaType);
+        var lines = await LinesAsync(response);
+        Assert.Equal(["The page ", "says ", "**hello**."], lines.SkipLast(1).Select(l => l.GetProperty("text").GetString()));
+        var turn = lines[^1];
+        Assert.Equal("done", turn.GetProperty("status").GetString());
+        Assert.Equal("The page says **hello**.", turn.GetProperty("text").GetString());
+        Assert.Equal("<p>The page says <strong>hello</strong>.</p>\n", turn.GetProperty("html").GetString());
+    }
+
+    [Fact]
+    public async Task Asked_for_lines_a_call_to_a_page_tool_is_the_last_line()
+    {
+        _model.Script.Enqueue(new FunctionCallContent("c1", "read_page", new Dictionary<string, object?> { ["tab"] = "web-1" }));
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Summarize tab 1."}]}""");
+
+        var turn = Assert.Single(await LinesAsync(response));
+        Assert.Equal("requires_action", turn.GetProperty("status").GetString());
+        Assert.Equal("web-1", Assert.Single(turn.GetProperty("toolCalls").EnumerateArray()).GetProperty("arguments").GetProperty("tab").GetString());
+    }
+
+    [Fact]
+    public async Task Asked_for_lines_a_model_that_stops_ends_them_with_a_failed_line_that_says_why()
+    {
+        // The status is already sent once lines begin, so the failure a 503 would carry comes as the last line.
+        await using var provider = await FakeProvider.StartAsync();
+        provider.Refusal = (429, """{"error":{"message":"Slow down.","type":"rate_limit"}}""");
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModel = new CompanyModelOptions(new Uri(provider.Address, "v1/"), "org-model") });
+
+        using var response = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var failed = Assert.Single(await LinesAsync(response));
+        Assert.Equal("failed", failed.GetProperty("status").GetString());
+        Assert.Equal(429, failed.GetProperty("provider").GetProperty("status").GetInt32()); // a rate limit, though IronHive gives it no status
+        Assert.Equal("Slow down.", failed.GetProperty("provider").GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Asked_for_lines_what_is_missing_is_still_said_by_the_status()
+    {
+        await using var host = await RunningHost.StartAsync();
+
+        using var response = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.Conflict, response);
+    }
+
+    private static async Task<HttpResponseMessage> TurnLinesAsync(RunningHost host, string body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/__control/agent/turns") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        return await host.ControlClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+    }
+
+    private static async Task<List<JsonElement>> LinesAsync(HttpResponseMessage response) =>
+        (await response.Content.ReadAsStringAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => JsonDocument.Parse(line).RootElement.Clone()).ToList();
+
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
     [Fact]
@@ -330,7 +406,10 @@ public sealed class WebAgentTests : IDisposable
         await AssertReadsThePageAndAnswersAsync(host);
     }
 
-    /// <summary>Plays the caller's side of the round trip, answering the tools from one fixed page, until the turn is done.</summary>
+    /// <summary>
+    /// Plays the caller's side of the round trip, answering the tools from one fixed page, until the turn is done —
+    /// asking for lines, as the shell does, and saying how many pieces the answer came in.
+    /// </summary>
     private static async Task AssertReadsThePageAndAnswersAsync(RunningHost host)
     {
         using var client = host.ControlClient();
@@ -338,12 +417,16 @@ public sealed class WebAgentTests : IDisposable
         var messages = new List<object> { new { role = "user", text = "What is today's lunch menu on tab web-1?" } };
         JsonElement turn = default;
         var calls = new List<string>();
+        var pieces = 0;
         for (var round = 0; round < 4; round++)
         {
-            using var response = await client.PostAsync("/__control/agent/turns",
-                new StringContent(JsonSerializer.Serialize(new { messages }), Encoding.UTF8, "application/json"), TestContext.Current.CancellationToken);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/__control/agent/turns") { Content = new StringContent(JsonSerializer.Serialize(new { messages }), Encoding.UTF8, "application/json") };
+            request.Headers.Accept.ParseAdd("application/x-ndjson");
+            using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
             HttpAssert.Status(HttpStatusCode.OK, response);
-            turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.Clone();
+            var lines = await LinesAsync(response);
+            pieces += lines.Count - 1;
+            turn = lines[^1];
             if (turn.GetProperty("status").GetString() == "done") break;
             var toolCalls = turn.GetProperty("toolCalls").EnumerateArray().ToList();
             messages.Add(new { role = "assistant", toolCalls = toolCalls.Select(c => new { id = c.GetProperty("id").GetString(), name = c.GetProperty("name").GetString(), arguments = c.GetProperty("arguments") }) });
@@ -357,7 +440,7 @@ public sealed class WebAgentTests : IDisposable
             }
         }
 
-        TestContext.Current.SendDiagnosticMessage($"calls={string.Join(",", calls)} status={turn.GetProperty("status")} model={turn.GetProperty("model")}");
+        TestContext.Current.SendDiagnosticMessage($"calls={string.Join(",", calls)} status={turn.GetProperty("status")} model={turn.GetProperty("model")} pieces={pieces}");
         Assert.Equal("done", turn.GetProperty("status").GetString());
         Assert.Contains("read_page", calls);
         Assert.Contains("kimchi", turn.GetProperty("text").GetString(), StringComparison.OrdinalIgnoreCase);
