@@ -172,10 +172,7 @@ public sealed partial class AppSources : IDisposable
             var at = sources.FindIndex(s => s.Name == name);
             if (at < 0) return (RecordOutcome.Unknown, null);
             var declared = sources[at];
-            if (declared.Grant is not { } grant) return (RecordOutcome.NotGranted, null);
-            if (!IsUnder(source, grant.Site)) return (RecordOutcome.OutsideGrant, null);
-            if (!columns.SequenceEqual(declared.Rule.Columns, StringComparer.Ordinal) || rows.Any(r => r.Count != columns.Count))
-                return (RecordOutcome.ShapeMismatch, null);
+            if (Check(declared.Rule, declared.Grant, source, columns, rows) is not RecordOutcome.Recorded and var refused) return (refused, null);
 
             var reading = new SourceReading(
                 _clock.GetUtcNow(),
@@ -190,6 +187,20 @@ public sealed partial class AppSources : IDisposable
         {
             _lock.Release();
         }
+    }
+
+    /// <summary>
+    /// Whether a reading would be kept for a source with <paramref name="rule"/> and <paramref name="grant"/> —
+    /// <see cref="RecordOutcome.Recorded"/> — or why not, without keeping anything: the check
+    /// <see cref="RecordAsync"/> makes, for checking before a source exists.
+    /// </summary>
+    public static RecordOutcome Check(SourceRule rule, SourceGrant? grant, string source, IReadOnlyList<string> columns, IReadOnlyList<IReadOnlyList<string>> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+        if (grant is null) return RecordOutcome.NotGranted;
+        if (!IsUnder(source, grant.Site)) return RecordOutcome.OutsideGrant;
+        if (!columns.SequenceEqual(rule.Columns, StringComparer.Ordinal) || rows.Any(r => r.Count != columns.Count)) return RecordOutcome.ShapeMismatch;
+        return RecordOutcome.Recorded;
     }
 
     /// <summary>The readings of source <paramref name="name"/>, oldest first, or <see langword="null"/> when there is no such source.</summary>

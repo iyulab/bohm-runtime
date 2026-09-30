@@ -30,13 +30,17 @@ internal static class SourcesServing
             return;
         }
 
-        await ServeAsync(context, app.Sources).ConfigureAwait(false);
+        await ServeAsync(context, app.Sources.ReadingsAsync).ConfigureAwait(false);
     }
 
     /// <summary>Serves a read to a preview of the application: its sources as they are, the same way.</summary>
-    public static Task ServeToPreviewAsync(HttpContext context, OpenApp app) => ServeAsync(context, app.Sources);
+    public static Task ServeToPreviewAsync(HttpContext context, OpenApp app) => ServeAsync(context, app.Sources.ReadingsAsync);
 
-    private static async Task ServeAsync(HttpContext context, AppSources sources)
+    /// <summary>Serves a read to a preview of a proposed new application: each source's rows as just read.</summary>
+    public static Task ServeToPreviewAsync(HttpContext context, IReadOnlyDictionary<string, SourceReading> readings) =>
+        ServeAsync(context, (name, _) => Task.FromResult<IReadOnlyList<SourceReading>?>(readings.TryGetValue(name, out var reading) ? [reading] : null));
+
+    private static async Task ServeAsync(HttpContext context, Func<string, CancellationToken, Task<IReadOnlyList<SourceReading>?>> readingsOf)
     {
         var request = context.Request;
         var response = context.Response;
@@ -53,7 +57,7 @@ internal static class SourcesServing
             [var n, "readings"] => (n, true),
             _ => (null, false),
         };
-        if (name is null || await sources.ReadingsAsync(name, context.RequestAborted).ConfigureAwait(false) is not { } readings)
+        if (name is null || await readingsOf(name, context.RequestAborted).ConfigureAwait(false) is not { } readings)
         {
             response.StatusCode = StatusCodes.Status404NotFound;
             return;

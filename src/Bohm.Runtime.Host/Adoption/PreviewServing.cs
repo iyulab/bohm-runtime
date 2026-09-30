@@ -23,7 +23,7 @@ internal static class PreviewServing
         var previews = context.RequestServices.GetRequiredService<AppPreviews>();
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
         if (previews.Find(token) is not { } preview
-            || await catalog.GetAsync(preview.AppId, context.RequestAborted).ConfigureAwait(false) is not { ArchivedAt: null })
+            || preview.AppId is { } previewed && await catalog.GetAsync(previewed, context.RequestAborted).ConfigureAwait(false) is not { ArchivedAt: null })
         {
             response.StatusCode = StatusCodes.Status404NotFound;
             return;
@@ -35,7 +35,8 @@ internal static class PreviewServing
 
         var request = context.Request;
         var path = request.Path;
-        var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(preview.AppId).ConfigureAwait(false);
+        // A proposed new application has none behind it: no data, no cached code, the rows just read for its sources.
+        var app = preview.AppId is { } appId ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false) : null;
         if (path == AdoptedAppServing.StoragePath)
         {
             await DropWritesAsync(context).ConfigureAwait(false);
@@ -56,13 +57,14 @@ internal static class PreviewServing
 
         if (path.StartsWithSegments("/__bohm/asset"))
         {
-            await AssetServing.ServeCachedAsync(context, app).ConfigureAwait(false);
+            if (app is null) response.StatusCode = StatusCodes.Status404NotFound;
+            else await AssetServing.ServeCachedAsync(context, app).ConfigureAwait(false);
             return;
         }
 
         if (path.StartsWithSegments(SourcesServing.PathPrefix))
         {
-            await SourcesServing.ServeToPreviewAsync(context, app).ConfigureAwait(false);
+            await (app is null ? SourcesServing.ServeToPreviewAsync(context, preview.Readings) : SourcesServing.ServeToPreviewAsync(context, app)).ConfigureAwait(false);
             return;
         }
 
@@ -72,7 +74,9 @@ internal static class PreviewServing
             return;
         }
 
-        var (body, charset) = AdoptedAppServing.InjectShim(context, preview.Html, app, preview.AppId, "preview");
+        var (body, charset) = app is null
+            ? AdoptedAppServing.InjectShim(context, preview.Html, "preview", "preview")
+            : AdoptedAppServing.InjectShim(context, preview.Html, app, preview.AppId!, "preview");
         response.Headers.CacheControl = "no-store";
         response.ContentType = $"text/html; charset={charset}";
         response.ContentLength = body.Length;

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Bohm.Runtime.Sources;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -6,7 +7,8 @@ namespace Bohm.Runtime.Host.Adoption;
 /// Proposed documents held for a look before they are taken in. Each is served from its own
 /// throwaway origin, <c>http://pv-&lt;token&gt;.localhost:&lt;port&gt;/</c> — never the application's own —
 /// with the application's data to read and nowhere to write it, and collects what went wrong while
-/// it loaded. Held in memory only, for a short while.
+/// it loaded. A proposed new application has a preview too, with no application behind it: no data, and
+/// the rows just read for its sources in place of theirs. Held in memory only, for a short while.
 /// </summary>
 internal sealed class AppPreviews(TimeProvider time)
 {
@@ -21,12 +23,16 @@ internal sealed class AppPreviews(TimeProvider time)
     private readonly Lock _lock = new();
     private readonly Dictionary<string, Preview> _previews = new(StringComparer.Ordinal);
 
-    public sealed class Preview(string appId, byte[] html, DateTimeOffset created)
+    public sealed class Preview(string? appId, byte[] html, DateTimeOffset created, IReadOnlyDictionary<string, SourceReading>? readings = null)
     {
         private readonly List<string> _errors = [];
         private readonly List<string> _blocked = [];
 
-        public string AppId { get; } = appId;
+        /// <summary>The application previewed, or <see langword="null"/> for a proposed new one.</summary>
+        public string? AppId { get; } = appId;
+
+        /// <summary>For a proposed new application, each source's rows as just read — what it shows until taken in.</summary>
+        public IReadOnlyDictionary<string, SourceReading> Readings { get; } = readings ?? new Dictionary<string, SourceReading>();
         public byte[] Html { get; } = html;
         public DateTimeOffset Created { get; } = created;
 
@@ -59,7 +65,12 @@ internal sealed class AppPreviews(TimeProvider time)
     }
 
     /// <summary>Holds <paramref name="html"/> as a preview of <paramref name="appId"/> and returns its token.</summary>
-    public string Create(string appId, byte[] html)
+    public string Create(string appId, byte[] html) => Hold(appId, html, null);
+
+    /// <summary>Holds <paramref name="html"/> as a preview of a proposed new application whose sources read <paramref name="readings"/>, and returns its token.</summary>
+    public string CreateNew(byte[] html, IReadOnlyDictionary<string, SourceReading> readings) => Hold(null, html, readings);
+
+    private string Hold(string? appId, byte[] html, IReadOnlyDictionary<string, SourceReading>? readings)
     {
         var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
         lock (_lock)
@@ -68,7 +79,7 @@ internal sealed class AppPreviews(TimeProvider time)
             // The oldest goes first; a caller that never removes its previews cannot grow this.
             while (_previews.Count >= MaxPreviews)
                 _previews.Remove(_previews.MinBy(p => p.Value.Created).Key);
-            _previews[token] = new Preview(appId, html, time.GetUtcNow());
+            _previews[token] = new Preview(appId, html, time.GetUtcNow(), readings);
         }
         return token;
     }
@@ -82,10 +93,10 @@ internal sealed class AppPreviews(TimeProvider time)
         }
     }
 
-    /// <summary>The preview of <paramref name="appId"/> named by <paramref name="token"/>, if there is one.</summary>
-    public Preview? Find(string appId, string token) => Find(token) is { } preview && preview.AppId == appId ? preview : null;
+    /// <summary>The preview of <paramref name="appId"/> — or, for <see langword="null"/>, of a proposed new application — named by <paramref name="token"/>, if there is one.</summary>
+    public Preview? Find(string? appId, string token) => Find(token) is { } preview && preview.AppId == appId ? preview : null;
 
-    public bool Remove(string appId, string token)
+    public bool Remove(string? appId, string token)
     {
         lock (_lock)
             return _previews.TryGetValue(token, out var preview) && preview.AppId == appId && _previews.Remove(token);

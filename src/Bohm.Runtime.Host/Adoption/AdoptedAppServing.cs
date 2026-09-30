@@ -198,11 +198,20 @@ internal static class AdoptedAppServing
     /// </summary>
     internal static (byte[] Body, string Charset) InjectShim(HttpContext context, byte[] html, OpenApp app, string appId, string tab)
     {
-        var boot = JsonSerializer.Serialize(new Boot(tab, app.Storage.GetItems(), Llm.LlmProviders.Placeholder(appId),
+        var boot = BootScript(context, app.Storage.GetItems(), appId, tab);
+        return ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets), boot, before: AssetServing.ImportMap(app.Assets));
+    }
+
+    /// <summary>The injected script for a document with no application behind it yet — no data, no cached code.</summary>
+    internal static (byte[] Body, string Charset) InjectShim(HttpContext context, byte[] html, string placeholderId, string tab) =>
+        ShimInjector.Inject(html, BootScript(context, new Dictionary<string, string>(), placeholderId, tab));
+
+    private static string BootScript(HttpContext context, IReadOnlyDictionary<string, string> items, string appId, string tab)
+    {
+        var boot = JsonSerializer.Serialize(new Boot(tab, items, Llm.LlmProviders.Placeholder(appId),
             Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value,
             context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
-        return ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets),
-            ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal), before: AssetServing.ImportMap(app.Assets));
+        return ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal);
     }
 
     /// <param name="LineOffset">Lines the injected script adds before the document's own first line.</param>
