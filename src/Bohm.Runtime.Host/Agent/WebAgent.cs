@@ -49,7 +49,7 @@ internal static class WebAgent
             "Lists what can be clicked or filled in one open tab, each with a ref (e1, e2, ...). Refs from an earlier snapshot no longer work.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("click",
-            "Clicks an element by its ref from the latest snapshot_page of that tab, then returns the new snapshot. A click that submits, pays, posts, sends or deletes first asks the person.",
+            "Clicks an element by its ref from the latest snapshot_page of that tab, then returns the new snapshot. Before a click that submits, pays, posts, sends or deletes, the shell itself asks the person to confirm, so when they asked for it, call click instead of asking them again in your answer.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"A ref such as e3."}},"required":["tab","ref"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("type",
             "Replaces the text of a field by its ref from the latest snapshot_page of that tab, without pressing Enter, then returns the new snapshot.",
