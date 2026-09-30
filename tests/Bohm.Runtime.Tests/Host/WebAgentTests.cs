@@ -129,6 +129,54 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_new_call_that_repeats_an_earlier_id_goes_back_to_the_host_under_a_free_one()
+    {
+        _model.Script.Enqueue(new FunctionCallContent("c1", "read_page", new Dictionary<string, object?> { ["tab"] = "web-2" }));
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """
+            {"messages":[
+              {"role":"user","text":"What is for lunch?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Lunch: stew"},
+              {"role":"assistant","text":"Stew."},
+              {"role":"user","text":"And tomorrow?"}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var call = Assert.Single(JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("toolCalls").EnumerateArray());
+        Assert.Equal("c1-2", call.GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Each_page_result_reaches_the_organizations_server_as_it_was_read_even_when_the_model_reused_a_call_id()
+    {
+        await using var server = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModel = new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model") });
+
+        using var response = await TurnAsync(host, """
+            {"messages":[
+              {"role":"user","text":"What is for lunch?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Lunch: stew"},
+              {"role":"assistant","text":"Stew."},
+              {"role":"user","text":"And tomorrow?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-2"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Tomorrow: noodles"}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        using var sent = JsonDocument.Parse(Assert.Single(server.Received).Body);
+        var tools = sent.RootElement.GetProperty("messages").EnumerateArray().Where(m => m.GetProperty("role").GetString() == "tool")
+            .Select(m => m.GetProperty("content").ToString()).ToList();
+        Assert.Equal(2, tools.Count);
+        Assert.Contains("Lunch: stew", tools[0], StringComparison.Ordinal);
+        Assert.Contains("Tomorrow: noodles", tools[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_follow_up_question_carries_the_conversation_with_one_system_prompt()
     {
         _model.Reply = "Yes.";
