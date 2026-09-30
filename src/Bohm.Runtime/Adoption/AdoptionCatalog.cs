@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Bohm.Runtime.Assets;
+using Bohm.Runtime.Sources;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
 
@@ -15,7 +16,8 @@ namespace Bohm.Runtime.Adoption;
 /// everything needed to move it elsewhere:
 /// <c>app.json</c> (the record), <c>app.html</c> (the adopted bytes, never modified),
 /// <c>storage/</c> (its data, see <see cref="AppStorage"/>), <c>usage.ndjson</c> (its local
-/// usage record, see <see cref="UsageLog"/>) and <c>revisions/</c> (see <see cref="ReviseAsync"/>).
+/// usage record, see <see cref="UsageLog"/>), <c>revisions/</c> (see <see cref="ReviseAsync"/>) and,
+/// for an application that reads web pages, <c>sources.json</c> and <c>sources/</c> (see <see cref="AppSources"/>).
 /// </summary>
 /// <remarks>
 /// The catalog does not decide what to do when the same file — or another version of it — is
@@ -38,6 +40,7 @@ public sealed partial class AdoptionCatalog
     private const string HtmlFile = "app.html";
     private const string StorageDirectory = "storage";
     private const string UsageFile = "usage.ndjson";
+    private const string AssetsDirectory = "assets";
     private const string StagingPrefix = ".staging-";
     private const string RevisionsDirectory = "revisions";
     private const string RevisionFile = "revision.json";
@@ -243,7 +246,16 @@ public sealed partial class AdoptionCatalog
     /// <returns>The application, or <see langword="null"/> for an unknown id.</returns>
     /// <exception cref="IOException"><paramref name="target"/> already exists, or its parent does not.</exception>
     /// <remarks>The copy is made under a temporary name beside the target and renamed at the end, so a half-made copy is never where the person looks.</remarks>
-    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage = null, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage = null, CancellationToken cancellationToken = default) =>
+        await ExportAsync(id, target, openStorage, withData: true, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Exports application <paramref name="id"/> as <see cref="ExportAsync(string, string, AppStorage?, CancellationToken)"/> does, or —
+    /// with <paramref name="withData"/> false — only what makes it the application: its record, its code in
+    /// every revision, the code it loads from other hosts and the rules of its sources. Its data, what it read,
+    /// its usage record and the permissions to read are left out; whoever takes it in starts with none of them.
+    /// </summary>
+    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage, bool withData, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(target);
         if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
@@ -256,7 +268,8 @@ public sealed partial class AdoptionCatalog
         var partial = target + ".partial-" + Guid.NewGuid().ToString("n")[..8];
         try
         {
-            await CopyFolderAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
+            if (withData) await CopyFolderAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
+            else await CopyWithoutDataAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
             Directory.Move(partial, target);
         }
         catch
@@ -311,18 +324,51 @@ public sealed partial class AdoptionCatalog
         return app;
     }
 
+    /// <summary>
+    /// Copies what makes the application and nothing it gathered — a list of what to take, so a file
+    /// added to the folder later stays behind until someone decides it belongs here.
+    /// </summary>
+    private static async Task CopyWithoutDataAsync(string from, string to, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(to);
+        foreach (var file in new[] { RecordFile, HtmlFile })
+            await CopyFileAsync(Path.Combine(from, file), Path.Combine(to, file), cancellationToken).ConfigureAwait(false);
+
+        var revisions = Path.Combine(from, RevisionsDirectory);
+        if (Directory.Exists(revisions))
+        {
+            foreach (var revision in Directory.EnumerateDirectories(revisions))
+            {
+                var copy = Path.Combine(to, RevisionsDirectory, Path.GetFileName(revision));
+                Directory.CreateDirectory(copy);
+                foreach (var file in new[] { HtmlFile, RevisionFile })
+                    if (File.Exists(Path.Combine(revision, file)))
+                        await CopyFileAsync(Path.Combine(revision, file), Path.Combine(copy, file), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        if (Directory.Exists(Path.Combine(from, AssetsDirectory)))
+            await CopyFolderAsync(Path.Combine(from, AssetsDirectory), Path.Combine(to, AssetsDirectory), cancellationToken).ConfigureAwait(false);
+
+        using var sources = AppSources.Open(from);
+        await sources.CopyRulesAsync(to, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task CopyFileAsync(string from, string to, CancellationToken cancellationToken)
+    {
+        // Opened for reading while the runtime may still append (the usage record, a journal):
+        // share write so the copy never blocks or breaks the application.
+        await using var source = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        await using var destination = new FileStream(to, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+        destination.Flush(flushToDisk: true);
+    }
+
     private static async Task CopyFolderAsync(string from, string to, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(to);
         foreach (var file in Directory.EnumerateFiles(from))
-        {
-            // Opened for reading while the runtime may still append (the usage record, a journal):
-            // share write so the copy never blocks or breaks the application.
-            await using var source = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            await using var destination = new FileStream(Path.Combine(to, Path.GetFileName(file)), FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
-            destination.Flush(flushToDisk: true);
-        }
+            await CopyFileAsync(file, Path.Combine(to, Path.GetFileName(file)), cancellationToken).ConfigureAwait(false);
 
         foreach (var folder in Directory.EnumerateDirectories(from))
             await CopyFolderAsync(folder, Path.Combine(to, Path.GetFileName(folder)), cancellationToken).ConfigureAwait(false);
@@ -811,7 +857,15 @@ public sealed partial class AdoptionCatalog
     {
         RequireValidId(id);
         if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
-        return AssetCache.Open(Path.Combine(AppDirectory(id), "assets"));
+        return AssetCache.Open(Path.Combine(AppDirectory(id), AssetsDirectory));
+    }
+
+    /// <summary>Opens the sources of application <paramref name="id"/> — the web pages it reads and what was read.</summary>
+    public AppSources OpenSources(string id)
+    {
+        RequireValidId(id);
+        if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
+        return AppSources.Open(AppDirectory(id), _clock);
     }
 
     /// <summary>Opens the local usage record of application <paramref name="id"/>.</summary>

@@ -28,6 +28,11 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/keep</c></term><description>Keeps an unsaved result: it becomes one of the person's applications, with its data. 404 for an unknown id.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/left</c></term><description>The person left an unsaved result (closed its tab): its retention counts from now, and serving its page again ends it. Nothing changes for a saved application.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/export?data=leave</c></term><description>Copies only what makes the application — its record, its code in every revision, the code it loads from other hosts and its sources' rules — leaving out its data, what its sources read, its usage record and the permissions to read. Whoever takes it in starts with none of them.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
+/// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
+/// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record. 400 when it is not an application folder; 409 when the application is already here (nothing is replaced).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model }</c>; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops.</description></item>
@@ -301,7 +306,8 @@ internal static class ControlPlane
                     var open = await catalog.GetAsync(exportId, cancel).ConfigureAwait(false) is { ArchivedAt: null }
                         ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(exportId).ConfigureAwait(false)
                         : null;
-                    exported = await catalog.ExportAsync(exportId, target, open?.Storage, cancel).ConfigureAwait(false);
+                    var withData = request.Query["data"] != "leave";
+                    exported = await catalog.ExportAsync(exportId, target, open?.Storage, withData, cancel).ConfigureAwait(false);
                 }
                 catch (IOException)
                 {
@@ -316,6 +322,16 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, new ExportedView(exported.Id, Path.GetFullPath(target)), cancel).ConfigureAwait(false);
+                break;
+
+            case (_, ["apps", var sourcesId, "sources", .. var sourcesRest]):
+                if (await catalog.GetAsync(sourcesId, cancel).ConfigureAwait(false) is not { ArchivedAt: null })
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await SourcesServing.HandleControlAsync(context, await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(sourcesId).ConfigureAwait(false), sourcesRest).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var removeId]):
