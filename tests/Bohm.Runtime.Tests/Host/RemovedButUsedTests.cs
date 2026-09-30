@@ -31,6 +31,26 @@ public sealed class RemovedButUsedTests
     }
 
     [Fact]
+    public void Code_drops_the_body_of_a_regular_expression_literal_but_keeps_a_division()
+    {
+        var code = EditProposals.CodeOnly("const m = s.match(/(\\d+)\\s*[a-z/]반/g); const r = total / d / 2; if (/^\\d+$/.test(x)) go(d);");
+        Assert.DoesNotContain("\\d", code, StringComparison.Ordinal);          // the pattern is not code
+        Assert.DoesNotContain("[a-z", code, StringComparison.Ordinal);         // a slash inside a class does not end it
+        Assert.Contains("total / d / 2", code, StringComparison.Ordinal);      // a division after a name stays
+        Assert.Contains(".test(x)) go(d);", code, StringComparison.Ordinal);   // what follows the literal stays
+    }
+
+    [Fact]
+    public void A_letter_of_a_regular_expression_escape_is_not_a_use_of_a_removed_name() =>
+        // A removed callback's parameter `d`, and `\d` in a pattern that stayed (cycle-379 — a finished move was held back).
+        Assert.Empty(Check("snap.forEach((d) => list.push(d.data()));", "",
+            "<script>const n = str.match(/(\\d+)\\s*반/); if (/^\\d+$/.test(str)) save(n);</script>"));
+
+    [Fact]
+    public void A_removed_name_used_after_a_regular_expression_literal_is_still_found() =>
+        Assert.Equal(["db"], Check("let db;", "", "<script>if (/^a/.test(s)) save(db);</script>"));
+
+    [Fact]
     public void A_condition_in_a_removed_piece_does_not_make_its_keywords_names() =>
         Assert.Empty(Check("if (typeof db !== 'undefined') { load(); }\nready.then(async () => { await go(); });", "",
             "<script>if (typeof crypto !== 'undefined') {}\nconst f = async () => {};</script>"));

@@ -116,6 +116,10 @@ internal static partial class EditProposals
         sign-in. Keep everything else as it is. Keep calling replace until no use of the database is
         left; do not stop to say what you will do next.
 
+        A script of type "module" runs after every other script on the page, even one below it. If
+        code in a plain script uses what your replacement defines, put the replacement in a plain
+        script before that code, not in the module the database was imported in.
+
         """ + Closing + "\n\n" + AppContract;
 
     /// <summary>
@@ -212,7 +216,8 @@ internal static partial class EditProposals
     /// Script text with comments, quoted strings and the fixed text of template literals blanked out —
     /// what is left is code, including the expressions inside a template's <c>${…}</c>. A plain scan of
     /// the characters: good enough to tell a use of a name from the same word in text, which is all the
-    /// check needs (a regular-expression literal is read as code).
+    /// check needs. The body of a regular-expression literal is not code either: the letter after a
+    /// backslash in <c>/\d+/</c> is not a use of a name <c>d</c>.
     /// </summary>
     internal static string CodeOnly(string script)
     {
@@ -226,6 +231,7 @@ internal static partial class EditProposals
             if (c == '/' && next == '/') { while (i < script.Length && script[i] != '\n') i++; code.Append('\n'); continue; }
             if (c == '/' && next == '*') { var end = script.IndexOf("*/", i + 2, StringComparison.Ordinal); i = end < 0 ? script.Length : end + 1; code.Append(' '); continue; }
             if (c is '\'' or '"') { i = SkipQuoted(script, i, c); code.Append(' '); continue; }
+            if (c == '/' && StartsRegex(code) && RegexEnd(script, i) is var regexEnd and > 0) { i = regexEnd; code.Append(' '); continue; }
             if (c == '`' || (c == '}' && templates.Count > 0 && templates.Peek() == depth))
             {
                 if (c == '}') templates.Pop();
@@ -245,6 +251,53 @@ internal static partial class EditProposals
         }
 
         return code.ToString();
+    }
+
+    /// <summary>
+    /// Whether a slash begins a regular-expression literal rather than a division: the usual reading
+    /// by what comes before it — nothing, an operator or punctuation, or a keyword that takes an
+    /// expression. After a name, a number or a closing bracket it divides.
+    /// </summary>
+    private static bool StartsRegex(StringBuilder code)
+    {
+        var end = code.Length - 1;
+        while (end >= 0 && char.IsWhiteSpace(code[end])) end--;
+        if (end < 0) return true;
+        var last = code[end];
+        if (!(char.IsLetterOrDigit(last) || last is '_' or '$')) return "(,=:[!&|?{};+-*%<>~^".Contains(last, StringComparison.Ordinal);
+        var start = end;
+        while (start > 0 && (char.IsLetterOrDigit(code[start - 1]) || code[start - 1] is '_' or '$')) start--;
+        return RegexAfter.Contains(code.ToString(start, end - start + 1));
+    }
+
+    private static readonly HashSet<string> RegexAfter = new(StringComparer.Ordinal)
+    {
+        "return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await", "instanceof",
+    };
+
+    /// <summary>
+    /// The index of the flags' last character of the regular-expression literal starting at
+    /// <paramref name="start"/> — a slash inside a character class does not end it — or 0 when the
+    /// line ends first, which means the slash was not one after all.
+    /// </summary>
+    private static int RegexEnd(string script, int start)
+    {
+        var inClass = false;
+        for (var i = start + 1; i < script.Length; i++)
+        {
+            var c = script[i];
+            if (c == '\n') return 0;
+            if (c == '\\') { i++; continue; }
+            if (c == '[') inClass = true;
+            else if (c == ']') inClass = false;
+            else if (c == '/' && !inClass)
+            {
+                while (i + 1 < script.Length && char.IsAsciiLetter(script[i + 1])) i++;
+                return i;
+            }
+        }
+
+        return 0;
     }
 
     private static int SkipQuoted(string script, int start, char quote)
