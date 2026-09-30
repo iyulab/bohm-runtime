@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -66,7 +67,28 @@ public sealed class FakeProvider : IAsyncDisposable
                 return;
             }
 
-            // OpenAI's own API: the Responses shape — output items, each message's content parts.
+            // OpenAI's own API: the Responses shape — output items, each message's content parts; streamed as its events.
+            if (context.Request.Path.Value?.EndsWith("/v1/responses", StringComparison.Ordinal) == true && body.Contains("\"stream\":true", StringComparison.Ordinal))
+            {
+                context.Response.ContentType = "text/event-stream";
+                var message = $$$"""{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"{{{Reply}}}","annotations":[]}]}""";
+                string[] events =
+                [
+                    """{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"model-x","output":[]}}""",
+                    """{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}""",
+                    .. Reply.Split(' ').Select((word, i) => $$$"""{"type":"response.output_text.delta","sequence_number":{{{2 + i}}},"item_id":"msg_1","output_index":0,"content_index":0,"delta":"{{{(i == 0 ? "" : " ") + word}}}"}"""),
+                    $$$$"""{"type":"response.output_item.done","sequence_number":90,"output_index":0,"item":{{{{message}}}}}""",
+                    $$$$"""{"type":"response.completed","sequence_number":91,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"model-x","output":[{{{{message}}}}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}""",
+                ];
+                foreach (var data in events)
+                {
+                    await context.Response.WriteAsync($"event: {JsonDocument.Parse(data).RootElement.GetProperty("type").GetString()}\ndata: {data}\n\n");
+                    await context.Response.Body.FlushAsync();
+                }
+
+                return;
+            }
+
             if (context.Request.Path.Value?.EndsWith("/v1/responses", StringComparison.Ordinal) == true)
             {
                 context.Response.ContentType = "application/json";
@@ -74,7 +96,28 @@ public sealed class FakeProvider : IAsyncDisposable
                 return;
             }
 
-            // Anthropic's own API: the Messages shape — content blocks, a stop reason, and usage.
+            // Anthropic's own API: the Messages shape — content blocks, a stop reason, and usage; streamed as its events.
+            if (context.Request.Path.Value?.EndsWith("/v1/messages", StringComparison.Ordinal) == true && body.Contains("\"stream\":true", StringComparison.Ordinal))
+            {
+                context.Response.ContentType = "text/event-stream";
+                string[] events =
+                [
+                    """{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"model-x","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}""",
+                    """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""",
+                    .. Reply.Split(' ').Select((word, i) => $$$"""{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{{{(i == 0 ? "" : " ") + word}}}"}}"""),
+                    """{"type":"content_block_stop","index":0}""",
+                    """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}""",
+                    """{"type":"message_stop"}""",
+                ];
+                foreach (var data in events)
+                {
+                    await context.Response.WriteAsync($"event: {JsonDocument.Parse(data).RootElement.GetProperty("type").GetString()}\ndata: {data}\n\n");
+                    await context.Response.Body.FlushAsync();
+                }
+
+                return;
+            }
+
             if (context.Request.Path.Value?.EndsWith("/v1/messages", StringComparison.Ordinal) == true)
             {
                 context.Response.ContentType = "application/json";

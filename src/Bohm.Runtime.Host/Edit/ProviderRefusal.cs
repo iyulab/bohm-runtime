@@ -28,7 +28,10 @@ internal sealed record ProviderRefusal(int Status, string? Message)
                 return new ProviderRefusal(client.StatusCode, Bounded(client.Message));
             if (e is Google.GenAI.ServerError { StatusCode: > 0 } server)
                 return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
-            // An OpenAI-compatible server through IronHive: the refusal's status, and its own message already read out of the body.
+            // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
+            if (e is IronHive.Abstractions.Exceptions.RateLimitException)
+                return new ProviderRefusal(429, Bounded(e.Message));
+            // Any other refusal: its status, and its own message already read out of the body.
             if (e is HttpRequestException { StatusCode: { } status })
                 return new ProviderRefusal((int)status, Bounded(e.Message));
         }

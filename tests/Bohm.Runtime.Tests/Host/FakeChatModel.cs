@@ -10,7 +10,8 @@ internal sealed class FakeChatModel : IChatClient
 
     public string Reply { get; set; } = "ok";
 
-    public IReadOnlyList<string> Chunks { get; set; } = ["ok"];
+    /// <summary>The pieces a streamed answer comes in — <see cref="Reply"/> in one piece when not set.</summary>
+    public IReadOnlyList<string>? Chunks { get; set; }
 
     public FunctionCallContent? Call { get; set; }
 
@@ -52,9 +53,21 @@ internal sealed class FakeChatModel : IChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         Calls.Add(([.. messages], options));
-        foreach (var chunk in Chunks)
+        if (Failure is not null) throw Failure;
+        // A scripted answer or a tool call streams as one update, as a client that assembles the call does.
+        AIContent? whole = Script.TryDequeue(out var next) ? next : Call;
+        if (whole is not null)
         {
             await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [whole]) { ModelId = "local-test", ResponseId = "r-1" };
+            yield return new ChatResponseUpdate { FinishReason = whole is FunctionCallContent ? ChatFinishReason.ToolCalls : ChatFinishReason.Stop, ModelId = "local-test", ResponseId = "r-1" };
+            yield break;
+        }
+
+        foreach (var chunk in Chunks ?? [Reply])
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
             yield return new ChatResponseUpdate(ChatRole.Assistant, chunk) { ModelId = "local-test", ResponseId = "r-1" };
         }
 
