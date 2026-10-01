@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,7 +16,7 @@ namespace Bohm.Runtime.Adoption;
 /// The adopted applications under one data root. Each lives in its own folder, which is
 /// everything needed to move it elsewhere:
 /// <c>app.json</c> (the record), <c>app.html</c> (the adopted bytes, never modified),
-/// <c>storage/</c> (its data, see <see cref="AppStorage"/>), <c>usage.ndjson</c> (its local
+/// <c>storage/</c> (its data, see <see cref="KeyValueStore"/>), <c>usage.ndjson</c> (its local
 /// usage record, see <see cref="UsageLog"/>), <c>revisions/</c> (see <see cref="ReviseAsync"/>) and,
 /// for an application that reads web pages, <c>sources.json</c> and <c>sources/</c> (see <see cref="AppSources"/>).
 /// </summary>
@@ -246,16 +247,16 @@ public sealed partial class AdoptionCatalog
     /// <returns>The application, or <see langword="null"/> for an unknown id.</returns>
     /// <exception cref="IOException"><paramref name="target"/> already exists, or its parent does not.</exception>
     /// <remarks>The copy is made under a temporary name beside the target and renamed at the end, so a half-made copy is never where the person looks.</remarks>
-    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage = null, CancellationToken cancellationToken = default) =>
+    public async Task<AdoptedApp?> ExportAsync(string id, string target, KeyValueStore? openStorage = null, CancellationToken cancellationToken = default) =>
         await ExportAsync(id, target, openStorage, withData: true, cancellationToken).ConfigureAwait(false);
 
     /// <summary>
-    /// Exports application <paramref name="id"/> as <see cref="ExportAsync(string, string, AppStorage?, CancellationToken)"/> does, or —
+    /// Exports application <paramref name="id"/> as <see cref="ExportAsync(string, string, KeyValueStore?, CancellationToken)"/> does, or —
     /// with <paramref name="withData"/> false — only what makes it the application: its record, its code in
     /// every revision, the code it loads from other hosts and the rules of its sources. Its data, what it read,
     /// its usage record and the permissions to read are left out; whoever takes it in starts with none of them.
     /// </summary>
-    public async Task<AdoptedApp?> ExportAsync(string id, string target, AppStorage? openStorage, bool withData, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp?> ExportAsync(string id, string target, KeyValueStore? openStorage, bool withData, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(target);
         if (await GetAsync(id, cancellationToken).ConfigureAwait(false) is not { } app) return null;
@@ -478,7 +479,7 @@ public sealed partial class AdoptionCatalog
                 if (paths.Any(p => SameName(p, originalPath))) { matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameName)); continue; }
             }
 
-            var keys = await AppStorage.PeekKeysAsync(Path.Combine(AppDirectory(app.Id), StorageDirectory), cancellationToken).ConfigureAwait(false);
+            var keys = await KeyValueStore.PeekKeysAsync(Path.Combine(AppDirectory(app.Id), StorageDirectory), AppStorageFormat.Options(), cancellationToken).ConfigureAwait(false);
             source ??= Encoding.UTF8.GetString(html.Span);
             if (UsesStoredKeys(source, keys)) matches.Add(new AdoptionMatch(app, AdoptionMatchKind.SameStoredKeys));
         }
@@ -569,7 +570,7 @@ public sealed partial class AdoptionCatalog
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">The bytes are the revision already in use.</exception>
-    public async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, AppStorage storage, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
@@ -625,7 +626,7 @@ public sealed partial class AdoptionCatalog
     /// as <c>revisions/&lt;n&gt;/data-undone.json</c>, and it also becomes a previous snapshot of the storage.
     /// </summary>
     /// <exception cref="InvalidOperationException">There is no earlier revision to go back to.</exception>
-    public async Task<AdoptedApp> RevertAsync(string id, AppStorage storage, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp> RevertAsync(string id, KeyValueStore storage, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
@@ -669,7 +670,7 @@ public sealed partial class AdoptionCatalog
                 UndoneData? undone = null;
                 if (File.Exists(Path.Combine(folder, DataUndoneFile)))
                 {
-                    now ??= await AppStorage.PeekAsync(Path.Combine(AppDirectory(id), StorageDirectory), cancellationToken).ConfigureAwait(false);
+                    now ??= await KeyValueStore.PeekAsync(Path.Combine(AppDirectory(id), StorageDirectory), AppStorageFormat.Options(), cancellationToken).ConfigureAwait(false);
                     undone = await UndoneStateAsync(app, number, now, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -692,7 +693,7 @@ public sealed partial class AdoptionCatalog
     /// </summary>
     /// <remarks><paramref name="storage"/> must be this application's open storage — the one writer of its files.</remarks>
     /// <exception cref="InvalidOperationException">The kept data is not <see cref="UndoneData.Importable"/>.</exception>
-    public async Task<AdoptedApp> ImportUndoneAsync(string id, int revision, AppStorage storage, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp> ImportUndoneAsync(string id, int revision, KeyValueStore storage, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(storage);
         var app = await UndoneAppAsync(id, revision, storage, UndoneData.Importable, cancellationToken).ConfigureAwait(false);
@@ -705,7 +706,7 @@ public sealed partial class AdoptionCatalog
     /// back the data it replaced — the data the application was restored to when it went back from <paramref name="revision"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The data is not <see cref="UndoneData.Imported"/> (it changed since, or was never taken back in).</exception>
-    public async Task<AdoptedApp> UndoImportAsync(string id, int revision, AppStorage storage, CancellationToken cancellationToken = default)
+    public async Task<AdoptedApp> UndoImportAsync(string id, int revision, KeyValueStore storage, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(storage);
         var app = await UndoneAppAsync(id, revision, storage, UndoneData.Imported, cancellationToken).ConfigureAwait(false);
@@ -713,7 +714,7 @@ public sealed partial class AdoptionCatalog
         return app;
     }
 
-    private async Task<AdoptedApp> UndoneAppAsync(string id, int revision, AppStorage storage, UndoneData required, CancellationToken cancellationToken)
+    private async Task<AdoptedApp> UndoneAppAsync(string id, int revision, KeyValueStore storage, UndoneData required, CancellationToken cancellationToken)
     {
         RequireValidId(id);
         var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
@@ -750,7 +751,7 @@ public sealed partial class AdoptionCatalog
     {
         try
         {
-            return StorageFormat.TryReadSnapshot(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false), out _, out var items) ? items : null;
+            return KeyValueStore.TryReadSnapshot(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false), AppStorageFormat.Options(), out _, out var items) ? items : null;
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -845,11 +846,11 @@ public sealed partial class AdoptionCatalog
         app.Revision <= 1 ? Path.Combine(AppDirectory(app.Id), HtmlFile) : Path.Combine(RevisionFolder(app.Id, app.Revision), HtmlFile);
 
     /// <summary>Opens the data storage of application <paramref name="id"/>.</summary>
-    public Task<AppStorage> OpenStorageAsync(string id, StorageOptions? options = null, CancellationToken cancellationToken = default)
+    public Task<KeyValueStore> OpenStorageAsync(string id, KeyValueStoreOptions? options = null, CancellationToken cancellationToken = default)
     {
         RequireValidId(id);
         if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
-        return AppStorage.OpenAsync(Path.Combine(AppDirectory(id), StorageDirectory), options, cancellationToken);
+        return KeyValueStore.OpenAsync(Path.Combine(AppDirectory(id), StorageDirectory), AppStorageFormat.Options(options), cancellationToken);
     }
 
     /// <summary>Opens the cache of code application <paramref name="id"/> loads from other hosts.</summary>

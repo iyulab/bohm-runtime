@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Collections.Concurrent;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Assets;
@@ -22,7 +23,7 @@ internal sealed record BlockedResource(string Category, string Host);
 internal sealed record MissingApi(string Method, string Path);
 
 /// <summary>An adopted application while the host is running: its storage, its usage record, its sources and recent load failures.</summary>
-internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache assets, AppSources sources)
+internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache assets, AppSources sources)
 {
     private const int KeptLoadErrors = 5;
     private readonly Queue<string> _loadErrors = new();
@@ -32,7 +33,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
     private readonly List<string> _missingFiles = [];
     private readonly List<MissingApi> _missingApis = [];
 
-    public AppStorage Storage { get; } = storage;
+    public KeyValueStore Storage { get; } = storage;
     public UsageLog Usage { get; } = usage;
     public AssetCache Assets { get; } = assets;
     public AppSources Sources { get; } = sources;
@@ -147,7 +148,7 @@ internal sealed class OpenApp(AppStorage storage, UsageLog usage, AssetCache ass
 
 /// <summary>
 /// Holds exactly one <see cref="OpenApp"/> per application for the life of the host.
-/// <see cref="AppStorage"/> assumes it is the only writer of its files, so every request for an
+/// <see cref="KeyValueStore"/> assumes it is the only writer of its files, so every request for an
 /// application goes through the same instance.
 /// </summary>
 internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps> logger) : IAsyncDisposable
@@ -228,7 +229,7 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
     }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Storage of {AppId} repaired on load: {Kind} — {Detail}")]
-    private static partial void LogRepair(ILogger logger, string appId, StorageRecoveryKind kind, string detail);
+    private static partial void LogRepair(ILogger logger, string appId, StoreRecoveryKind kind, string detail);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Closing an application's storage failed.")]
     private static partial void LogCloseFailed(ILogger logger, Exception exception);

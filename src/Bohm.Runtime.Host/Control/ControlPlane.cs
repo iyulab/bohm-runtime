@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -695,7 +696,7 @@ internal static class ControlPlane
     /// the new revision may load different code.
     /// </summary>
     private static async Task ChangeRevisionAsync(HttpContext context, string appId, int successStatus,
-        Func<Runtime.Storage.AppStorage, Task<AdoptedApp>> change, Action<OpenApp>? record)
+        Func<KeyValueStore, Task<AdoptedApp>> change, Action<OpenApp>? record)
     {
         var services = context.RequestServices;
         var response = context.Response;

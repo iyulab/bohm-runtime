@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -6,6 +6,11 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!-- The durable store an application's data is kept in. -->
+  <ItemGroup>
+    <PackageReference Include="LocalOrigin" Version="0.1.0-alpha.1" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Bohm.Runtime.Tests" />

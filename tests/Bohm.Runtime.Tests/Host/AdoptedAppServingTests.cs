@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -72,7 +73,7 @@ public sealed class AdoptedAppServingTests : IAsyncLifetime
     {
         var id = await _host.AdoptAsync(Page);
         await using (var storage = await _host.Catalog.OpenStorageAsync(id))
-            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("note", "</script><b>메모</b>")]);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("note", "</script><b>메모</b>")]);
 
         // The storage was opened directly above only to seed it; the host opens its own instance.
         var body = await (await _host.ClientForApp(id).GetAsync("/")).Content.ReadAsStringAsync();
@@ -207,7 +208,7 @@ public sealed class AdoptedAppServingTests : IAsyncLifetime
         Assert.Equal("""{"kept":"yes"}""", (await _host.LoadAsync(id)).Items);
     }
 
-    private async Task<Runtime.Storage.AppStorage> ReopenStorageAsync(string appId)
+    private async Task<KeyValueStore> ReopenStorageAsync(string appId)
     {
         await _host.StopKeepingDataAsync();
         _host = await RunningHost.StartAsync(_host.DataRoot);
