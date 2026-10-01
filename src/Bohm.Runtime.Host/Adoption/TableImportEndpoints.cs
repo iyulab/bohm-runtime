@@ -25,10 +25,13 @@ internal static class TableImportEndpoints
     public static async Task ListAsync(HttpContext context, string appId, CancellationToken cancel)
     {
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+        var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
+        var memory = await catalog.ImportMemoryAsync(appId, cancel).ConfigureAwait(false);
         var collections = TableImport.Collections(app.Storage.GetItems())
-            .Select(c => new CollectionView(c.Declaration.Collection, c.Records, [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind))]))
+            .Select(c => memory.TryGetValue(c.Declaration.Collection, out var settled) ? c with { Declaration = settled.Recall(c.Declaration) } : c)
+            .Select(c => new CollectionView(c.Declaration.Collection, c.Records, [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind))], c.Declaration.Identity))
             .ToList();
-        var imports = await context.RequestServices.GetRequiredService<AdoptionCatalog>().TableImportsAsync(appId, cancel).ConfigureAwait(false);
+        var imports = await catalog.TableImportsAsync(appId, cancel).ConfigureAwait(false);
         await WriteAsync(context.Response, new ImportsView(collections, imports), TableImportJson.Default.ImportsView, cancel).ConfigureAwait(false);
     }
 
@@ -36,7 +39,7 @@ internal static class TableImportEndpoints
     {
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var items = app.Storage.GetItems();
-        if (await ReadRequestAsync(context, items, cancel).ConfigureAwait(false) is not { } request) return;
+        if (await ReadRequestAsync(context, appId, items, cancel).ConfigureAwait(false) is not { } request) return;
         var plan = TableImport.Plan(request.Declaration, request.File, items.GetValueOrDefault(request.Declaration.Collection), request.SameRecord, request.Columns);
         await WriteAsync(context.Response, PlanView.Of(plan), TableImportJson.Default.PlanView, cancel).ConfigureAwait(false);
     }
@@ -44,7 +47,7 @@ internal static class TableImportEndpoints
     public static async Task ImportAsync(HttpContext context, string appId, CancellationToken cancel)
     {
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
-        if (await ReadRequestAsync(context, app.Storage.GetItems(), cancel).ConfigureAwait(false) is not { } request) return;
+        if (await ReadRequestAsync(context, appId, app.Storage.GetItems(), cancel).ConfigureAwait(false) is not { } request) return;
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
 
         // Nothing to import is a 409, nothing written.
@@ -73,8 +76,9 @@ internal static class TableImportEndpoints
     private sealed record ImportRequest(ImportDeclaration Declaration, TableFile File, string FileName, string SameRecord, IReadOnlyDictionary<string, string?>? Columns);
 
     /// <summary>The request, or <see langword="null"/> with a 400 written — <c>{ problem }</c> saying what is wrong with the file or the choice.</summary>
-    private static async Task<ImportRequest?> ReadRequestAsync(HttpContext context, IReadOnlyDictionary<string, string> items, CancellationToken cancel)
+    private static async Task<ImportRequest?> ReadRequestAsync(HttpContext context, string appId, IReadOnlyDictionary<string, string> items, CancellationToken cancel)
     {
+        var memory = await context.RequestServices.GetRequiredService<AdoptionCatalog>().ImportMemoryAsync(appId, cancel).ConfigureAwait(false);
         string? problem;
         try
         {
@@ -101,7 +105,9 @@ internal static class TableImportEndpoints
                 : sameRecord is not (SameRecord.Skip or SameRecord.Replace) ? "unknown-same-record"
                 : columns?.Values.Any(f => f is not null && !found.Declaration.Fields.Any(d => d.Name == f)) == true ? "unknown-field"
                 : null;
-            if (problem is null) return new ImportRequest(found!.Declaration with { Identity = identity }, table, name, sameRecord, columns);
+            // What earlier imports settled (headers put into fields of another name) matches columns by name again.
+            var declaration = found is not null && memory.TryGetValue(found.Declaration.Collection, out var settled) ? settled.Recall(found.Declaration) : found?.Declaration;
+            if (problem is null) return new ImportRequest(declaration! with { Identity = identity }, table, name, sameRecord, columns);
         }
         catch (TableFileException e)
         {
@@ -125,7 +131,8 @@ internal static class TableImportEndpoints
 
     internal sealed record FieldView(string Name, string Kind);
 
-    internal sealed record CollectionView(string Collection, int Records, IReadOnlyList<FieldView> Fields);
+    /// <param name="Identity">The field earlier imports told the same record apart by, or <see langword="null"/>.</param>
+    internal sealed record CollectionView(string Collection, int Records, IReadOnlyList<FieldView> Fields, string? Identity);
 
     internal sealed record ImportsView(IReadOnlyList<CollectionView> Collections, IReadOnlyList<TableImportRecord> Imports);
 

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.TableImports;
 using LocalOrigin.Storage;
@@ -14,8 +15,27 @@ namespace Bohm.Runtime.Adoption;
 public sealed record TableImportRecord(int Number, string File, string Collection, int Added, int Replaced, int Skipped, int Invalid,
     DateTimeOffset TakenAt, bool Undone);
 
+/// <summary>
+/// What the person settled for one collection in earlier imports: the field that told the same record
+/// apart, and the column headers they put into each field under another name. The next import of a file
+/// like it starts from there — the inferred shape grows into a declaration as it is confirmed.
+/// </summary>
+public sealed record ImportMemory(string? Identity, IReadOnlyDictionary<string, IReadOnlyList<string>> Aliases)
+{
+    /// <summary><paramref name="inferred"/> with the remembered headers as aliases of its fields, and the remembered identity when it is still a field.</summary>
+    public ImportDeclaration Recall(ImportDeclaration inferred) => inferred with
+    {
+        Fields = [.. inferred.Fields.Select(f => Aliases.TryGetValue(f.Name, out var names) ? f with { Aliases = [.. f.Aliases ?? [], .. names] } : f)],
+        Identity = inferred.Identity ?? (inferred.Fields.Any(f => f.Name == Identity) ? Identity : null),
+    };
+}
+
 public sealed partial class AdoptionCatalog
 {
+    /// <summary>Format identifier of <c>imports/memory.json</c>.</summary>
+    public const string ImportMemoryFormat = "bohm.import-memory/0";
+
+    private const string ImportMemoryFile = "memory.json";
     /// <summary>Format identifier written into every <c>imports/&lt;n&gt;/import.json</c>.</summary>
     public const string ImportFormat = "bohm.import/0";
 
@@ -59,6 +79,7 @@ public sealed partial class AdoptionCatalog
         await storage.SaveSnapshotAsync(Path.Combine(staging, DataAfterFile), cancellationToken).ConfigureAwait(false);
         await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, ImportFile), WriteImport(record), cancellationToken).ConfigureAwait(false);
         Directory.Move(staging, ImportFolder(id, number));
+        await RememberAsync(id, declaration, plan.Columns, cancellationToken).ConfigureAwait(false);
         return record;
     }
 
@@ -96,6 +117,62 @@ public sealed partial class AdoptionCatalog
             if (await ReadImportAsync(ImportFolder(id, n), cancellationToken).ConfigureAwait(false) is { } record) records.Add(record);
         return records;
     }
+
+    /// <summary>What was settled for each collection of application <paramref name="id"/> in earlier imports — none when nothing was, or it cannot be read.</summary>
+    public async Task<IReadOnlyDictionary<string, ImportMemory>> ImportMemoryAsync(string id, CancellationToken cancellationToken = default)
+    {
+        RequireValidId(id);
+        var memory = new Dictionary<string, ImportMemory>(StringComparer.Ordinal);
+        try
+        {
+            var root = JsonNode.Parse(await DurableFile.ReadAsync(Path.Combine(AppDirectory(id), ImportsDirectory, ImportMemoryFile), cancellationToken).ConfigureAwait(false));
+            if (root?["format"]?.GetValue<string>() != ImportMemoryFormat || root["collections"] is not JsonObject collections) return memory;
+            foreach (var (key, node) in collections)
+            {
+                var aliases = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+                if (node?["aliases"] is JsonObject fields)
+                    foreach (var (field, names) in fields)
+                        if (names is JsonArray list) aliases[field] = [.. list.Select(n => n?.GetValue<string>()).OfType<string>()];
+                memory[key] = new ImportMemory(node?["identity"]?.GetValue<string>(), aliases);
+            }
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException or JsonException or InvalidOperationException or FormatException)
+        {
+            // Nothing settled yet, or a file that cannot be used: start again from the stored shape.
+        }
+
+        return memory;
+    }
+
+    /// <summary>Keeps what this import settled: its identity, and each column the person put into a field of another name.</summary>
+    private async Task RememberAsync(string id, ImportDeclaration declaration, IReadOnlyList<ColumnMapping> columns, CancellationToken cancellationToken)
+    {
+        var all = new Dictionary<string, ImportMemory>(await ImportMemoryAsync(id, cancellationToken).ConfigureAwait(false), StringComparer.Ordinal);
+        var aliases = all.TryGetValue(declaration.Collection, out var known)
+            ? known.Aliases.ToDictionary(p => p.Key, p => p.Value.ToList(), StringComparer.Ordinal)
+            : new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var column in columns)
+        {
+            if (column.Field is not { } field || string.Equals(column.Column, field, StringComparison.Ordinal)) continue;
+            if (!aliases.TryGetValue(field, out var names)) aliases[field] = names = [];
+            if (!names.Contains(column.Column, StringComparer.Ordinal)) names.Add(column.Column);
+        }
+
+        all[declaration.Collection] = new ImportMemory(declaration.Identity, aliases.ToDictionary(p => p.Key, p => (IReadOnlyList<string>)p.Value, StringComparer.Ordinal));
+        var collections = new JsonObject();
+        foreach (var (key, memory) in all.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            var fields = new JsonObject();
+            foreach (var (field, names) in memory.Aliases.OrderBy(p => p.Key, StringComparer.Ordinal)) fields[field] = new JsonArray([.. names.Select(n => (JsonNode?)JsonValue.Create(n))]);
+            collections[key] = new JsonObject { ["identity"] = memory.Identity, ["aliases"] = fields };
+        }
+
+        var document = new JsonObject { ["format"] = ImportMemoryFormat, ["collections"] = collections };
+        await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), ImportsDirectory, ImportMemoryFile),
+            JsonSerializer.SerializeToUtf8Bytes(document, MemoryWriter), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static readonly JsonSerializerOptions MemoryWriter = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private string ImportFolder(string id, int number) =>
         Path.Combine(AppDirectory(id), ImportsDirectory, number.ToString(CultureInfo.InvariantCulture));
