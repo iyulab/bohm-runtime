@@ -76,7 +76,7 @@ public sealed class TableImportTests
         var plan = TableImport.Plan(Declaration(), file, Books);
 
         Assert.Equal(0, plan.Added);
-        Assert.Equal([new InvalidRow(2, "\"비쌈\" is not a number for price"), new InvalidRow(3, "\"아마\" is not a boolean for read")], plan.Invalid);
+        Assert.Equal([new InvalidRow(2, "price", "비쌈"), new InvalidRow(3, "read", "아마")], plan.Invalid);
     }
 
     [Fact]
