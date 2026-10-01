@@ -24,12 +24,16 @@ internal sealed class FakeChatModel : IChatClient
     /// <summary>What the model throws instead of answering, or nothing.</summary>
     public Exception? Failure { get; set; }
 
+    /// <summary>What the model throws for its first requests, one each, before it answers.</summary>
+    public Queue<Exception> FirstFailures { get; } = new();
+
     /// <summary>Token counts to report, or none.</summary>
     public UsageDetails? Usage { get; set; }
 
     public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
         Calls.Add(([.. messages], options));
+        if (FirstFailures.TryDequeue(out var first)) return Task.FromException<ChatResponse>(first);
         if (Failure is not null) return Task.FromException<ChatResponse>(Failure);
         if (Script.TryDequeue(out var next))
         {
@@ -53,6 +57,7 @@ internal sealed class FakeChatModel : IChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         Calls.Add(([.. messages], options));
+        if (FirstFailures.TryDequeue(out var first)) throw first;
         if (Failure is not null) throw Failure;
         // A scripted answer or a tool call streams as one update, as a client that assembles the call does.
         AIContent? whole = Script.TryDequeue(out var next) ? next : Call;
