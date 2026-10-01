@@ -548,11 +548,16 @@ internal static class ControlPlane
                     try
                     {
                         using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                        if (!CompanyModelOptions.TryCreate(body.RootElement.GetProperty("endpoint").GetString(), body.RootElement.GetProperty("model").GetString(), out setTo))
+                        var root = body.RootElement;
+                        // The model's limits are optional; each one left out (or null) is unknown.
+                        if (!CompanyModelOptions.TryCreate(root.GetProperty("endpoint").GetString(), root.GetProperty("model").GetString(), out setTo)
+                            || !ModelLimits.TryCreate(OptionalCount(root, "contextWindow"), OptionalCount(root, "maxTokens"), OptionalFlag(root, "reasoning"), out var limits))
                         {
                             response.StatusCode = StatusCodes.Status400BadRequest;
                             break;
                         }
+
+                        setTo = setTo! with { Limits = limits! };
                     }
                     catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
                     {
@@ -959,7 +964,7 @@ internal static class ControlPlane
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation, null, cancel).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, null, cancel).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -979,7 +984,7 @@ internal static class ControlPlane
         await response.StartAsync(cancel).ConfigureAwait(false);
         try
         {
-            var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, conversation,
+            var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation,
                 (text, token) => WriteLineAsync(response, new TurnText(text), token), cancel).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
@@ -1081,8 +1086,8 @@ internal static class ControlPlane
         try
         {
             proposal = await (target is null
-                ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, source, cancel)
-                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, source, target, instruction, cancel)).ConfigureAwait(false);
+                ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
+                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, cancel)).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
@@ -1132,10 +1137,30 @@ internal static class ControlPlane
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
 
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
-        new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected);
+        new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
+            company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning);
 
     /// <param name="Endpoint">The server's OpenAI-compatible base address, or <see langword="null"/> when none is set.</param>
-    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected);
+    /// <param name="ContextWindow">The model's context window as it was set, or <see langword="null"/> when unknown.</param>
+    /// <param name="MaxTokens">The most tokens one answer may have, as it was set, or <see langword="null"/> when unknown.</param>
+    /// <param name="Reasoning">Whether the model thinks before it answers, as it was set, or <see langword="null"/> when unknown.</param>
+    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected, int? ContextWindow, int? MaxTokens, bool? Reasoning);
+
+    /// <summary>
+    /// A whole number at <paramref name="name"/>, or <see langword="null"/> when it is missing or null.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">It is there but is not a whole number that fits.</exception>
+    private static int? OptionalCount(JsonElement root, string name) =>
+        !root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null ? null
+        : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number
+        : throw new InvalidOperationException($"{name} is not a whole number.");
+
+    /// <summary>A true or false at <paramref name="name"/>, or <see langword="null"/> when it is missing or null.</summary>
+    /// <exception cref="InvalidOperationException">It is there but is neither true nor false.</exception>
+    private static bool? OptionalFlag(JsonElement root, string name) =>
+        !root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null ? null
+        : value.ValueKind is JsonValueKind.True or JsonValueKind.False ? value.GetBoolean()
+        : throw new InvalidOperationException($"{name} is neither true nor false.");
 
     internal sealed record DrainResult(bool Quiet);
 

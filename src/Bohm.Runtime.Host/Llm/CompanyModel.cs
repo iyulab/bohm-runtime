@@ -16,6 +16,9 @@ namespace Bohm.Runtime.Host.Llm;
 /// <param name="Model">The model's name as the server knows it.</param>
 public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 {
+    /// <summary>What whoever set the server said about the model's limits.</summary>
+    public ModelLimits Limits { get; init; } = ModelLimits.Unknown;
+
     /// <summary>Whether <paramref name="endpoint"/> and <paramref name="model"/> name a usable model server, normalized.</summary>
     public static bool TryCreate(string? endpoint, string? model, out CompanyModelOptions? options)
     {
@@ -59,7 +62,7 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
     private CompanyModelOptions? _chosen = Read(options);
-    private (CompanyModelOptions Server, string? Key, IChatClient Client)? _client;
+    private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
 
     /// <summary>Whether the server was fixed by whoever started the runtime, so the person cannot change it.</summary>
     public bool Fixed => options.CompanyModel is not null;
@@ -95,7 +98,8 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
                 Directory.CreateDirectory(options.DataRoot);
                 var aside = path + ".tmp";
                 await File.WriteAllTextAsync(aside,
-                    JsonSerializer.Serialize(new Stored(Format, choice.Endpoint.AbsoluteUri, choice.Model), CompanyModelJson.Default.Stored) + "\n",
+                    JsonSerializer.Serialize(new Stored(Format, choice.Endpoint.AbsoluteUri, choice.Model,
+                        choice.Limits.ContextWindow, choice.Limits.MaxOutputTokens, choice.Limits.Reasoning), CompanyModelJson.Default.Stored) + "\n",
                     new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
                 File.Move(aside, path, overwrite: true);
             }
@@ -117,7 +121,19 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     /// and keeps a refusal's HTTP status. The client owns its connections, so one is kept while the
     /// server, model and key stay the same, instead of a new one per request.
     /// </remarks>
-    public IChatClient? Client()
+    public IChatClient? Client() => FittedClient();
+
+    /// <summary>The server model's limits as known now — as set, with a context window learned from a refusal when none was set.</summary>
+    public ModelLimits Limits
+    {
+        get
+        {
+            lock (_clientLock)
+                return _client is { } kept && kept.Server == Current ? kept.Client.Limits : Current?.Limits ?? ModelLimits.Unknown;
+        }
+    }
+
+    private ModelFitChatClient? FittedClient()
     {
         if (Current is not { } current) return null;
         var key = vault.Read(VaultName);
@@ -127,7 +143,8 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
             if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
             // The whole address the person gave is the base — no API path is added to it.
             var generator = new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = current.Endpoint.AbsoluteUri, Path = "", ApiKey = key });
-            var client = new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), egress, current.Endpoint.Authority);
+            var client = new ModelFitChatClient(
+                new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), egress, current.Endpoint.Authority), current.Limits);
             _client = (current, key, client);
             return client;
         }
@@ -144,7 +161,14 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
                 && root.TryGetProperty("format", out var format) && format.ValueEquals(Format)
                 && root.TryGetProperty("endpoint", out var endpoint) && root.TryGetProperty("model", out var model)
                 && CompanyModelOptions.TryCreate(endpoint.GetString(), model.GetString(), out var stored))
-                return stored;
+            {
+                // Limits were added later: a file without them, or with ones that do not make sense, keeps the server.
+                return ModelLimits.TryCreate(Number(root, "contextWindow"), Number(root, "maxTokens"),
+                    root.TryGetProperty("reasoning", out var reasoning) && reasoning.ValueKind is JsonValueKind.True or JsonValueKind.False ? reasoning.GetBoolean() : null,
+                    out var limits)
+                    ? stored! with { Limits = limits! }
+                    : stored;
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -224,7 +248,14 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
         _client?.Client.Dispose();
     }
 
-    internal sealed record Stored(string Format, string Endpoint, string Model);
+    internal sealed record Stored(string Format, string Endpoint, string Model,
+        [property: System.Text.Json.Serialization.JsonPropertyName("contextWindow")] int? ContextWindow = null,
+        [property: System.Text.Json.Serialization.JsonPropertyName("maxTokens")] int? MaxTokens = null,
+        [property: System.Text.Json.Serialization.JsonPropertyName("reasoning")] bool? Reasoning = null);
+
+    /// <summary>A whole number at <paramref name="name"/> that fits an <see cref="int"/>, or <see langword="null"/>.</summary>
+    private static int? Number(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number : null;
 }
 
 /// <summary>Counts each request to a model as the application's data sent to its host.</summary>
@@ -243,6 +274,7 @@ internal sealed class CountedAsSent(IChatClient inner, Egress egress, string hos
     }
 }
 
-[System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
+[System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Stored))]
 internal sealed partial class CompanyModelJson : System.Text.Json.Serialization.JsonSerializerContext;

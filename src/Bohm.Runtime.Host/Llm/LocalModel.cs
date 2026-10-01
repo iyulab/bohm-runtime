@@ -59,7 +59,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private LocalModelOptions? _chosen = Read(options);
     private ITextGenerator? _generator;
-    private GeneratorChatClient? _client;
+    private ModelFitChatClient? _client;
     private Task? _loading;
 
     /// <summary>Whether the model was fixed by whoever started the runtime, so the person cannot change it.</summary>
@@ -73,6 +73,9 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
     /// <summary>Whether the model is loaded now.</summary>
     public bool Loaded => _client is not null;
+
+    /// <summary>The model's limits as known now: the context length it is run with, or one learned from a refusal.</summary>
+    public ModelLimits Limits => _client?.Limits ?? new ModelLimits(Current?.ContextLength);
 
     /// <summary>Whether a load started ahead of use (<see cref="StartLoading"/>) is still under way.</summary>
     public bool Loading => _loading is { IsCompleted: false };
@@ -191,7 +194,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
 
             LastFailure = null;
-            _client = new GeneratorChatClient(_generator);
+            _client = new ModelFitChatClient(new GeneratorChatClient(_generator), new ModelLimits(settings.ContextLength));
             return _client;
         }
         finally
