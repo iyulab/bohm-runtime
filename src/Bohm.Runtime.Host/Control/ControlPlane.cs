@@ -46,6 +46,10 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/{n}/import</c></term><description>Takes the data revision <c>n</c> wrote back in, replacing the data now — only while nothing was written since going back and the code in use reads its keys; 409 otherwise. <c>…/undo-import</c> puts back the data it replaced, while the data is still what was taken in.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/imports</c></term><description>What a table file could be imported into — <c>{ collections: [{ collection, records, fields: [{ name, kind }] }], imports: [{ number, file, collection, added, replaced, skipped, invalid, takenAt, undone }] }</c>: every stored key holding a list of records, with the fields and kinds the records show (a list with no records yet is not one), and the imports so far, oldest first.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/imports/preview</c></term><description>What importing a table file would do, from <c>{ file: { name, content }, collection, identity?, sameRecord?, columns? }</c> (see <see cref="Adoption.TableImportEndpoints"/>): <c>{ columns: [{ column, field }], unfilled, added, replaced, skipped, invalid: [{ row, reason }], sample }</c> — a column whose field is null is left out. Nothing is written. 400 <c>{ problem }</c> — the file's (<c>not-utf8</c>, <c>empty</c>, <c>unclosed-quote</c>, <c>too-large</c>, <c>too-many-rows</c>, <c>duplicate-header</c>) or the choice's (<c>unknown-collection</c>, <c>unknown-identity</c>, <c>unknown-field</c>, <c>unknown-same-record</c>).</description></item>
+/// <item><term><c>POST /__control/apps/{id}/imports</c></term><description>Does it, with the same body: the data before and after are kept aside, the rows go in as one write, and pages loaded before reload (201 with the import's record). 409 when no row would go in.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/imports/{n}/undo</c></term><description>Puts the data back to how it was before import <c>n</c> — only while it is still what the import left; 409 when something was written since or it was undone already.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/usage</c></term><description>The application's usage record: each recorded day's signals and load failures, its revisions, its first and last day of use and where it stands against the 30-day retention rule. Days are local; nothing leaves this computer.</description></item>
 /// <item><term><c>GET /__control/usage-report</c></term><description>Every application's usage record in one document the person can read and choose to hand over: application ids, days, signals, revisions and retention — no names, paths or content. Nothing is sent; the caller decides what happens to it.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/tabs/{tab}</c></term><description>The highest write sequence applied from one loaded page (<c>ack</c>) and the highest sequence the page reported having issued (<c>issued</c>); <c>left</c> once the page's report sent after leaving has arrived, which makes <c>issued</c> final. A host closing the page waits until <c>ack</c> reaches both the sequence it read before the page left and <c>issued</c>; 404 when the page is not (or no longer) the application's.</description></item>
@@ -63,8 +67,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
-/// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start.</description></item>
-/// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model }</c> — its OpenAI-compatible base address (http or https) and a model's name — and remembers it; 400 when either is not usable, 409 when fixed at start.</description></item>
+/// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected, contextWindow, maxTokens, reasoning }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start; the model's limits as they were set, each null when unknown.</description></item>
+/// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds); <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list. 404 when no server is set. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
@@ -293,6 +297,34 @@ internal static class ControlPlane
                 await ChangeRevisionAsync(context, importedTo, StatusCodes.Status200OK, segments[4] == "import"
                     ? storage => catalog.ImportUndoneAsync(importedTo, keptRevision, storage, cancel)
                     : storage => catalog.UndoImportAsync(importedTo, keptRevision, storage, cancel), record: null).ConfigureAwait(false);
+                break;
+
+            case ("GET" or "POST", ["apps", var importsOf, "imports", ..]):
+                if (await catalog.GetAsync(importsOf, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                switch (request.Method, segments[3..])
+                {
+                    case ("GET", []):
+                        await Adoption.TableImportEndpoints.ListAsync(context, importsOf, cancel).ConfigureAwait(false);
+                        break;
+                    case ("POST", ["preview"]):
+                        await Adoption.TableImportEndpoints.PreviewAsync(context, importsOf, cancel).ConfigureAwait(false);
+                        break;
+                    case ("POST", []):
+                        await Adoption.TableImportEndpoints.ImportAsync(context, importsOf, cancel).ConfigureAwait(false);
+                        break;
+                    case ("POST", [var undoneNumber, "undo"]) when int.TryParse(undoneNumber, NumberStyles.None, CultureInfo.InvariantCulture, out var importNumber):
+                        await Adoption.TableImportEndpoints.UndoAsync(context, importsOf, importNumber, cancel).ConfigureAwait(false);
+                        break;
+                    default:
+                        response.StatusCode = StatusCodes.Status404NotFound;
+                        break;
+                }
+
                 break;
 
             case ("POST", ["apps", var archiveId, "archive" or "restore"]):
@@ -706,32 +738,8 @@ internal static class ControlPlane
         var services = context.RequestServices;
         var response = context.Response;
         var cancel = context.RequestAborted;
-        var app = await services.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
-        await app.RevisionChange.WaitAsync(cancel).ConfigureAwait(false);
-        AdoptedApp changed;
-        try
-        {
-            // Drain before revoking: a write the closing page sent must land, not be refused as stale.
-            await DrainAsync(context, cancel).ConfigureAwait(false);
-            services.GetRequiredService<LocalOrigin.AspNetCore.Storage.StorageChannel>().Sessions.Revoke(appId);
-            try
-            {
-                changed = await change(app.Storage).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-                // Not a new revision (the same bytes), or nothing to go back to.
-                response.StatusCode = StatusCodes.Status409Conflict;
-                return;
-            }
-
-            app.ForgetObservations();
-            record?.Invoke(app);
-        }
-        finally
-        {
-            app.RevisionChange.Release();
-        }
+        // Not a new revision (the same bytes), or nothing to go back to: a 409, already written.
+        if (await ChangeDataAsync(context, appId, change, record).ConfigureAwait(false) is not { } changed) return;
 
         if (services.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
             services.GetRequiredService<AssetFetcher>().Start(appId);
@@ -739,6 +747,45 @@ internal static class ControlPlane
         response.StatusCode = successStatus;
         var canRevert = await catalog.CanRevertAsync(changed, cancel).ConfigureAwait(false);
         await WriteAsync(response, View(changed, context.Request.Host.Port ?? 80, canRevert), cancel).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Changes an application's data the one way that loses nothing: one change at a time; writes
+    /// already on their way are waited for and applied first; then pages loaded before can no longer
+    /// write (they reload); only then does <paramref name="change"/> run. Answers what it returned, or
+    /// <see langword="null"/> — with a 409 written — when it refused with <see cref="InvalidOperationException"/>.
+    /// </summary>
+    internal static async Task<T?> ChangeDataAsync<T>(HttpContext context, string appId, Func<KeyValueStore, Task<T>> change, Action<OpenApp>? record = null)
+        where T : class
+    {
+        var services = context.RequestServices;
+        var cancel = context.RequestAborted;
+        var app = await services.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+        await app.RevisionChange.WaitAsync(cancel).ConfigureAwait(false);
+        try
+        {
+            // Drain before revoking: a write the closing page sent must land, not be refused as stale.
+            await DrainAsync(context, cancel).ConfigureAwait(false);
+            services.GetRequiredService<LocalOrigin.AspNetCore.Storage.StorageChannel>().Sessions.Revoke(appId);
+            T changed;
+            try
+            {
+                changed = await change(app.Storage).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                return null;
+            }
+
+            app.ForgetObservations();
+            record?.Invoke(app);
+            return changed;
+        }
+        finally
+        {
+            app.RevisionChange.Release();
+        }
     }
 
     private static Task<bool> DrainAsync(HttpContext context, CancellationToken cancellationToken) =>
