@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Text;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Storage;
@@ -155,7 +156,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         var catalog = new AdoptionCatalog(_root);
         var app = await catalog.AdoptAsync(Html, "todo.html");
         await using (var storage = await catalog.OpenStorageAsync(app.Id))
-            await storage.ApplyAsync([StorageOperation.Set("loans", "7")]);
+            await storage.ApplyAsync([KeyValueOperation.Set("loans", "7")]);
         var filesBefore = Directory.GetFiles(Path.Combine(_root, "adopted", app.Id), "*", SearchOption.AllDirectories).Order().ToList();
 
         var archived = await catalog.SetArchivedAsync(app.Id, archived: true);
@@ -258,7 +259,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         var empty = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>never stored anything</p>"), Path.Combine(_root, "notes.html"));
         await using (var storage = await catalog.OpenStorageAsync(app.Id))
         {
-            await storage.ApplyAsync([StorageOperation.Set("teamShelf.loans", "[]"), StorageOperation.Set("teamShelf.members", "[]")]);
+            await storage.ApplyAsync([KeyValueOperation.Set("teamShelf.loans", "[]"), KeyValueOperation.Set("teamShelf.members", "[]")]);
 
             var elsewhere = Path.Combine(_root, "Desktop", "shelf v2.html");
             var both = Encoding.UTF8.GetBytes("<script>load('teamShelf.loans'); load(\"teamShelf.members\")</script>");
@@ -291,7 +292,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         await using var storage = await catalog.OpenStorageAsync(app.Id);
         await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), Path.Combine(_root, "Downloads", "Team loans (1).html"), storage);
         await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v3</p>"), null, storage); // an applied change
-        await storage.ApplyAsync([StorageOperation.Set("written-in-v3", "yes")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("written-in-v3", "yes")]);
         await catalog.RevertAsync(app.Id, storage);
 
         var history = await catalog.ListRevisionsAsync(app.Id);
@@ -311,9 +312,9 @@ public sealed class AdoptionCatalogTests : IDisposable
         var reads = Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>");
         var app = await catalog.AdoptAsync(reads, Path.Combine(_root, "loans.html"));
         await using var storage = await catalog.OpenStorageAsync(app.Id);
-        await storage.ApplyAsync([StorageOperation.Set("loans", "1")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("loans", "1")]);
         await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans'); localStorage.getItem('notes')</script>"), null, storage);
-        await storage.ApplyAsync([StorageOperation.Set("loans", "2"), StorageOperation.Set("notes", "x")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("loans", "2"), KeyValueOperation.Set("notes", "x")]);
         await catalog.RevertAsync(app.Id, storage); // back to 1: loans=1; what 2 wrote is kept aside
 
         // Revision 1 does not name «notes»: taking it in would carry a key the code never reads.
@@ -323,9 +324,9 @@ public sealed class AdoptionCatalogTests : IDisposable
         // Revision 2 without «notes»: the code in use reads every kept key, and nothing was written since.
         var other = await catalog.AdoptAsync(reads, Path.Combine(_root, "other.html"));
         await using var otherStorage = await catalog.OpenStorageAsync(other.Id);
-        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "1")]);
+        await otherStorage.ApplyAsync([KeyValueOperation.Set("loans", "1")]);
         await catalog.ReviseAsync(other.Id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('loans')</script>"), null, otherStorage);
-        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "5")]);
+        await otherStorage.ApplyAsync([KeyValueOperation.Set("loans", "5")]);
         await catalog.RevertAsync(other.Id, otherStorage);
         Assert.Equal(UndoneData.Importable, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
         await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.UndoImportAsync(other.Id, 2, otherStorage)); // nothing taken in yet
@@ -340,7 +341,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         Assert.Equal(UndoneData.Importable, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
 
         // Something written since going back: taking the kept data in would lose it.
-        await otherStorage.ApplyAsync([StorageOperation.Set("loans", "2")]);
+        await otherStorage.ApplyAsync([KeyValueOperation.Set("loans", "2")]);
         Assert.Equal(UndoneData.Diverged, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
         await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ImportUndoneAsync(other.Id, 2, otherStorage));
         Assert.Equal("2", otherStorage.GetItems()["loans"]);
@@ -418,7 +419,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         var catalog = new AdoptionCatalog(_root);
         var app = await catalog.AdoptAsync(Html);
         await using (var storage = await catalog.OpenStorageAsync(app.Id))
-            await storage.ApplyAsync([StorageOperation.Set("x", "1")]);
+            await storage.ApplyAsync([KeyValueOperation.Set("x", "1")]);
 
         // Copying the one folder to another data root is all it takes to move the application.
         var elsewhere = Directory.CreateTempSubdirectory("bohm-elsewhere-").FullName;
@@ -535,7 +536,7 @@ public sealed class AdoptionCatalogTests : IDisposable
         var catalog = new AdoptionCatalog(_root, clock);
         var v1 = await catalog.AdoptAsync(Html, "loans.html");
         await using var storage = await catalog.OpenStorageAsync(v1.Id);
-        await storage.ApplyAsync([StorageOperation.Set("loan", "3")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("loan", "3")]);
         clock.Advance(TimeSpan.FromDays(2));
         var revisedHtml = Encoding.UTF8.GetBytes("<p>revised</p>");
 
@@ -559,9 +560,9 @@ public sealed class AdoptionCatalogTests : IDisposable
         var catalog = new AdoptionCatalog(_root);
         var v1 = await catalog.AdoptAsync(Html, "loans.html");
         await using var storage = await catalog.OpenStorageAsync(v1.Id);
-        await storage.ApplyAsync([StorageOperation.Set("loan", "3")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("loan", "3")]);
         await catalog.ReviseAsync(v1.Id, Encoding.UTF8.GetBytes("<p>revised</p>"), "loans.html", storage);
-        await storage.ApplyAsync([StorageOperation.Set("loan", "broken"), StorageOperation.Set("extra", "x")]);
+        await storage.ApplyAsync([KeyValueOperation.Set("loan", "broken"), KeyValueOperation.Set("extra", "x")]);
 
         var back = await catalog.RevertAsync(v1.Id, storage);
 
@@ -586,15 +587,15 @@ public sealed class AdoptionCatalogTests : IDisposable
         for (var i = 0; i < 3000; i++) before[$"book:{i}"] = $"{{\"title\":\"Book {i}\",\"copies\":{i % 7}}}";
         before["catalog"] = new string('x', 256 * 1024);
         before["notes"] = string.Concat(Enumerable.Repeat("가나다라마바사 ", 20_000));
-        await storage.ApplyAsync(before.Select(kv => StorageOperation.Set(kv.Key, kv.Value)).ToArray());
+        await storage.ApplyAsync(before.Select(kv => KeyValueOperation.Set(kv.Key, kv.Value)).ToArray());
 
         await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>revised</p>"), "books.html", storage);
-        var rewrite = new List<StorageOperation>();
-        for (var i = 0; i < 3000; i += 2) rewrite.Add(StorageOperation.Set($"book:{i}", "changed"));
-        for (var i = 1; i < 3000; i += 3) rewrite.Add(StorageOperation.Remove($"book:{i}"));
-        for (var i = 0; i < 500; i++) rewrite.Add(StorageOperation.Set($"new:{i}", "added"));
-        rewrite.Add(StorageOperation.Set("catalog", new string('y', 512 * 1024)));
-        rewrite.Add(StorageOperation.Remove("notes"));
+        var rewrite = new List<KeyValueOperation>();
+        for (var i = 0; i < 3000; i += 2) rewrite.Add(KeyValueOperation.Set($"book:{i}", "changed"));
+        for (var i = 1; i < 3000; i += 3) rewrite.Add(KeyValueOperation.Remove($"book:{i}"));
+        for (var i = 0; i < 500; i++) rewrite.Add(KeyValueOperation.Set($"new:{i}", "added"));
+        rewrite.Add(KeyValueOperation.Set("catalog", new string('y', 512 * 1024)));
+        rewrite.Add(KeyValueOperation.Remove("notes"));
         await storage.ApplyAsync(rewrite.ToArray());
 
         await catalog.RevertAsync(app.Id, storage);

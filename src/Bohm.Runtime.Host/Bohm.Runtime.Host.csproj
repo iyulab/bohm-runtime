@@ -15,6 +15,11 @@
     <ProjectReference Include="..\Bohm.Runtime\Bohm.Runtime.csproj" />
   </ItemGroup>
 
+  <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
+  <ItemGroup>
+    <PackageReference Include="LocalOrigin.AspNetCore" Version="0.1.0-alpha.1" />
+  </ItemGroup>
+
   <!--
     A model on this computer answering applications' AI requests (GGUF through llama-server), and the
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.

@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using Bohm.Runtime;
 using System.Net;
 using System.Net.Http.Headers;
@@ -44,7 +45,7 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         // A folder copied while a write was in progress: the last journal line is incomplete.
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
         await using (var storage = await _host.Catalog.OpenStorageAsync(id))
-            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("kept", "yes")]);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("kept", "yes")]);
         await File.AppendAllTextAsync(Path.Combine(_host.DataRoot, "adopted", id, "storage", "journal.ndjson"), "{\"seq\":2,\"op\":\"set\",\"key\":\"lost\",\"va");
 
         using (var page = await _host.ClientForApp(id).GetAsync("/"))
@@ -78,9 +79,9 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>"))).Id;
         await using (var storage = await _host.Catalog.OpenStorageAsync(id))
         {
-            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("loans", "1")]);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("loans", "1")]);
             await _host.Catalog.ReviseAsync(id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('loans')</script>"), null, storage);
-            await storage.ApplyAsync([Runtime.Storage.StorageOperation.Set("loans", "5")]);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("loans", "5")]);
             await _host.Catalog.RevertAsync(id, storage);
         }
 

@@ -1,3 +1,4 @@
+using LocalOrigin.Storage;
 using System.Text.Json;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
@@ -99,12 +100,12 @@ internal static partial class StorageEndpoint
         }
     }
 
-    private static (long Sequence, StorageOperation? Operation) ToOperation(WireOperation wire) =>
+    private static (long Sequence, KeyValueOperation? Operation) ToOperation(WireOperation wire) =>
         (wire.Seq, wire.Op switch
         {
-            "set" when wire.Key is not null && wire.Value is not null => StorageOperation.Set(wire.Key, wire.Value),
-            "remove" when wire.Key is not null => StorageOperation.Remove(wire.Key),
-            "clear" => StorageOperation.Clear(),
+            "set" when wire.Key is not null && wire.Value is not null => KeyValueOperation.Set(wire.Key, wire.Value),
+            "remove" when wire.Key is not null => KeyValueOperation.Remove(wire.Key),
+            "clear" => KeyValueOperation.Clear(),
             _ => null,
         } is { } operation && wire.Seq > 0 ? operation : null);
 
