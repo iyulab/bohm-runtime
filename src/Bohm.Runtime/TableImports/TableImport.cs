@@ -48,12 +48,13 @@ public static class SameRecord
 
 /// <summary>What one import would do — shown before anything is written.</summary>
 /// <param name="Columns">Each column of the file and the field it goes into, <see langword="null"/> for a column that is left out.</param>
-/// <param name="Unfilled">Fields no column goes into.</param>
+/// <param name="Unfilled">Fields no column goes into (and the runtime does not fill — see <paramref name="Generated"/>).</param>
 /// <param name="Added">Rows that become new records.</param>
 /// <param name="Replaced">Rows that are written over records already there.</param>
 /// <param name="Skipped">Rows left out because the record is already there (or repeated in the file).</param>
 /// <param name="Invalid">Rows left out, with the row number in the file (header = row 1) and why.</param>
 /// <param name="Sample">The first new or replaced records, as they will be stored.</param>
+/// <param name="Generated">The application's own key, filled for each new record when no column fills it; <see langword="null"/> when there is none.</param>
 public sealed record ImportPlan(
     IReadOnlyList<ColumnMapping> Columns,
     IReadOnlyList<string> Unfilled,
@@ -61,7 +62,8 @@ public sealed record ImportPlan(
     int Replaced,
     int Skipped,
     IReadOnlyList<InvalidRow> Invalid,
-    IReadOnlyList<JsonObject> Sample);
+    IReadOnlyList<JsonObject> Sample,
+    string? Generated);
 
 /// <param name="Column">The header as the file has it.</param>
 /// <param name="Field">The field it goes into, or <see langword="null"/>.</param>
@@ -145,7 +147,8 @@ public static partial class TableImport
 
         var mapping = Match(declaration, file.Headers, chosen);
         var fieldsByName = declaration.Fields.ToDictionary(f => f.Name, StringComparer.Ordinal);
-        var unfilled = declaration.Fields.Where(f => !mapping.Any(m => m.Field == f.Name)).Select(f => f.Name).ToList();
+        var generated = GeneratedId(declaration, existing, mapping);
+        var unfilled = declaration.Fields.Where(f => !mapping.Any(m => m.Field == f.Name) && f.Name != generated?.Field).Select(f => f.Name).ToList();
 
         var result = new JsonArray();
         var index = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
@@ -156,7 +159,6 @@ public static partial class TableImport
             if (declaration.Identity is { } identity && IdentityText(copy[identity]) is { } id) index.TryAdd(id, copy);
         }
 
-        var generated = GeneratedId(declaration, existing, mapping);
         var nextNumber = generated is { Numeric: true } ? existing.Select(r => r[generated.Value.Field]?.GetValue<double>() ?? 0).DefaultIfEmpty(0).Max() : 0;
         var fileTag = generated is { Numeric: false } ? Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", file.Rows.Select(r => string.Join("\t", r)))))[..4]) : "";
 
@@ -213,7 +215,7 @@ public static partial class TableImport
             if (sample.Count < SampleSize) sample.Add(record);
         }
 
-        var plan = new ImportPlan(mapping, unfilled, added, replaced, skipped, invalid, [.. sample.Select(s => (JsonObject)s.DeepClone())]);
+        var plan = new ImportPlan(mapping, unfilled, added, replaced, skipped, invalid, [.. sample.Select(s => (JsonObject)s.DeepClone())], generated?.Field);
         return (plan, result);
     }
 

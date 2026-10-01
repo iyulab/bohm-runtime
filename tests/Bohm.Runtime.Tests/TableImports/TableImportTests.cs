@@ -46,7 +46,8 @@ public sealed class TableImportTests
         var plan = TableImport.Plan(Declaration(), file, Books);
 
         Assert.Equal([("ISBN", "isbn"), ("Title", "title"), ("Publisher", (string?)null), ("price", "price")], plan.Columns.Select(c => (c.Column, c.Field)));
-        Assert.Equal(["id", "read"], plan.Unfilled);
+        Assert.Equal(["read"], plan.Unfilled);
+        Assert.Equal("id", plan.Generated); // filled by the runtime, not left empty
         Assert.Equal(1, plan.Added);
         var record = Assert.Single(plan.Sample);
         Assert.Equal(25000, record["price"]!.GetValue<long>()); // a grouped number is a number

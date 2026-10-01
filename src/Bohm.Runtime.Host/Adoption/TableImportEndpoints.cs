@@ -132,9 +132,9 @@ internal static class TableImportEndpoints
     internal sealed record ProblemView(string Problem);
 
     internal sealed record PlanView(IReadOnlyList<ColumnMapping> Columns, IReadOnlyList<string> Unfilled, int Added, int Replaced, int Skipped,
-        IReadOnlyList<InvalidRow> Invalid, IReadOnlyList<JsonObject> Sample)
+        IReadOnlyList<InvalidRow> Invalid, IReadOnlyList<JsonObject> Sample, string? Generated)
     {
-        public static PlanView Of(ImportPlan plan) => new(plan.Columns, plan.Unfilled, plan.Added, plan.Replaced, plan.Skipped, plan.Invalid, plan.Sample);
+        public static PlanView Of(ImportPlan plan) => new(plan.Columns, plan.Unfilled, plan.Added, plan.Replaced, plan.Skipped, plan.Invalid, plan.Sample, plan.Generated);
     }
 }
 
