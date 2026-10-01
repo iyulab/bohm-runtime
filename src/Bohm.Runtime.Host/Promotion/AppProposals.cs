@@ -110,7 +110,7 @@ internal static partial class AppProposals
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
         var builder = model.AsBuilder();
         builder.ConfigureOptions(options => options.MaxOutputTokens ??= MaxOutputTokens);
-        var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ModeToolFilter(permissions), approvalService: null)], []);
+        var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
         var client = builder.UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds).Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt });
 

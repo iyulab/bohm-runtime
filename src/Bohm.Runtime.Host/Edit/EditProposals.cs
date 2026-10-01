@@ -442,7 +442,7 @@ internal static partial class EditProposals
         });
 
         var pipeline = new ToolInvocationPipeline(
-            [new ApprovalGateMiddleware(new ModeToolFilter(permissions), approvalService: null)],
+            [new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)],
             [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
         var client = builder
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
