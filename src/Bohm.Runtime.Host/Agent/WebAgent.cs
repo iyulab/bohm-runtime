@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Bohm.Runtime.Host.Llm;
+using IronHive.Abstractions.Exceptions;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
@@ -94,40 +95,59 @@ internal static class WebAgent
 
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
         var client = builder.UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds).Build();
-        conversation = await GuardToolResultsAsync(conversation, cancellationToken).ConfigureAwait(false);
-        var history = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
-        history.AddRange(conversation.Take(conversation.Count - 1));
-        var last = conversation[^1];
-
-        // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
-        // conversation without one. A question starts a turn; the host's tool results continue one.
-        var loop = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
-        // Streamed either way: one path to the model, and the text is there to pass on as it comes.
-        IAsyncEnumerable<AgentResponseChunk> chunks;
-        var before = 0;
-        if (last.Role == ChatRole.User)
-        {
-            loop.InitializeHistory(history.Skip(1));
-            chunks = loop.RunStreamingAsync(last.Text, cancellationToken);
-        }
-        else
-        {
-            loop.InitializeHistory(history.Skip(1).Append(last));
-            before = loop.History.Count;
-            chunks = loop.ContinueStreamingAsync(cancellationToken);
-        }
-
         var written = new System.Text.StringBuilder();
-        await foreach (var chunk in chunks.ConfigureAwait(false))
+        var sent = conversation;
+        AgentLoop loop;
+        int before;
+        try
         {
-            if (chunk.TextDelta is not { Length: > 0 } delta) continue;
-            written.Append(delta);
-            if (onText is not null) await onText(delta, cancellationToken).ConfigureAwait(false);
+            (loop, before, conversation) = await StreamAsync(sent).ConfigureAwait(false);
+        }
+        catch (ContextOverflowException refused) when (written.Length == 0 && Shortened(sent, refused) is { } shorter)
+        {
+            // Too long for the model's context because of the pages read: the same turn once more with
+            // their text cut by as much as did not fit. A second refusal stands.
+            (loop, before, conversation) = await StreamAsync(shorter).ConfigureAwait(false);
+        }
+
+        async Task<(AgentLoop Loop, int Before, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
+        {
+            var guarded = await GuardToolResultsAsync(raw, cancellationToken).ConfigureAwait(false);
+            var history = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
+            history.AddRange(guarded.Take(guarded.Count - 1));
+            var last = guarded[^1];
+
+            // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
+            // conversation without one. A question starts a turn; the host's tool results continue one.
+            var turn = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
+            // Streamed either way: one path to the model, and the text is there to pass on as it comes.
+            IAsyncEnumerable<AgentResponseChunk> chunks;
+            var from = 0;
+            if (last.Role == ChatRole.User)
+            {
+                turn.InitializeHistory(history.Skip(1));
+                chunks = turn.RunStreamingAsync(last.Text, cancellationToken);
+            }
+            else
+            {
+                turn.InitializeHistory(history.Skip(1).Append(last));
+                from = turn.History.Count;
+                chunks = turn.ContinueStreamingAsync(cancellationToken);
+            }
+
+            await foreach (var chunk in chunks.ConfigureAwait(false))
+            {
+                if (chunk.TextDelta is not { Length: > 0 } delta) continue;
+                written.Append(delta);
+                if (onText is not null) await onText(delta, cancellationToken).ConfigureAwait(false);
+            }
+
+            return (turn, from, guarded);
         }
 
         // What this turn added: after the question the loop took in, or after the results it was given.
         var after = loop.History.ToList();
-        if (last.Role == ChatRole.User) before = after.FindLastIndex(m => m.Role == ChatRole.User) + 1;
+        if (conversation[^1].Role == ChatRole.User) before = after.FindLastIndex(m => m.Role == ChatRole.User) + 1;
         IList<ChatMessage> produced = after.Skip(before).ToList();
         string? text = written.ToString();
 
@@ -141,6 +161,44 @@ internal static class WebAgent
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName) : new("done", text ?? "", [], modelName);
+    }
+
+    /// <summary>A page text shorter than this is not worth cutting.</summary>
+    private const int SmallestCutPage = 1000;
+
+    /// <summary>
+    /// The conversation with the pages' text cut to fit a context that refused it, or <see langword="null"/>
+    /// when the refusal does not say by how much or there is no page text long enough to cut. Each long
+    /// tool result keeps its beginning, in the share of the window that was over, with a note that it was cut.
+    /// </summary>
+    internal static IReadOnlyList<ChatMessage>? Shortened(IReadOnlyList<ChatMessage> conversation, ContextOverflowException refused)
+    {
+        if (refused is not { ContextWindow: { } window, RequestTokens: { } requested } || requested <= window) return null;
+        // What share of the request fits, a little under — token counts of the cut text are not known exactly.
+        var keep = Math.Max(0.1, (double)window / requested * 0.85);
+        var cut = false;
+        var shorter = new List<ChatMessage>(conversation.Count);
+        foreach (var message in conversation)
+        {
+            if (message.Role != ChatRole.Tool) { shorter.Add(message); continue; }
+            var contents = new List<AIContent>();
+            foreach (var content in message.Contents)
+            {
+                if (content is FunctionResultContent { Result: string text } result && text.Length > SmallestCutPage)
+                {
+                    contents.Add(new FunctionResultContent(result.CallId, text[..(int)(text.Length * keep)] + "\n[The rest of this page was left out to fit the model's context.]"));
+                    cut = true;
+                }
+                else
+                {
+                    contents.Add(content);
+                }
+            }
+
+            shorter.Add(new ChatMessage(ChatRole.Tool, contents));
+        }
+
+        return cut ? shorter : null;
     }
 
     /// <summary><paramref name="id"/>, or the first of <c>id-2</c>, <c>id-3</c>, … not yet in <paramref name="taken"/> — which it joins.</summary>

@@ -81,6 +81,49 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_page_too_long_for_the_models_context_is_cut_and_the_turn_asked_once_more()
+    {
+        // The model takes 4,096 tokens; the request was 8,192 — about half of the page fits.
+        _model.FirstFailures.Enqueue(new IronHive.Abstractions.Exceptions.ContextOverflowException("too long", null!) { ContextWindow = 4096, RequestTokens = 8192 });
+        _model.Reply = "It is about a long list.";
+        await using var host = await StartWithLocalModelAsync();
+        var page = "Title: Long\n" + string.Concat(Enumerable.Repeat("가나다라 ", 2000));
+
+        using var response = await TurnAsync(host, JsonSerializer.Serialize(new
+        {
+            messages = new object[]
+            {
+                new { role = "user", text = "Summarize tab 1." },
+                new { role = "assistant", toolCalls = new[] { new { id = "c1", name = "read_page", arguments = new { tab = "web-1" } } } },
+                new { role = "tool", toolCallId = "c1", text = page },
+            },
+        }));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal("It is about a long list.", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("text").GetString());
+        Assert.Equal(2, _model.Calls.Count);
+        var first = (string)Assert.IsType<FunctionResultContent>(Assert.Single(_model.Calls[0].Messages[3].Contents)).Result!;
+        var second = (string)Assert.IsType<FunctionResultContent>(Assert.Single(_model.Calls[1].Messages[3].Contents)).Result!;
+        Assert.True(second.Length < first.Length * 0.6, $"{second.Length} of {first.Length}");
+        Assert.StartsWith("<tab-material>\nTitle: Long", second, StringComparison.Ordinal); // still marked as page material, its beginning kept
+        Assert.Contains("left out to fit the model's context", second, StringComparison.Ordinal);
+        Assert.EndsWith("</tab-material>", second, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_refusal_that_is_not_about_the_pages_stands()
+    {
+        // The question alone is past the window — no page to cut.
+        _model.FirstFailures.Enqueue(new IronHive.Abstractions.Exceptions.ContextOverflowException("too long", null!) { ContextWindow = 4096, RequestTokens = 8192 });
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hello?"}]}""");
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(_model.Calls);
+    }
+
+    [Fact]
     public async Task A_page_cannot_close_the_material_block_and_speak_outside_it()
     {
         _model.Reply = "Stew.";
