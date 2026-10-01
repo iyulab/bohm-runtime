@@ -9,7 +9,7 @@
 
   <!-- The durable store an application's data is kept in. -->
   <ItemGroup>
-    <PackageReference Include="LocalOrigin" Version="0.1.0-alpha.3" />
+    <PackageReference Include="LocalOrigin" Version="0.1.0-alpha.4" />
   </ItemGroup>
 
   <ItemGroup>
