@@ -24,7 +24,7 @@ internal sealed record AppRequest(string Question, string? Answer, string? Lang,
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 
 /// <summary>A proposed application: nothing is kept until the person takes it in.</summary>
-internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary);
+internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused);
 
 /// <summary>No application could be proposed: the model proposed none the runtime could keep, or none at all.</summary>
 internal sealed class AppProposalFailedException(string message) : Exception(message);
@@ -65,7 +65,9 @@ internal static partial class AppProposals
           to keep, copied exactly. Keep only the columns the application uses.
         - html: the whole application as one HTML file.
 
-        The application reads each source with fetch('/__bohm/sources/<name>'), which answers
+        The application reads each source with fetch('/__bohm/sources/<name>'), the address written out
+        in full with the name in it (fetch('/__bohm/sources/prices'), not an address put together from
+        parts — a proposal whose sources are not all read that way is refused), which answers
         { readAt, source, rows }: rows is an array of objects with one string per column name, readAt is
         when the page was read and source is the page's address. Before the first reading, readAt and
         source are null and rows is empty: say that the page has not been read yet. Every reading so far,
@@ -99,7 +101,7 @@ internal static partial class AppProposals
                     return "Refused: " + reason;
                 }
 
-                accepted = new AppProposal(title.Trim(), html, proposed, "");
+                accepted = new AppProposal(title.Trim(), html, proposed, "", [.. refusals]);
                 return "Accepted.";
             },
             "propose_app",

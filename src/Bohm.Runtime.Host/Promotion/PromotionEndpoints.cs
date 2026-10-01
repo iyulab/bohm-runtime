@@ -63,7 +63,7 @@ internal static class PromotionEndpoints
             return;
         }
 
-        await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name), cancel).ConfigureAwait(false);
+        await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, int port, CancellationToken cancel)
@@ -169,7 +169,7 @@ internal static class PromotionEndpoints
     /// <param name="Sources">Its sources: each a name, the page (1-based) its rule was made from, and the rule.</param>
     /// <param name="Summary">The model's sentence on what the application shows.</param>
     /// <param name="Model">Which model proposed it.</param>
-    internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model);
+    internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
 
     /// <summary>What was read for one source: the page, the columns and the rows, one cell per column.</summary>
     internal sealed record ReadingInput(string? Source, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<string>>? Rows);

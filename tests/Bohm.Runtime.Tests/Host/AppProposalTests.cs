@@ -53,6 +53,7 @@ public sealed class AppProposalTests
         Assert.Equal("Prices", proposal.Title);
         Assert.Equal(Html, proposal.Html);
         Assert.Equal("A price list read from the shop.", proposal.Summary);
+        Assert.Empty(proposal.Refused);
         var source = Assert.Single(proposal.Sources);
         Assert.Equal("prices", source.Name);
         Assert.Equal(1, source.Page);
@@ -92,6 +93,7 @@ public sealed class AppProposalTests
         var proposal = await AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken);
 
         Assert.Equal(["Item", "Price"], Assert.Single(proposal.Sources).Rule.Columns);
+        Assert.Contains(reason, Assert.Single(proposal.Refused), StringComparison.Ordinal);   // what was sent back is told with the proposal
         var refusal = model.Calls[1].Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Single(r => r.CallId == "c1");
         Assert.Contains(reason, refusal.Result?.ToString(), StringComparison.Ordinal);
     }
