@@ -113,6 +113,18 @@ public sealed class TableImportTests
         Assert.Null(Assert.Single(plan.Sample)["isbn"]);
     }
 
+    [Fact]
+    public void A_row_that_fills_no_field_is_not_a_record()
+    {
+        // Every column left out (headers the app does not know), and a row whose known cells are empty.
+        var nothingMatches = File("제목,저자\n파이썬,홍길동");
+        var emptyCells = File("title,메모\n,그냥 메모");
+
+        Assert.Equal(0, TableImport.Plan(Declaration(identity: null), nothingMatches, Books).Added);
+        Assert.Equal(0, TableImport.Plan(Declaration(identity: null), emptyCells, Books).Added);
+        Assert.Equal(Books, TableImport.Apply(Declaration(identity: null), nothingMatches, Books)); // the records already there keep their bytes
+    }
+
     [Theory]
     [InlineData("2026/10/01", "2026-10-01")]
     [InlineData("2026.1.5", "2026-01-05")]

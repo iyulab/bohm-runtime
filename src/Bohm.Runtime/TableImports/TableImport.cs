@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -128,7 +129,13 @@ public static partial class TableImport
     /// </summary>
     public static string Apply(ImportDeclaration declaration, TableFile file, string? stored, string sameRecord = SameRecord.Skip,
         IReadOnlyDictionary<string, string?>? columns = null) =>
-        Run(declaration, file, stored, sameRecord, columns).Result.ToJsonString();
+        Run(declaration, file, stored, sameRecord, columns).Result.ToJsonString(Written);
+
+    /// <summary>
+    /// Text written as it is, not as <c>\uXXXX</c>: the records already there keep their bytes, and a page
+    /// reads the value with <c>JSON.parse</c> — it never goes into markup as it is.
+    /// </summary>
+    private static readonly JsonSerializerOptions Written = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private static (ImportPlan Plan, JsonArray Result) Run(ImportDeclaration declaration, TableFile file, string? stored, string sameRecord,
         IReadOnlyDictionary<string, string?>? chosen)
@@ -175,6 +182,10 @@ public static partial class TableImport
 
             problem ??= declaration.Fields.FirstOrDefault(f => f.Required && record[f.Name] is null) is { } missing ? new InvalidRow(r + 2, missing.Name, null) : null;
             if (problem is not null) { invalid.Add(problem); continue; }
+
+            // A row that fills no field — no column goes anywhere, or its cells there are empty — is no record:
+            // adding it would add an empty one with only the key the application's code expects.
+            if (record.Count == 0) continue;
 
             if (declaration.Identity is { } key && IdentityText(record[key]) is { } id && index.TryGetValue(id, out var there))
             {
