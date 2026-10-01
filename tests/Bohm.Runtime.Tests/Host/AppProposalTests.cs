@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Host.Promotion;
 using Microsoft.Extensions.AI;
 
@@ -48,7 +49,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
         model.Script.Enqueue(new TextContent("A price list read from the shop."));
 
-        var proposal = await AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken);
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
 
         Assert.Equal("Prices", proposal.Title);
         Assert.Equal(Html, proposal.Html);
@@ -68,7 +69,7 @@ public sealed class AppProposalTests
         var model = new FakeChatModel();
         model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
 
-        await AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken);
+        await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
 
         var prompt = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
         Assert.Contains("<page-tables>", prompt, StringComparison.Ordinal);
@@ -90,7 +91,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c2", PricesFrom(2, "Item", "Price")));
         model.Script.Enqueue(new TextContent("Fixed."));
 
-        var proposal = await AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken);
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
 
         Assert.Equal(["Item", "Price"], Assert.Single(proposal.Sources).Rule.Columns);
         Assert.Contains(reason, Assert.Single(proposal.Refused), StringComparison.Ordinal);   // what was sent back is told with the proposal
@@ -109,7 +110,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price"), html));
         model.Script.Enqueue(new TextContent("Done."));
 
-        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Contains(reason, failure.Message, StringComparison.Ordinal);
     }
@@ -119,7 +120,7 @@ public sealed class AppProposalTests
     {
         var model = new FakeChatModel { Reply = "I cannot do that." };
 
-        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, Request, TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Contains("I cannot do that.", failure.Message, StringComparison.Ordinal);
     }

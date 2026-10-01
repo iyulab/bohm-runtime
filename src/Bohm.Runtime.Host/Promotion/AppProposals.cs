@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Sources;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
@@ -85,7 +86,8 @@ internal static partial class AppProposals
         follow. Finish with one sentence saying what the application shows.
         """;
 
-    public static async Task<AppProposal> ProposeAsync(IChatClient model, AppRequest request, CancellationToken cancellationToken)
+    /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
+    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken)
     {
         AppProposal? accepted = null;
         var refusals = new List<string>();
@@ -109,7 +111,11 @@ internal static partial class AppProposals
 
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
         var builder = model.AsBuilder();
-        builder.ConfigureOptions(options => options.MaxOutputTokens ??= MaxOutputTokens);
+        builder.ConfigureOptions(options =>
+        {
+            options.MaxOutputTokens ??= MaxOutputTokens;
+            if (limits.Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
+        });
         var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
         var client = builder.UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds).Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt });

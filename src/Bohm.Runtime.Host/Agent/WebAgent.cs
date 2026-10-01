@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bohm.Runtime.Host.Llm;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
@@ -76,17 +77,18 @@ internal static class WebAgent
     /// The model's text reaches <paramref name="onText"/> piece by piece as it is written, when one is given — the result still
     /// carries all of it.
     /// </summary>
-    public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, IReadOnlyList<ChatMessage> conversation,
+    public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
         Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken)
     {
         var builder = model.AsBuilder();
-        if (onThisComputer)
+        var thinks = limits.ThinksOn(onThisComputer);
+        if (onThisComputer || thinks)
         {
-            // As for proposals: no thinking unless asked, and a bound on each answer.
+            // As for proposals: no thinking unless asked, and on this computer a bound on each answer.
             builder.ConfigureOptions(options =>
             {
-                options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
-                options.MaxOutputTokens ??= MaxOutputTokensPerRound;
+                if (thinks) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+                if (onThisComputer) options.MaxOutputTokens ??= MaxOutputTokensPerRound;
             });
         }
 

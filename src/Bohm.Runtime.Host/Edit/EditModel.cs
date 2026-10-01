@@ -19,8 +19,8 @@ internal sealed record EditModelChoice(string Provider, string Model);
 /// <summary>What is missing for a proposal to be made: <c>localModel</c> (neither a model on this computer nor the organization's model server is set) or <c>key</c> (the chosen provider's key is not connected).</summary>
 internal sealed record EditModelMissing(string Needs, string? Provider);
 
-/// <summary>The model a proposal is made with, and the name reported with the proposal.</summary>
-internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer);
+/// <summary>The model a proposal is made with, the name reported with the proposal, and what is known of the model's limits.</summary>
+internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer, ModelLimits Limits);
 
 /// <summary>
 /// A model the person may choose for one of the runtime's agents: by default the organization's model
@@ -113,8 +113,10 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         if (Remembered is not { } chosen)
         {
             if (company.Client() is { } organizations)
-                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false);
-            return local.Configured ? new(await local.GetAsync(cancellationToken).ConfigureAwait(false), LocalName, OnThisComputer: true) : null;
+                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false, company.Limits);
+            if (!local.Configured) return null;
+            var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);
+            return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits);
         }
 
         var provider = LlmProviders.ById(chosen.Provider)!;
@@ -124,7 +126,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         lock (_clientLock)
         {
             if (_client is { } kept && kept.Choice == chosen && kept.Key == key)
-                return new(kept.Client, $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
+                return new(kept.Client, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
         }
 
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
@@ -151,7 +153,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         var counted = new CountedAsSent(client, egress, provider.Host);
         lock (_clientLock)
             _client = (chosen, key, counted);
-        return new(counted, $"{provider.Id}/{chosen.Model}", OnThisComputer: false);
+        return new(counted, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>

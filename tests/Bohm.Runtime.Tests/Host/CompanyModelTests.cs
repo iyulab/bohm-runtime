@@ -79,6 +79,58 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_models_limits_set_with_the_server_are_remembered_and_unusable_ones_refused()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-model-").FullName;
+        var first = await RunningHost.StartAsync(dataRoot);
+        Assert.Equal(JsonValueKind.Null, (await GetAsync(first)).GetProperty("contextWindow").ValueKind);
+
+        using (var bad = await SetAsync(first, """{"endpoint":"http://models.example/v1","model":"qwen","contextWindow":4096,"maxTokens":8192}""")) HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+        using (var bad = await SetAsync(first, """{"endpoint":"http://models.example/v1","model":"qwen","reasoning":"yes"}""")) HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+        using (var set = await SetAsync(first, """{"endpoint":"http://models.example/v1","model":"qwen","contextWindow":32768,"maxTokens":4096,"reasoning":true}"""))
+            HttpAssert.Status(HttpStatusCode.OK, set);
+        await first.StopKeepingDataAsync();
+
+        await using var second = await RunningHost.StartAsync(dataRoot);
+        var remembered = await GetAsync(second);
+        Assert.Equal(32768, remembered.GetProperty("contextWindow").GetInt32());
+        Assert.Equal(4096, remembered.GetProperty("maxTokens").GetInt32());
+        Assert.True(remembered.GetProperty("reasoning").GetBoolean());
+
+        // Set again without them: unknown again.
+        using (var plain = await SetAsync(second, "http://models.example/v1", "qwen")) HttpAssert.Status(HttpStatusCode.OK, plain);
+        Assert.Equal(JsonValueKind.Null, (await GetAsync(second)).GetProperty("reasoning").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_known_answer_bound_lowers_an_applications_larger_one_and_a_thinking_model_is_asked_not_to_think_for_a_proposal()
+    {
+        await using var host = await StartAsync(fixedAtStart: false);
+        using (var set = await SetAsync(host, $$"""{"endpoint":"{{_server.Address.AbsoluteUri}}v1","model":"set-model","maxTokens":1024,"reasoning":true}"""))
+            HttpAssert.Status(HttpStatusCode.OK, set);
+        var app = await host.AdoptAsync(App);
+
+        using (var response = await PostFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/chat/completions",
+            """{"model":"gpt-4o-mini","max_tokens":4000,"messages":[{"role":"user","content":"Hello?"}]}"""))
+            HttpAssert.Status(HttpStatusCode.OK, response);
+        using (var asked = JsonDocument.Parse(Assert.Single(_server.Received).Body))
+            Assert.Equal(1024, AnswerBound(asked.RootElement));
+
+        _server.Received.Clear();
+        using (var proposal = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json")))
+            HttpAssert.Status(HttpStatusCode.OK, proposal);
+        using var proposed = JsonDocument.Parse(_server.Received.First().Body);
+        Assert.Equal("none", proposed.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(1024, AnswerBound(proposed.RootElement));
+    }
+
+    /// <summary>The answer bound a Chat Completions request asks for, by either of its names.</summary>
+    private static int AnswerBound(JsonElement request) =>
+        (request.TryGetProperty("max_completion_tokens", out var bound) || request.TryGetProperty("max_tokens", out bound)) ? bound.GetInt32() : -1;
+
+    [Fact]
     public async Task A_server_fixed_at_start_cannot_be_changed_but_its_key_can_be_connected()
     {
         await using var host = await StartAsync(fixedAtStart: true);
@@ -315,8 +367,10 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     private static Task<HttpResponseMessage> SetAsync(RunningHost host, string endpoint, string model) =>
-        host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(
-            JsonSerializer.Serialize(new Dictionary<string, string> { ["endpoint"] = endpoint, ["model"] = model }), Encoding.UTF8, "application/json"));
+        SetAsync(host, JsonSerializer.Serialize(new Dictionary<string, string> { ["endpoint"] = endpoint, ["model"] = model }));
+
+    private static Task<HttpResponseMessage> SetAsync(RunningHost host, string body) =>
+        host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(body, Encoding.UTF8, "application/json"));
 
     private static async Task<HttpResponseMessage> PostFromAppAsync(RunningHost host, string app, string path, string body)
     {

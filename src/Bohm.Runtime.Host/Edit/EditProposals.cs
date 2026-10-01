@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Bohm.Runtime.Host.Llm;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
@@ -146,10 +147,11 @@ internal static partial class EditProposals
     /// to keep each answer short. A provider's model is not: providers spell both settings their own
     /// way and refuse the ones they do not know, and they answer fast enough for the round limit alone.
     /// </param>
-    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
+    /// <param name="limits">What is known of the model: one known to think is asked not to, wherever it runs.</param>
+    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
     {
         var text = SourceText.Of(source);
-        var proposal = await RunAsync(model, onThisComputer, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
+        var proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
             Prompt(text.Lf.Split('\n'), target, instruction), cancellationToken).ConfigureAwait(false);
         return proposal with { Html = text.Restore(proposal.Html) };
     }
@@ -159,7 +161,7 @@ internal static partial class EditProposals
     /// (<see cref="Bohm.Runtime.Adoption.OnlineStorage"/>) to localStorage, which the runtime keeps.
     /// The model is shown every place the source uses the database rather than one element.
     /// </summary>
-    public static async Task<EditProposal> ProposeLocalStorageAsync(IChatClient model, bool onThisComputer, string source, CancellationToken cancellationToken)
+    public static async Task<EditProposal> ProposeLocalStorageAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, CancellationToken cancellationToken)
     {
         var text = SourceText.Of(source);
         var draft = text.Lf;
@@ -170,7 +172,7 @@ internal static partial class EditProposals
         IReadOnlyList<string> dangling = [];
         for (var pass = 0; pass < MaxStoragePasses && (StillOnline(draft) || dangling.Count > 0); pass++)
         {
-            var step = await RunAsync(model, onThisComputer, draft, StorageSystemPrompt, MaxStorageRounds,
+            var step = await RunAsync(model, onThisComputer, limits, draft, StorageSystemPrompt, MaxStorageRounds,
                 onThisComputer ? MaxStorageOutputTokensHere : MaxStorageOutputTokensProvider,
                 StoragePrompt(draft.Split('\n'), again: pass > 0, dangling), cancellationToken).ConfigureAwait(false);
             if (step.Edits.Count == 0) break;
@@ -403,7 +405,7 @@ internal static partial class EditProposals
         public string Restore(string lf) => Crlf ? lf.Replace("\n", "\r\n", StringComparison.Ordinal) : lf;
     }
 
-    private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt, CancellationToken cancellationToken)
+    private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt, CancellationToken cancellationToken)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -433,11 +435,12 @@ internal static partial class EditProposals
         // The same rule as for the applications' own requests: no thinking unless asked, and a bound
         // on each answer — a model that reasons by default otherwise spends the local server's whole
         // request limit before its first tool call. A provider's model keeps its own settings except for
-        // the bound a task sets.
+        // the bound a task sets — and the thinking setting, when the model is known to think.
+        var thinks = limits.ThinksOn(onThisComputer);
         var builder = model.AsBuilder();
         builder.ConfigureOptions(options =>
         {
-            if (onThisComputer) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+            if (thinks) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
             options.MaxOutputTokens ??= maxOutputTokens;
         });
 

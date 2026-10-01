@@ -54,7 +54,7 @@ internal static class PromotionEndpoints
         AppProposal proposal;
         try
         {
-            proposal = await AppProposals.ProposeAsync(model.Client, request, cancel).ConfigureAwait(false);
+            proposal = await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
