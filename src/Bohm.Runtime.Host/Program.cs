@@ -58,6 +58,9 @@ var shipped = Path.Combine(AppContext.BaseDirectory, "llama-server", OperatingSy
 llamaServer ??= File.Exists(shipped) ? shipped : null;
 
 // Standard output carries only the protocol line below; every log line goes to standard error.
+// Per-request lines from ASP.NET Core are kept at Warning (its usual production level): the caller
+// polls the control API every few seconds, so at Information an idle runtime grows its log for as long
+// as it runs.
 var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
 {
     DataRoot = dataRoot,
@@ -77,7 +80,9 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
         }
         : null,
 },
-    builder => builder.Logging.AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
+    builder => builder.Logging
+        .AddFilter("Microsoft.AspNetCore", LogLevel.Warning)
+        .AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
 await using var app = started.App;
 
 if (parentPid is { } pid)
