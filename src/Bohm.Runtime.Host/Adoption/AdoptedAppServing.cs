@@ -3,6 +3,8 @@ using System.Text.Json;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Usage;
 using LocalOrigin.AspNetCore;
+using LocalOrigin.AspNetCore.Previews;
+using LocalOrigin.AspNetCore.Storage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -17,6 +19,28 @@ internal static class AdoptedAppServing
     public const string RequestHeader = "X-Bohm-Request";
     public const string StoragePath = "/__bohm/storage";
     public const string UsagePath = "/__bohm/usage";
+    public const string ProblemsPath = "/__bohm/problems";
+
+    /// <summary>
+    /// The storage channel's names on the wire, kept from earlier versions (the shell reads <c>window.__bohm</c>
+    /// before it closes a page), and what a write is recorded as.
+    /// </summary>
+    public static readonly StorageChannelOptions ChannelOptions = new()
+    {
+        Path = StoragePath,
+        RequestHeader = RequestHeader,
+        SessionCookie = SessionCookie,
+        HandleName = "__bohm",
+        Applied = async (context, appId, _) =>
+            (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.Record(UsageSignal.Wrote),
+        // A page whose code was replaced while it was still writing: the write is refused (the new code owns the
+        // data now) but it was a write the person made, so it is counted where a host's unconfirmed close is.
+        RefusedFromRetiredTab = async (context, appId, _) =>
+            (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.RecordLossSuspected(),
+    };
+
+    /// <summary>Where a page reports what stopped it.</summary>
+    public static readonly ProblemReportOptions ProblemOptions = new() { Path = ProblemsPath, RequestHeader = RequestHeader };
 
     /// <summary>
     /// The headers of every response from an application's origin, and the requests it refuses: everything
@@ -35,8 +59,6 @@ internal static class AdoptedAppServing
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     });
-
-    internal static readonly Lazy<int> ShimLineCount = new(() => ShimTemplate.Value.Count(c => c == '\n'));
 
     /// <summary>The application a request is addressed to, from its <c>Host</c> header.</summary>
     public static string? AppIdOf(HttpRequest request)
@@ -83,9 +105,18 @@ internal static class AdoptedAppServing
         }
 
         var path = context.Request.Path;
+        var channel = context.RequestServices.GetRequiredService<StorageChannel>();
         if (path == StoragePath)
         {
-            await StorageEndpoint.HandleAsync(context, appId).ConfigureAwait(false);
+            var openApps = context.RequestServices.GetRequiredService<OpenApps>();
+            using var inProgress = context.RequestServices.GetRequiredService<Activity>().Begin();
+            await channel.HandleAsync(context, appId, async _ => (await openApps.GetAsync(appId).ConfigureAwait(false)).Storage).ConfigureAwait(false);
+            return;
+        }
+
+        if (path == ProblemsPath)
+        {
+            await ReceiveProblemAsync(context, appId).ConfigureAwait(false);
             return;
         }
 
@@ -136,7 +167,6 @@ internal static class AdoptedAppServing
             return;
         }
 
-        var sessions = context.RequestServices.GetRequiredService<AppSessions>();
         OpenApp app;
         byte[] html;
         try
@@ -152,15 +182,9 @@ internal static class AdoptedAppServing
             return;
         }
 
-        var (body, charset) = InjectShim(context, html, app, appId, sessions.IssueTab(appId));
+        var page = channel.Open(context, appId, app.Storage.GetItems());
+        var (body, charset) = Inject(context, html, page, app, appId);
 
-        response.Cookies.Append(SessionCookie, sessions.IssueSession(appId), new CookieOptions
-        {
-            HttpOnly = true,
-            SameSite = SameSiteMode.Strict,
-            Path = "/",
-            IsEssential = true,
-        });
         // The document carries a snapshot of the data inline; a cached copy would be a stale one.
         response.Headers.CacheControl = "no-store";
         response.ContentType = $"text/html; charset={charset}";
@@ -176,31 +200,52 @@ internal static class AdoptedAppServing
     }
 
     /// <summary>
-    /// <paramref name="html"/> with the injected script in front, booted with <paramref name="appId"/>'s
-    /// data as it is now. The one place the boot is put together, so a page served for a look
-    /// (<see cref="PreviewServing"/>) routes the same calls the application's own page would.
+    /// A problem the page reported (an error while loading, or something the policy refused), kept on the
+    /// application to tell the person, when it comes from a page of this application.
     /// </summary>
-    internal static InjectedDocument InjectShim(HttpContext context, byte[] html, OpenApp app, string appId, string tab)
+    private static async Task ReceiveProblemAsync(HttpContext context, string appId)
     {
-        var boot = BootScript(context, app.Storage.GetItems(), appId, tab);
-        return DocumentInjector.Inject(AssetServing.PointAtCache(html, app.Assets), AssetServing.ImportMap(app.Assets) + "<script>" + boot + "</script>");
+        var problem = await context.RequestServices.GetRequiredService<ProblemReports>().ReceiveAsync(context).ConfigureAwait(false);
+        if (problem is null || context.RequestServices.GetRequiredService<StorageChannel>().TabOf(context, appId, problem.Tab) is null) return;
+        var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+        switch (problem)
+        {
+            case PageBlocked { Blocked: var blocked }:
+                app.AddBlocked(blocked.Category.ToString().ToLowerInvariant(), blocked.Host);
+                context.RequestServices.GetRequiredService<Egress>().Blocked(appId, blocked.Host);
+                break;
+            case PageLoadError error:
+                app.AddLoadError(error.Message);
+                break;
+        }
     }
 
-    /// <summary>The injected script for a document with no application behind it yet — no data, no cached code.</summary>
-    internal static InjectedDocument InjectShim(HttpContext context, byte[] html, string placeholderId, string tab) =>
-        DocumentInjector.Inject(html, "<script>" + BootScript(context, new Dictionary<string, string>(), placeholderId, tab) + "</script>");
-
-    private static string BootScript(HttpContext context, IReadOnlyDictionary<string, string> items, string appId, string tab)
+    /// <summary>
+    /// <paramref name="html"/> with the injected scripts in front: the storage channel's (seeded with the data as
+    /// it is now), the runtime's own, and problem reporting. The one place they are put together, so a page served
+    /// for a look (<see cref="PreviewServing"/>) routes the same calls the application's own page would. With no
+    /// <paramref name="app"/> (a proposed new application) there is no cached code to point at.
+    /// </summary>
+    internal static InjectedDocument Inject(HttpContext context, byte[] html, ChannelPage page, OpenApp? app, string appId)
     {
-        var boot = JsonSerializer.Serialize(new Boot(tab, items, Llm.LlmProviders.Placeholder(appId),
-            Llm.LlmProviders.All.Select(p => p.Host).ToList(), ShimLineCount.Value,
+        var problems = context.RequestServices.GetRequiredService<ProblemReports>();
+        var before = (app is null ? "" : AssetServing.ImportMap(app.Assets)) + "<script>" + page.Script + "</script><script>" + RuntimeScript(context, appId, page.Tab) + "</script>";
+        // Reported lines count every line the injected markup adds before the document's own first line.
+        string Markup(int lineOffset) => before + "<script>" + problems.Script(page.Tab, lineOffset) + "</script>";
+        var markup = Markup(Markup(0).Count(c => c == '\n'));
+        return DocumentInjector.Inject(app is null ? html : AssetServing.PointAtCache(html, app.Assets), markup);
+    }
+
+    private static string RuntimeScript(HttpContext context, string appId, string tab)
+    {
+        var boot = JsonSerializer.Serialize(new Boot(tab, Llm.LlmProviders.Placeholder(appId),
+            Llm.LlmProviders.All.Select(p => p.Host).ToList(),
             context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
         return ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal);
     }
 
-    /// <param name="LineOffset">Lines the injected script adds before the document's own first line.</param>
-    /// <param name="CompanyBase">The organization's model server's base address, when one is set — an application written for it calls it directly.</param>
-    internal sealed record Boot(string Tab, IReadOnlyDictionary<string, string> Items, string LlmPlaceholder, IReadOnlyList<string> LlmHosts, int LineOffset, string? CompanyBase);
+    /// <param name="CompanyBase">The organization's model server's base address, when one is set: an application written for it calls it directly.</param>
+    internal sealed record Boot(string Tab, string LlmPlaceholder, IReadOnlyList<string> LlmHosts, string? CompanyBase);
 }
 
 /// <summary>

@@ -7,12 +7,10 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <summary>
 /// Receives the two usage facts only the page can observe: <c>POST /__bohm/usage</c> with
 /// <c>{ "tab": "...", "kind": "input" }</c> the first time the person types or points, and
-/// <c>{ "tab": "...", "kind": "load-error", "message": "..." }</c> when the application fails
-/// while loading, and <c>{ "tab": "...", "kind": "blocked", "category": "library", "host": "..." }</c>
-/// when the content security policy refused something from another host, and
 /// <c>{ "tab": "...", "kind": "keys", "missing": 1, "unread": 3, "seeded": 3 }</c> once per page load:
 /// how the page's reads matched the data it was given (counts only). Opening and writing are
-/// observed by the host itself.
+/// observed by the host itself; what stopped the page arrives as a problem report
+/// (<see cref="AdoptedAppServing.ProblemsPath"/>).
 /// </summary>
 internal static class UsageEndpoint
 {
@@ -42,8 +40,7 @@ internal static class UsageEndpoint
             report = null;
         }
 
-        if (report is null || report.Kind is not ("input" or "load-error" or "blocked" or "keys")
-            || report.Kind == "blocked" && (report.Category is not ("library" or "data" or "form") || report.Host is not { Length: > 0 and <= 255 })
+        if (report is null || report.Kind is not ("input" or "keys")
             || report.Kind == "keys" && !(Count(report.Missing) && Count(report.Unread) && Count(report.Seeded) && report.Unread <= report.Seeded))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
@@ -65,11 +62,6 @@ internal static class UsageEndpoint
                 if (await context.RequestServices.GetRequiredService<AdoptionCatalog>().GetAsync(appId, context.RequestAborted).ConfigureAwait(false) is { } adopted)
                     app.Usage.RecordKeys(adopted.Revision, report.Missing!.Value, report.Unread!.Value, report.Seeded!.Value);
                 break;
-            case "blocked":
-                app.AddBlocked(report.Category!, report.Host!);
-                context.RequestServices.GetRequiredService<Egress>().Blocked(appId, report.Host!);
-                break;
-            default: app.AddLoadError(report.Message ?? ""); break;
         }
         // 200 with a body rather than 204: an answered-with-204 fetch was observed to keep the
         // Chromium-family browser from shutting down cleanly (its close never completed).
@@ -78,8 +70,7 @@ internal static class UsageEndpoint
 
     private static bool Count(int? n) => n is >= 0 and <= 100_000;
 
-    internal sealed record Report(string? Tab, string? Kind, string? Message, string? Category, string? Host,
-        int? Missing = null, int? Unread = null, int? Seeded = null);
+    internal sealed record Report(string? Tab, string? Kind, int? Missing = null, int? Unread = null, int? Seeded = null);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

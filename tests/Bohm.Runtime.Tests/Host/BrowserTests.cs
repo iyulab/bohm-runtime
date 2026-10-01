@@ -530,6 +530,38 @@ public sealed class BrowserTests : IAsyncLifetime
         Assert.Equal(System.Text.Encoding.UTF8.GetBytes(html), await _host.Catalog.ReadHtmlAsync(id)); // the stored document is untouched
     }
 
+    [Fact]
+    public async Task How_a_pages_reads_matched_its_data_is_reported_as_counts()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><html><body><script>
+              localStorage.getItem('read');        // given, read
+              localStorage.viaProperty;            // given, read as a property
+              localStorage.getItem('absent');      // never given
+              localStorage.toJSON;                 // a library probing a name is not a read
+              localStorage.setItem('mine', '1');   // written here, so reading it later is no miss
+              localStorage.getItem('mine');
+            </script></body></html>
+            """);
+        var seed = await _host.LoadAsync(id);
+        using (var write = await _host.PostStorageAsync(id, seed,
+            """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"read","value":"1"},{"seq":2,"op":"set","key":"viaProperty","value":"2"},{"seq":3,"op":"set","key":"unread","value":"3"}]}"""))
+            HttpAssert.Status(System.Net.HttpStatusCode.OK, write);
+
+        await OpenAsync(id);
+
+        var keys = await EventuallyAsync(async cancellation =>
+        {
+            using var client = _host.ControlClient();
+            var usage = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/usage", cancellation)).RootElement;
+            return usage.GetProperty("keys").GetArrayLength() > 0 ? usage.GetProperty("keys")[0] : (System.Text.Json.JsonElement?)null;
+        });
+        Assert.Equal(3, keys.GetProperty("seeded").GetInt32());
+        Assert.Equal(1, keys.GetProperty("unread").GetInt32());
+        Assert.Equal(1, keys.GetProperty("missing").GetInt32());
+    }
+
     private Task<System.Text.Json.JsonElement> StatusWhenAsync(string id, Func<System.Text.Json.JsonElement, bool> condition) =>
         EventuallyAsync(async cancellation =>
         {

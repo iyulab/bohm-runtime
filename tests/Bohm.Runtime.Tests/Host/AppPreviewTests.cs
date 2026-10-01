@@ -147,7 +147,9 @@ public sealed class AppPreviewTests : IAsyncLifetime
 
     private static async Task ReportAsync(HttpClient preview, string json)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/usage") { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        // What stopped the page is a problem report; use the page saw is a usage report.
+        var path = json.Contains("\"kind\":\"input\"", StringComparison.Ordinal) ? "/__bohm/usage" : "/__bohm/problems";
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         request.Headers.Add("X-Bohm-Request", "1");
         using var response = await preview.SendAsync(request);
         HttpAssert.Status(HttpStatusCode.OK, response);

@@ -1,246 +1,75 @@
-// Injected ahead of an adopted application's own markup. It replaces window.localStorage with a
-// synchronous in-memory map seeded from the runtime's snapshot, and forwards every change to the
-// runtime, which journals it durably. The application's own code is not modified.
-//
-// Delivery: at most one request is in flight. Every operation carries a per-tab sequence number
-// and stays "unacknowledged" until the runtime confirms it; the runtime ignores numbers it has
-// already applied, so resending is always safe. When the page is being hidden or unloaded, every
-// unacknowledged operation is resent with keepalive, so a request still in flight cannot be
-// overtaken by a later one.
+// The runtime's own script, injected ahead of an adopted application's markup after the storage
+// channel's script (which replaces window.localStorage and defines window.__bohm) and before problem
+// reporting. It adds what only this runtime does: usage facts the page alone can see, and AI provider
+// calls relayed through the runtime. The application's own code is not modified.
 //
 // This file must stay ASCII: it is spliced into documents of any ASCII-compatible encoding.
 (function () {
   "use strict";
   var boot = __BOHM_BOOT__;
-  var data = new Map(Object.keys(boot.items).map(function (k) { return [k, boot.items[k]]; }));
-  var endpoint = "/__bohm/storage";
-  var seq = 0;
-  var unacked = [];   // sent, awaiting acknowledgement, in sequence order
-  var queue = [];     // recorded, not yet sent
-  var inflight = false;
-  var timer = 0;
-  var retryDelay = 250;
   // The page may replace fetch (this script does, below); the runtime's own traffic uses the original.
   var nativeFetch = window.fetch.bind(window);
 
-  function post(ops, keepalive) {
-    return nativeFetch(endpoint, {
-      method: "POST",
-      credentials: "same-origin",
-      keepalive: keepalive,
-      headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-      body: JSON.stringify({ tab: boot.tab, ops: ops, issued: seq })
-    }).then(function (response) {
-      if (!response.ok) throw new Error("storage request failed: " + response.status);
-      return response.json();
-    }).then(function (result) {
-      unacked = unacked.filter(function (op) { return op.seq > result.ack; });
-      return result;
-    });
-  }
-
-  // Sends everything not yet acknowledged, one request at a time. On failure the operations stay
-  // unacknowledged and are sent again after a growing delay.
-  function pump() {
-    timer = 0;
-    if (inflight) return;
-    var ops = unacked.concat(queue);
-    if (ops.length === 0) return;
-    unacked = ops;
-    queue = [];
-    inflight = true;
-    var failed = false;
-    post(ops.slice(), false).then(function () {
-      retryDelay = 250;
-    }, function () {
-      failed = true;
-      retryDelay = Math.min(retryDelay * 2, 5000);
-    }).then(function () {
-      inflight = false;
-      if (unacked.length > 0 || queue.length > 0) schedule(failed ? retryDelay : 0);
-    });
-  }
-
-  function schedule(delay) {
-    if (!timer) timer = setTimeout(pump, delay);
-  }
-
-  // Once the page starts leaving, a timer may never run: the page's own pagehide/unload writes come
-  // after this script's handler (registered first) and are sent at once instead.
-  var leaving = false;
-  window.addEventListener("pageshow", function () { leaving = false; });
-
-  function flushOnLeave() {
-    leaving = true;
-    var ops = unacked.concat(queue);
-    if (ops.length === 0) return;
-    unacked = ops;
-    queue = [];
-    // Browsers cap keepalive bodies at 64 KiB. A larger final batch goes as a normal request,
-    // which survives a closing window but not an ending process; the host's shutdown ordering
-    // is what covers that case.
-    var keepalive = JSON.stringify(ops).length < 60000;
-    post(ops.slice(), keepalive).catch(function () { /* nothing left to retry with */ });
-  }
-
-  function record(op) {
-    op.seq = ++seq;
-    queue.push(op);
-    if (leaving) {
-      // Sent now, with keepalive, so it leaves before the document does, together with everything
-      // not yet acknowledged: the runtime skips sequences it has passed, so a batch that arrived
-      // ahead of an earlier one would otherwise make the earlier one's operations count as old.
-      flushOnLeave();
-      return;
-    }
-    schedule(0);
-  }
-
-  // How this page's reads match the data it was given: keys asked for that the data does not have
-  // (and that this page has not written), and given keys never read. A revision whose data shape
-  // changed shows both. Counts only reach the runtime, never key names. Listing the keys counts as
-  // reading them all.
-  var seeded = new Set(data.keys());
-  var readSeeded = new Set();
-  var missingReads = new Set();
-  var written = new Set();
-  function noteRead(key) {
-    if (data.has(key)) { if (seeded.has(key)) readSeeded.add(key); }
-    else if (!written.has(key)) missingReads.add(key);
-  }
-  function noteListed() { seeded.forEach(function (k) { readSeeded.add(k); }); }
-
-  var storage = {
-    getItem: function (key) { key = String(key); noteRead(key); return data.has(key) ? data.get(key) : null; },
-    setItem: function (key, value) {
-      key = String(key); value = String(value);
-      written.add(key);
-      data.set(key, value);
-      record({ op: "set", key: key, value: value });
-    },
-    removeItem: function (key) {
-      key = String(key);
-      written.add(key);
-      if (!data.has(key)) return;
-      data.delete(key);
-      record({ op: "remove", key: key });
-    },
-    clear: function () {
-      data.forEach(function (v, k) { written.add(k); });
-      if (data.size === 0) return;
-      data.clear();
-      record({ op: "clear" });
-    },
-    key: function (index) {
-      noteListed();
-      var keys = Array.from(data.keys());
-      return index >= 0 && index < keys.length ? keys[index] : null;
-    }
-  };
-  // configurable: a Proxy must report every non-configurable own property from ownKeys.
-  Object.defineProperty(storage, "length", { get: function () { return data.size; }, configurable: true });
-
-  // Property-style access (localStorage.foo = "bar", localStorage.foo, delete localStorage.foo,
-  // Object.keys(localStorage)) behaves like the Web Storage API's named properties.
-  var proxy = new Proxy(storage, {
-    // A property read counts as reading a stored key, but a missing name is not counted: libraries probe
-    // arbitrary names (toJSON, then) that were never the application's keys.
-    get: function (target, name) {
-      if (name in target) return target[name];
-      if (typeof name !== "string") return undefined;
-      if (!data.has(name)) return null;
-      return storage.getItem(name);
-    },
-    set: function (target, name, value) { storage.setItem(name, value); return true; },
-    has: function (target, name) { return name in target || data.has(String(name)); },
-    deleteProperty: function (target, name) { storage.removeItem(name); return true; },
-    ownKeys: function () { noteListed(); return Array.from(data.keys()); },
-    getOwnPropertyDescriptor: function (target, name) {
-      return data.has(String(name)) ? { value: data.get(String(name)), enumerable: true, configurable: true, writable: true } : undefined;
-    }
-  });
-
-  Object.defineProperty(window, "localStorage", { value: proxy, configurable: true, enumerable: true });
-
-  // Usage facts only the page can see: the first input, and failures while loading. Neither
-  // carries anything the person typed; a load failure carries the error message, which the
-  // runtime keeps in memory to show the person and never writes down.
-  function report(kind, message, category, host) {
+  function usage(body) {
+    body.tab = boot.tab;
     nativeFetch("/__bohm/usage", {
       method: "POST",
       credentials: "same-origin",
       keepalive: true,
       headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-      body: JSON.stringify({ tab: boot.tab, kind: kind, message: message, category: category, host: host })
+      body: JSON.stringify(body)
     }).catch(function () { /* usage is best-effort */ });
   }
 
+  // The first input. It carries nothing the person typed.
   function onFirstInput() {
     window.removeEventListener("keydown", onFirstInput, true);
     window.removeEventListener("pointerdown", onFirstInput, true);
-    report("input");
+    usage({ kind: "input" });
   }
   window.addEventListener("keydown", onFirstInput, true);
   window.addEventListener("pointerdown", onFirstInput, true);
 
-  // What stopped the application, in terms a person can be told. The runtime receives facts only:
-  // which kind of thing was blocked and from which host, or which error was thrown.
-  //  - blocked: the content security policy refused something from another host. A script, style
-  //    sheet, font or module is a "library" the application needs; anything fetched or displayed is
-  //    "data". This also catches an inline module whose import comes from a CDN, which raises no
-  //    useful error of its own.
-  //  - load-error: the application's own code failed while loading.
-  // Files the original site served next to the page (a relative "footer.js") are the host's to
-  // report: it answers those requests itself.
-  var reported = {};
-  var reports = 0;
-  function reportOnce(key, kind, message, category, host) {
-    if (reported[key] || reports >= 20) return;
-    reported[key] = true;
-    reports++;
-    report(kind, message, category, host);
+  // How this page's reads match the data it was given: keys asked for that the data does not have
+  // (and that this page has not written), and given keys never read. A revision whose data shape
+  // changed shows both. Counts only reach the runtime, never key names. Listing the keys counts as
+  // reading them all. The storage channel's localStorage is wrapped, not replaced: every call still
+  // goes to it.
+  var store = window.localStorage;
+  var seeded = new Set(Object.keys(store));
+  var readSeeded = new Set();
+  var missingReads = new Set();
+  var written = new Set();
+  function noteRead(key) {
+    key = String(key);
+    if (store.getItem(key) !== null) { if (seeded.has(key)) readSeeded.add(key); }
+    else if (!written.has(key)) missingReads.add(key);
   }
+  function noteListed() { seeded.forEach(function (k) { readSeeded.add(k); }); }
+  function noteWritten(key) { written.add(String(key)); }
 
-  var blockedUrls = {};
-  document.addEventListener("securitypolicyviolation", function (event) {
-    var directive = String(event.effectiveDirective || event.violatedDirective || "");
-    var uri = String(event.blockedURI || "");
-    if (!/^https?:/i.test(uri)) return; // inline, eval: allowed by policy, so not a loss
-    blockedUrls[uri] = true;
-    var host;
-    try { host = new URL(uri).host; } catch (e) { return; }
-    var category = /^(script|style|font|worker|manifest)-src/.test(directive) ? "library"
-      : /^form-action/.test(directive) ? "form" : "data";
-    reportOnce("blocked " + category + " " + host, "blocked", undefined, category, host);
+  var methods = {
+    getItem: function (key) { noteRead(key); return store.getItem(key); },
+    setItem: function (key, value) { noteWritten(key); return store.setItem(key, value); },
+    removeItem: function (key) { noteWritten(key); return store.removeItem(key); },
+    clear: function () { Object.keys(store).forEach(noteWritten); return store.clear(); },
+    key: function (index) { noteListed(); return store.key(index); }
+  };
+  var tracked = new Proxy(store, {
+    // A property read counts as reading a stored key, but a missing name is not counted: libraries probe
+    // arbitrary names (toJSON, then) that were never the application's keys.
+    get: function (target, name) {
+      if (typeof name === "string" && Object.prototype.hasOwnProperty.call(methods, name)) return methods[name];
+      if (typeof name !== "string" || name === "length" || name in Object.prototype) return target[name];
+      var value = target[name];
+      if (value !== null && value !== undefined) noteRead(name);
+      return value;
+    },
+    set: function (target, name, value) { noteWritten(name); target[name] = value; return true; },
+    deleteProperty: function (target, name) { noteWritten(name); return delete target[name]; },
+    ownKeys: function (target) { noteListed(); return Reflect.ownKeys(target); }
   });
-
-  var loading = true;
-  function onLoadError(message) {
-    if (!loading || !message) return;
-    reportOnce("error " + message, "load-error", String(message).slice(0, 500));
-  }
-  // Capturing on window also sees resources that failed to load, which do not bubble.
-  window.addEventListener("error", function (event) {
-    var target = event.target;
-    if (target && target !== window) {
-      var url = target.src || target.href;
-      if (!url) return;
-      try { if (new URL(url, location.href).origin === location.origin) return; } catch (e) { return; }
-      // The policy's violation event arrives after the element's error event; wait for it, so a
-      // blocked library is reported once, as blocked.
-      setTimeout(function () { if (!blockedUrls[url]) onLoadError("could not load " + url); }, 250);
-      return;
-    }
-    if (!event.message) return;
-    // Line numbers in the document count this script too; report them as the person's file has them.
-    var line = event.lineno && event.filename === location.href ? event.lineno - boot.lineOffset : event.lineno;
-    onLoadError(event.message + (line > 0 ? " (line " + line + ")" : ""));
-  }, true);
-  window.addEventListener("unhandledrejection", function (event) {
-    var reason = event.reason;
-    onLoadError(reason && reason.message ? reason.message : String(reason));
-  });
-  window.addEventListener("load", function () { setTimeout(function () { loading = false; }, 1000); });
+  Object.defineProperty(window, "localStorage", { value: tracked, configurable: true, enumerable: true });
 
   // One report per page, a few seconds after load, when the application has read what it needs to
   // draw itself. Only when there was data to read.
@@ -249,13 +78,7 @@
       if (seeded.size === 0) return;
       var unread = 0;
       seeded.forEach(function (k) { if (!readSeeded.has(k)) unread++; });
-      nativeFetch("/__bohm/usage", {
-        method: "POST",
-        credentials: "same-origin",
-        keepalive: true,
-        headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-        body: JSON.stringify({ tab: boot.tab, kind: "keys", missing: missingReads.size, unread: unread, seeded: seeded.size })
-      }).catch(function () { /* usage is best-effort */ });
+      usage({ kind: "keys", missing: missingReads.size, unread: unread, seeded: seeded.size });
     }, 5000);
   });
 
@@ -298,43 +121,4 @@
     if (proxied) arguments[1] = proxied;
     return nativeOpen.apply(this, arguments);
   };
-
-  // The last sequence this page issued, sent once the page has finished leaving. Every request
-  // already carries the page's current sequence, but a write made while leaving may still be in
-  // transit (or lost) when the host checks; this report is what lets the runtime know a write it
-  // has not received exists, so the host can tell "all applied" from "something never arrived".
-  var reporting = false;
-  function reportIssued() {
-    nativeFetch(endpoint, {
-      method: "POST",
-      credentials: "same-origin",
-      keepalive: true,
-      headers: { "Content-Type": "application/json", "X-Bohm-Request": "1" },
-      body: JSON.stringify({ tab: boot.tab, ops: [], issued: seq, left: true })
-    }).catch(function () { /* the host counts a report that never arrives as unconfirmed */ });
-  }
-
-  // What the host reads just before it closes this page: which tab this is and the last write
-  // sequence the page issued. The host then waits until the runtime has applied that sequence.
-  // arm() is called by the host at the same moment: the listener it adds is registered after every
-  // listener the page's own code added while it ran, so it runs after the page's own pagehide
-  // writes and reports the sequence they reached.
-  // Neither writable nor configurable, so the page's own code cannot change what the host reads.
-  Object.defineProperty(window, "__bohm", {
-    value: Object.freeze({
-      tab: boot.tab,
-      issued: function () { return seq; },
-      arm: function () {
-        if (reporting) return;
-        reporting = true;
-        window.addEventListener("pagehide", reportIssued);
-      }
-    }),
-    enumerable: false, writable: false, configurable: false
-  });
-
-  window.addEventListener("pagehide", flushOnLeave);
-  document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "hidden") flushOnLeave();
-  });
 })();

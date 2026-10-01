@@ -1,5 +1,5 @@
-using System.Security.Cryptography;
 using Bohm.Runtime.Sources;
+using LocalOrigin.Previews;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -8,7 +8,8 @@ namespace Bohm.Runtime.Host.Adoption;
 /// throwaway origin, <c>http://pv-&lt;token&gt;.localhost:&lt;port&gt;/</c> — never the application's own —
 /// with the application's data to read and nowhere to write it, and collects what went wrong while
 /// it loaded. A proposed new application has a preview too, with no application behind it: no data, and
-/// the rows just read for its sources in place of theirs. Held in memory only, for a short while.
+/// the rows just read for its sources in place of theirs. Held in memory only, for a short while
+/// (<see cref="PreviewOrigins{T}"/>); a preview's token is its scope name without <see cref="HostPrefix"/>.
 /// </summary>
 internal sealed class AppPreviews(TimeProvider time)
 {
@@ -17,90 +18,63 @@ internal sealed class AppPreviews(TimeProvider time)
     /// <summary>How long a preview stays servable after it was made.</summary>
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(2);
 
-    private const int MaxPreviews = 8;
-    private const int MaxReports = 20;
+    private readonly PreviewOrigins<Content> _origins = new(new PreviewOptions { NamePrefix = HostPrefix, Lifetime = Lifetime, MaxPreviews = 8 }, time);
 
-    private readonly Lock _lock = new();
-    private readonly Dictionary<string, Preview> _previews = new(StringComparer.Ordinal);
-
-    public sealed class Preview(string? appId, byte[] html, DateTimeOffset created, IReadOnlyDictionary<string, SourceReading>? readings = null)
+    /// <summary>What is kept with each preview.</summary>
+    internal sealed class Content(string? appId, byte[] html, IReadOnlyDictionary<string, SourceReading>? readings)
     {
-        private readonly List<string> _errors = [];
-        private readonly List<string> _blocked = [];
-
-        /// <summary>The application previewed, or <see langword="null"/> for a proposed new one.</summary>
         public string? AppId { get; } = appId;
+        public byte[] Html { get; } = html;
+        public IReadOnlyDictionary<string, SourceReading> Readings { get; } = readings ?? new Dictionary<string, SourceReading>();
+        public bool AskedModel;
+    }
+
+    public sealed class Preview(Preview<Content> held)
+    {
+        /// <summary>The application previewed, or <see langword="null"/> for a proposed new one.</summary>
+        public string? AppId => held.Content.AppId;
 
         /// <summary>For a proposed new application, each source's rows as just read — what it shows until taken in.</summary>
-        public IReadOnlyDictionary<string, SourceReading> Readings { get; } = readings ?? new Dictionary<string, SourceReading>();
-        public byte[] Html { get; } = html;
-        public DateTimeOffset Created { get; } = created;
+        public IReadOnlyDictionary<string, SourceReading> Readings => held.Content.Readings;
+
+        public byte[] Html => held.Content.Html;
+
+        /// <summary>What went wrong while the document loaded.</summary>
+        public PreviewReport Report => held.Report;
 
         /// <summary>Errors thrown while the document loaded, with lines counted as in the document.</summary>
-        public IReadOnlyList<string> Errors { get { lock (_errors) return [.. _errors]; } }
+        public IReadOnlyList<string> Errors => held.Report.Errors;
 
         /// <summary>What the content security policy refused, as <c>category host</c>.</summary>
-        public IReadOnlyList<string> Blocked { get { lock (_errors) return [.. _blocked]; } }
+        public IReadOnlyList<string> Blocked =>
+            [.. held.Report.Blocked.Select(b => $"{b.Category.ToString().ToLowerInvariant()} {b.Host}")];
 
         /// <summary>Whether the document called a model while it was served. None was asked; see <see cref="PreviewServing"/>.</summary>
-        public bool AskedModel { get { lock (_errors) return _askedModel; } }
-
-        private bool _askedModel;
+        public bool AskedModel
+        {
+            get { lock (held.Content) return held.Content.AskedModel; }
+        }
 
         public void MarkAskedModel()
         {
-            lock (_errors) _askedModel = true;
-        }
-
-        public void AddError(string message)
-        {
-            lock (_errors) if (_errors.Count + _blocked.Count < MaxReports && !_errors.Contains(message)) _errors.Add(message);
-        }
-
-        public void AddBlocked(string category, string host)
-        {
-            var entry = $"{category} {host}";
-            lock (_errors) if (_errors.Count + _blocked.Count < MaxReports && !_blocked.Contains(entry)) _blocked.Add(entry);
+            lock (held.Content) held.Content.AskedModel = true;
         }
     }
 
     /// <summary>Holds <paramref name="html"/> as a preview of <paramref name="appId"/> and returns its token.</summary>
-    public string Create(string appId, byte[] html) => Hold(appId, html, null);
+    public string Create(string appId, byte[] html) => Hold(new Content(appId, html, null));
 
     /// <summary>Holds <paramref name="html"/> as a preview of a proposed new application whose sources read <paramref name="readings"/>, and returns its token.</summary>
-    public string CreateNew(byte[] html, IReadOnlyDictionary<string, SourceReading> readings) => Hold(null, html, readings);
+    public string CreateNew(byte[] html, IReadOnlyDictionary<string, SourceReading> readings) => Hold(new Content(null, html, readings));
 
-    private string Hold(string? appId, byte[] html, IReadOnlyDictionary<string, SourceReading>? readings)
-    {
-        var token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
-        lock (_lock)
-        {
-            Sweep();
-            // The oldest goes first; a caller that never removes its previews cannot grow this.
-            while (_previews.Count >= MaxPreviews)
-                _previews.Remove(_previews.MinBy(p => p.Value.Created).Key);
-            _previews[token] = new Preview(appId, html, time.GetUtcNow(), readings);
-        }
-        return token;
-    }
+    private string Hold(Content content) => _origins.Create(content).Scope[HostPrefix.Length..];
 
-    public Preview? Find(string token)
-    {
-        lock (_lock)
-        {
-            Sweep();
-            return _previews.GetValueOrDefault(token);
-        }
-    }
+    public Preview? Find(string token) => _origins.Find(HostPrefix + token) is { } held ? new Preview(held) : null;
 
     /// <summary>The preview of <paramref name="appId"/> — or, for <see langword="null"/>, of a proposed new application — named by <paramref name="token"/>, if there is one.</summary>
     public Preview? Find(string? appId, string token) => Find(token) is { } preview && preview.AppId == appId ? preview : null;
 
-    public bool Remove(string? appId, string token)
-    {
-        lock (_lock)
-            return _previews.TryGetValue(token, out var preview) && preview.AppId == appId && _previews.Remove(token);
-    }
+    public bool Remove(string? appId, string token) => Find(appId, token) is not null && _origins.Remove(HostPrefix + token);
 
     /// <summary>The preview a request is addressed to, from its <c>Host</c> header.</summary>
     public static string? TokenOf(HttpRequest request)
@@ -113,11 +87,4 @@ internal sealed class AppPreviews(TimeProvider time)
     }
 
     public static Uri Origin(string token, int port) => new($"http://{HostPrefix}{token}.localhost:{port}/");
-
-    private void Sweep()
-    {
-        var now = time.GetUtcNow();
-        foreach (var expired in _previews.Where(p => now - p.Value.Created > Lifetime).Select(p => p.Key).ToList())
-            _previews.Remove(expired);
-    }
 }

@@ -3,6 +3,8 @@ using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
 using Bohm.Runtime.Host.Control;
+using LocalOrigin.AspNetCore.Previews;
+using LocalOrigin.AspNetCore.Storage;
 using LocalOrigin.Origins;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -124,7 +126,8 @@ public static class RuntimeHost
         // No overall timeout: a streamed answer can legitimately run for minutes.
         builder.Services.AddHttpClient(nameof(Llm.LlmProxy), client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
-        builder.Services.AddSingleton<AppSessions>();
+        builder.Services.AddSingleton(new StorageChannel(new ChannelSessions(), AdoptedAppServing.ChannelOptions));
+        builder.Services.AddSingleton(new ProblemReports(AdoptedAppServing.ProblemOptions));
         builder.Services.AddSingleton<OpenApps>();
         builder.Services.AddSingleton<AppPreviews>();
         builder.Services.AddSingleton(TimeProvider.System);

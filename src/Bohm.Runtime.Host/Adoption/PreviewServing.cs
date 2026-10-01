@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
+using LocalOrigin.AspNetCore.Previews;
+using LocalOrigin.AspNetCore.Storage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -42,13 +44,21 @@ internal static class PreviewServing
         var app = preview.AppId is { } appId ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false) : null;
         if (path == AdoptedAppServing.StoragePath)
         {
-            await DropWritesAsync(context).ConfigureAwait(false);
+            // Acknowledged as applied, so the page goes on as it would, and kept nowhere.
+            await context.RequestServices.GetRequiredService<StorageChannel>().DiscardAsync(context).ConfigureAwait(false);
+            return;
+        }
+
+        if (path == AdoptedAppServing.ProblemsPath)
+        {
+            if (await context.RequestServices.GetRequiredService<ProblemReports>().ReceiveAsync(context).ConfigureAwait(false) is { } problem)
+                ProblemReports.AddTo(preview.Report, problem);
             return;
         }
 
         if (path == AdoptedAppServing.UsagePath)
         {
-            await CollectReportAsync(context, preview).ConfigureAwait(false);
+            await IgnoreUsageAsync(context).ConfigureAwait(false);
             return;
         }
 
@@ -77,41 +87,14 @@ internal static class PreviewServing
             return;
         }
 
-        var (body, charset) = app is null
-            ? AdoptedAppServing.InjectShim(context, preview.Html, "preview", "preview")
-            : AdoptedAppServing.InjectShim(context, preview.Html, app, preview.AppId!, "preview");
+        var channel = context.RequestServices.GetRequiredService<StorageChannel>();
+        var page = new ChannelPage("preview", channel.Script("preview", app is null ? new Dictionary<string, string>() : app.Storage.GetItems()));
+        var (body, charset) = AdoptedAppServing.Inject(context, preview.Html, page, app, preview.AppId ?? "preview");
         response.Headers.CacheControl = "no-store";
         response.ContentType = $"text/html; charset={charset}";
         response.ContentLength = body.Length;
         if (HttpMethods.IsGet(request.Method))
             await response.Body.WriteAsync(body, context.RequestAborted).ConfigureAwait(false);
-    }
-
-    /// <summary>Acknowledges every write as applied, so the page goes on as it would, and keeps none.</summary>
-    private static async Task DropWritesAsync(HttpContext context)
-    {
-        var request = context.Request;
-        if (!HttpMethods.IsPost(request.Method) || !PageRequests.IsFromThePage(request))
-        {
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            return;
-        }
-
-        long ack = 0;
-        try
-        {
-            using var batch = await JsonDocument.ParseAsync(request.Body, cancellationToken: context.RequestAborted).ConfigureAwait(false);
-            if (batch.RootElement.TryGetProperty("ops", out var ops) && ops.ValueKind == JsonValueKind.Array)
-                foreach (var op in ops.EnumerateArray())
-                    if (op.TryGetProperty("seq", out var seq) && seq.TryGetInt64(out var n)) ack = Math.Max(ack, n);
-        }
-        catch (JsonException)
-        {
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            return;
-        }
-
-        await context.Response.WriteAsync($$"""{"ack":{{ack}}}""", context.RequestAborted).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -129,35 +112,15 @@ internal static class PreviewServing
             context.RequestAborted).ConfigureAwait(false);
     }
 
-    private static async Task CollectReportAsync(HttpContext context, AppPreviews.Preview preview)
+    /// <summary>Use the page reports is not use of the application: answered (see <see cref="UsageEndpoint"/> for why with a body) and dropped.</summary>
+    private static async Task IgnoreUsageAsync(HttpContext context)
     {
-        var request = context.Request;
-        if (!HttpMethods.IsPost(request.Method) || !PageRequests.IsFromThePage(request))
+        if (!HttpMethods.IsPost(context.Request.Method) || !PageRequests.IsFromThePage(context.Request))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
 
-        UsageEndpoint.Report? report;
-        try
-        {
-            report = await JsonSerializer.DeserializeAsync(request.Body, UsageJson.Default.Report, context.RequestAborted).ConfigureAwait(false);
-        }
-        catch (JsonException)
-        {
-            report = null;
-        }
-
-        switch (report)
-        {
-            case { Kind: "load-error", Message: { Length: > 0 } message }:
-                preview.AddError(message.Length > 500 ? message[..500] : message);
-                break;
-            case { Kind: "blocked", Category: "library" or "data" or "form", Host: { Length: > 0 and <= 255 } host }:
-                preview.AddBlocked(report.Category!, host);
-                break;
-        }
-        // Same answer as the application's own endpoint (see there for why not 204).
         await context.Response.WriteAsync("{}", context.RequestAborted).ConfigureAwait(false);
     }
 }
