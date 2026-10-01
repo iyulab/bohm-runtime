@@ -35,8 +35,8 @@ internal static class AdoptedAppServing
             (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.Record(UsageSignal.Wrote),
         // A page whose code was replaced while it was still writing: the write is refused (the new code owns the
         // data now) but it was a write the person made, so it is counted where a host's unconfirmed close is.
-        RefusedFromRetiredTab = async (context, appId, _) =>
-            (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.RecordLossSuspected(),
+        RefusedFromRetiredTab = async refused =>
+            (await refused.Context.RequestServices.GetRequiredService<OpenApps>().GetAsync(refused.Scope).ConfigureAwait(false)).Usage.RecordLossSuspected(),
     };
 
     /// <summary>Where a page reports what stopped it.</summary>
