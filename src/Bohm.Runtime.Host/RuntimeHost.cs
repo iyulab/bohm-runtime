@@ -3,6 +3,7 @@ using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
 using Bohm.Runtime.Host.Control;
+using LocalOrigin.Origins;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
@@ -84,11 +85,8 @@ public sealed record RuntimeHostOptions
 /// </summary>
 public static class RuntimeHost
 {
-    /// <summary>How many times the remembered port is tried before a new one is chosen.</summary>
-    private const int RememberedPortAttempts = 5;
-
-    /// <summary>The wait between those attempts — together about two seconds, longer than a normal stop.</summary>
-    private static readonly TimeSpan RememberedPortRetryDelay = TimeSpan.FromMilliseconds(500);
+    /// <summary>The remembered port is tried five times, 500 ms apart — together about two seconds, longer than a normal stop.</summary>
+    private static readonly RememberedPortOptions RememberedPortOptions = new() { Attempts = 5, RetryDelay = TimeSpan.FromMilliseconds(500) };
 
     /// <summary>
     /// Removes the unsaved results left longer than their retention (<see cref="AdoptionCatalog.SweepUnsavedAsync"/>),
@@ -205,38 +203,21 @@ public static class RuntimeHost
             return new StartedRuntime(fixedApp, fixedApp.ListeningPort(), null);
         }
 
-        var remembered = HostAddress.Read(options.DataRoot);
-        WebApplication? app = null;
-        if (remembered is { } port)
+        var started = await RememberedPort.StartAsync(new HostAddressMemory(options.DataRoot), "runtime", async port =>
         {
-            // The likeliest holder of the remembered port is the previous runtime of this same data
-            // root, still stopping after its shell closed or was killed. Give it a moment before
-            // concluding the port is taken for good and moving every application's address.
-            for (var attempt = 0; app is null && attempt < RememberedPortAttempts; attempt++)
+            var app = Build(options with { Port = port }, configure);
+            try
             {
-                if (attempt > 0) await Task.Delay(RememberedPortRetryDelay).ConfigureAwait(false);
-                app = Build(options with { Port = port }, configure);
-                try
-                {
-                    await app.StartAsync().ConfigureAwait(false);
-                }
-                catch (IOException)
-                {
-                    await app.DisposeAsync().ConfigureAwait(false);
-                    app = null;
-                }
+                await app.StartAsync().ConfigureAwait(false);
+                return app;
             }
-        }
-
-        if (app is null)
-        {
-            app = Build(options with { Port = 0 }, configure);
-            await app.StartAsync().ConfigureAwait(false);
-        }
-
-        var listening = app.ListeningPort();
-        if (listening != remembered) HostAddress.Write(options.DataRoot, listening);
-        return new StartedRuntime(app, listening, remembered is { } before && before != listening ? before : null);
+            catch (IOException)
+            {
+                await app.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }, app => app.ListeningPort(), RememberedPortOptions).ConfigureAwait(false);
+        return new StartedRuntime(started.Listener, started.Port, started.PreviousPort);
     }
 
     /// <summary>The port a started host is listening on.</summary>
