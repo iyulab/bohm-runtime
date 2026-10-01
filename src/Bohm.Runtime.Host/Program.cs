@@ -4,7 +4,7 @@ using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
-//        [--company-model-endpoint <url> --company-model <name>]
+//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>]
 // The control API is enabled by passing a per-launch secret in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -17,21 +17,27 @@ using Bohm.Runtime.Host;
 // --llama-server names the executable that runs a model chosen on this computer; without it, one
 // shipped next to this executable (llama-server\llama-server.exe) is used when present, so a model
 // runs with nothing downloaded.
-// --company-model-endpoint and --company-model fix the organization's model server for this run — its
-// OpenAI-compatible base address and a model's name — so the person cannot change it (an
-// administrator's policy, passed on by whoever starts the runtime). Given together or not at all.
+// --company-models lists the organization's model servers and their models for this run (an
+// administrator's policy, passed on by whoever starts the runtime — see CompanyModelList for its
+// shape): the person chooses among them and cannot set another. What in it cannot be used is left
+// out; when nothing can, the runtime starts without it and says so on standard error, so a mistaken
+// policy does not keep the person's applications from opening.
+// --company-model-endpoint and --company-model are the older way to list one server and one model —
+// its OpenAI-compatible base address and the model's name. Given together or not at all, and not
+// together with --company-models.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
 // Manager instead of Bohm/, so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-model-endpoint <url> --company-model <name>]";
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>]";
 string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
 string? llamaServer = null;
 string? companyEndpoint = null;
 string? companyModelName = null;
+string? companyModelsJson = null;
 for (var i = 0; i < args.Length - 1; i++)
 {
     switch (args[i])
@@ -42,17 +48,23 @@ for (var i = 0; i < args.Length - 1; i++)
         case "--llama-server": llamaServer = args[++i]; break;
         case "--company-model-endpoint": companyEndpoint = args[++i]; break;
         case "--company-model": companyModelName = args[++i]; break;
+        case "--company-models": companyModelsJson = args[++i]; break;
     }
 }
 
 Bohm.Runtime.Host.Llm.CompanyModelOptions? companyModel = null;
 if (dataRoot is null
     || (companyEndpoint ?? companyModelName) is not null
-        && !Bohm.Runtime.Host.Llm.CompanyModelOptions.TryCreate(companyEndpoint, companyModelName, out companyModel))
+        && (companyModelsJson is not null
+            || !Bohm.Runtime.Host.Llm.CompanyModelOptions.TryCreate(companyEndpoint, companyModelName, out companyModel)))
 {
     await Console.Error.WriteLineAsync(usage);
     return 2;
 }
+
+var companyModels = companyModel is not null ? Bohm.Runtime.Host.Llm.CompanyModelList.Of(companyModel) : null;
+if (companyModelsJson is not null && !Bohm.Runtime.Host.Llm.CompanyModelList.TryParse(companyModelsJson, out companyModels))
+    await Console.Error.WriteLineAsync("--company-models lists no usable OpenAI-compatible server and model; starting without it.");
 
 var shipped = Path.Combine(AppContext.BaseDirectory, "llama-server", OperatingSystem.IsWindows() ? "llama-server.exe" : "llama-server");
 llamaServer ??= File.Exists(shipped) ? shipped : null;
@@ -67,7 +79,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     Port = port,
     ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
-    CompanyModel = companyModel,
+    CompanyModels = companyModels,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,

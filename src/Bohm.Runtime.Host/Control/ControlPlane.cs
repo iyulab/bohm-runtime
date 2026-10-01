@@ -581,15 +581,27 @@ internal static class ControlPlane
                     {
                         using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
                         var root = body.RootElement;
+                        // A listed model is chosen by its server's name and its id, and comes with its listed limits.
+                        if (root.TryGetProperty("server", out var listedServer))
+                        {
+                            setTo = companyModel.List?.Find(listedServer.GetString(), root.GetProperty("model").GetString());
+                            if (setTo is null)
+                            {
+                                response.StatusCode = companyModel.List is null ? StatusCodes.Status400BadRequest : StatusCodes.Status409Conflict;
+                                break;
+                            }
+                        }
                         // The model's limits are optional; each one left out (or null) is unknown.
-                        if (!CompanyModelOptions.TryCreate(root.GetProperty("endpoint").GetString(), root.GetProperty("model").GetString(), out setTo)
+                        else if (!CompanyModelOptions.TryCreate(root.GetProperty("endpoint").GetString(), root.GetProperty("model").GetString(), out setTo)
                             || !ModelLimits.TryCreate(OptionalCount(root, "contextWindow"), OptionalCount(root, "maxTokens"), OptionalFlag(root, "reasoning"), out var limits))
                         {
                             response.StatusCode = StatusCodes.Status400BadRequest;
                             break;
                         }
-
-                        setTo = setTo! with { Limits = limits! };
+                        else
+                        {
+                            setTo = setTo! with { Limits = limits! };
+                        }
                     }
                     catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
                     {
@@ -627,7 +639,7 @@ internal static class ControlPlane
                 var companyKeys = context.RequestServices.GetRequiredService<ICredentialVault>();
                 if (request.Method == "DELETE")
                 {
-                    companyKeys.Delete(CompanyModel.VaultName);
+                    companyKeys.Delete(context.RequestServices.GetRequiredService<CompanyModel>().KeyVaultName);
                 }
                 else
                 {
@@ -638,7 +650,7 @@ internal static class ControlPlane
                         break;
                     }
 
-                    companyKeys.Write(CompanyModel.VaultName, companyKey);
+                    companyKeys.Write(context.RequestServices.GetRequiredService<CompanyModel>().KeyVaultName, companyKey);
                 }
 
                 await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
@@ -1185,13 +1197,28 @@ internal static class ControlPlane
 
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
         new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
-            company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning);
+            company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
+            NullIfEmpty(company.Current?.Server), company.Current?.DisplayName,
+            company.List?.Choices.Select(c => new CompanyModelChoiceView(NullIfEmpty(c.Server), c.Model, c.DisplayName, c.Endpoint.AbsoluteUri,
+                c.Limits.ContextWindow, c.Limits.MaxOutputTokens, c.Limits.Reasoning, c.Input ?? ["text"], company.KeyConnectedFor(c.Server))).ToList());
+
+    private static string? NullIfEmpty(string? text) => string.IsNullOrEmpty(text) ? null : text;
 
     /// <param name="Endpoint">The server's OpenAI-compatible base address, or <see langword="null"/> when none is set.</param>
     /// <param name="ContextWindow">The model's context window as it was set, or <see langword="null"/> when unknown.</param>
     /// <param name="MaxTokens">The most tokens one answer may have, as it was set, or <see langword="null"/> when unknown.</param>
     /// <param name="Reasoning">Whether the model thinks before it answers, as it was set, or <see langword="null"/> when unknown.</param>
-    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected, int? ContextWindow, int? MaxTokens, bool? Reasoning);
+    /// <param name="Fixed">Whether an administrator listed the servers, so the person only chooses among <paramref name="Choices"/>.</param>
+    /// <param name="Server">The listed server in use, by its name; <see langword="null"/> for one set by its address or given the older way.</param>
+    /// <param name="Name">The name to show for the model in use, when the list gives one.</param>
+    /// <param name="Choices">Every listed model, when the servers are listed; <see langword="null"/> otherwise.</param>
+    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected, int? ContextWindow, int? MaxTokens, bool? Reasoning,
+        string? Server, string? Name, IReadOnlyList<CompanyModelChoiceView>? Choices);
+
+    /// <summary>One listed model the person may choose.</summary>
+    /// <param name="KeyConnected">Whether a key is connected for its server.</param>
+    internal sealed record CompanyModelChoiceView(string? Server, string Model, string? Name, string Endpoint, int? ContextWindow, int? MaxTokens, bool? Reasoning,
+        IReadOnlyList<string> Input, bool KeyConnected);
 
     /// <summary>
     /// A whole number at <paramref name="name"/>, or <see langword="null"/> when it is missing or null.
@@ -1240,6 +1267,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnText))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnFailure))]
