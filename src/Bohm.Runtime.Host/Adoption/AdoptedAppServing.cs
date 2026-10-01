@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Usage;
+using LocalOrigin.AspNetCore;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -18,33 +19,13 @@ internal static class AdoptedAppServing
     public const string UsagePath = "/__bohm/usage";
 
     /// <summary>
-    /// Everything loads from the application's own origin; inline script and style are allowed
-    /// because adopted documents are single files that rely on them. Nothing — no fetch, image,
-    /// script, style sheet or form submission — may reach another origin. Nor may another origin
-    /// embed the application: a page elsewhere (any browser on this computer can reach the loopback
-    /// address) could otherwise frame it — to trick clicks inside it, or to make it look used.
+    /// The headers of every response from an application's origin, and the requests it refuses: everything
+    /// loads from the application's own origin (inline script and style allowed — adopted documents are single
+    /// files that rely on them), nothing reaches another origin, no other origin may embed or pull in the
+    /// application, and no <c>Referer</c> leaves it. Requests another site's page makes — another application
+    /// included — are refused. See <see cref="OriginSecurityProfile"/>.
     /// </summary>
-    public const string ContentSecurityPolicy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; form-action 'self'; frame-ancestors 'self'";
-
-    /// <summary>
-    /// Headers every response from an application's origin carries, next to the policy above.
-    /// <list type="bullet">
-    /// <item>No <c>Referer</c> leaves the application: following a link out would otherwise tell the
-    /// other site the application's local address.</item>
-    /// <item>Only the application's own origin may use its responses. The document carries a
-    /// snapshot of the data inline, and a page elsewhere — another application, or a page in any
-    /// browser on this computer — could otherwise pull it in as an image or script it cannot read
-    /// but can still make the browser load.</item>
-    /// </list>
-    /// No <c>Cross-Origin-Opener-Policy</c>: with <c>same-origin</c>, leaving the page for another
-    /// document swaps its browsing context group, and the writes a page sends as it closes (in
-    /// <c>pagehide</c>) were lost — every time, in the embedded browser. Keeping those writes comes first.
-    /// </summary>
-    public static readonly IReadOnlyList<KeyValuePair<string, string>> IsolationHeaders =
-    [
-        new("Referrer-Policy", "no-referrer"),
-        new("Cross-Origin-Resource-Policy", "same-origin"),
-    ];
+    public static readonly OriginSecurityProfile Profile = new();
 
     private const string LocalhostSuffix = ".localhost";
 
@@ -94,9 +75,12 @@ internal static class AdoptedAppServing
         }
 
         var response = context.Response;
-        response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
-        response.Headers.XContentTypeOptions = "nosniff";
-        foreach (var (name, value) in IsolationHeaders) response.Headers[name] = value;
+        Profile.Apply(response);
+        if (Profile.Refuses(context.Request))
+        {
+            response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
 
         var path = context.Request.Path;
         if (path == StoragePath)
@@ -196,15 +180,15 @@ internal static class AdoptedAppServing
     /// data as it is now. The one place the boot is put together, so a page served for a look
     /// (<see cref="PreviewServing"/>) routes the same calls the application's own page would.
     /// </summary>
-    internal static (byte[] Body, string Charset) InjectShim(HttpContext context, byte[] html, OpenApp app, string appId, string tab)
+    internal static InjectedDocument InjectShim(HttpContext context, byte[] html, OpenApp app, string appId, string tab)
     {
         var boot = BootScript(context, app.Storage.GetItems(), appId, tab);
-        return ShimInjector.Inject(AssetServing.PointAtCache(html, app.Assets), boot, before: AssetServing.ImportMap(app.Assets));
+        return DocumentInjector.Inject(AssetServing.PointAtCache(html, app.Assets), AssetServing.ImportMap(app.Assets) + "<script>" + boot + "</script>");
     }
 
     /// <summary>The injected script for a document with no application behind it yet — no data, no cached code.</summary>
-    internal static (byte[] Body, string Charset) InjectShim(HttpContext context, byte[] html, string placeholderId, string tab) =>
-        ShimInjector.Inject(html, BootScript(context, new Dictionary<string, string>(), placeholderId, tab));
+    internal static InjectedDocument InjectShim(HttpContext context, byte[] html, string placeholderId, string tab) =>
+        DocumentInjector.Inject(html, "<script>" + BootScript(context, new Dictionary<string, string>(), placeholderId, tab) + "</script>");
 
     private static string BootScript(HttpContext context, IReadOnlyDictionary<string, string> items, string appId, string tab)
     {

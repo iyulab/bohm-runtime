@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using LocalOrigin.Origins;
 
 namespace Bohm.Runtime.Host;
 
@@ -49,4 +50,15 @@ internal static class HostAddress
         File.WriteAllText(aside, json, new UTF8Encoding(false));
         File.Move(aside, path, overwrite: true);
     }
+}
+
+/// <summary>
+/// <see cref="HostAddress"/> as the port memory a remembered-port start reads and writes: one port per data
+/// root, in the file earlier versions wrote, so an update keeps every application's address.
+/// </summary>
+internal sealed class HostAddressMemory(string dataRoot) : IPortMemory
+{
+    public int? Recall(string key) => HostAddress.Read(dataRoot);
+
+    public void Remember(string key, int port) => HostAddress.Write(dataRoot, port);
 }

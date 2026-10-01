@@ -29,9 +29,12 @@ internal static class PreviewServing
             return;
         }
 
-        response.Headers.ContentSecurityPolicy = AdoptedAppServing.ContentSecurityPolicy;
-        response.Headers.XContentTypeOptions = "nosniff";
-        foreach (var (name, value) in AdoptedAppServing.IsolationHeaders) response.Headers[name] = value;
+        AdoptedAppServing.Profile.Apply(response);
+        if (AdoptedAppServing.Profile.Refuses(context.Request))
+        {
+            response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
 
         var request = context.Request;
         var path = request.Path;
