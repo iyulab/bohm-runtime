@@ -91,6 +91,29 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task What_the_person_settled_in_an_import_is_where_the_next_one_starts()
+    {
+        // The person puts «서명» into title and tells records apart by isbn.
+        var first = JsonSerializer.Serialize(new
+        {
+            file = new { name = "books.csv", content = Convert.ToBase64String(Encoding.UTF8.GetBytes("서명,isbn\n파이썬,978-3")) },
+            collection = "books",
+            identity = "isbn",
+            columns = new Dictionary<string, string?> { ["서명"] = "title" },
+        });
+        using (var imported = await PostAsync("imports", first)) HttpAssert.Status(HttpStatusCode.Created, imported);
+
+        var books = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{_app}/imports")).RootElement.GetProperty("collections")[0];
+        Assert.Equal("isbn", books.GetProperty("identity").GetString());
+
+        // A file like it, sent with nothing chosen: «서명» goes into title again.
+        using var preview = await PostAsync("imports/preview", Body("서명,isbn\n코틀린,978-4", identity: "isbn"));
+        var plan = JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("title", plan.GetProperty("columns")[0].GetProperty("field").GetString());
+        Assert.Equal("코틀린", plan.GetProperty("sample")[0].GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task An_import_is_not_undone_over_data_written_since()
     {
         using (var imported = await PostAsync("imports", Body("title\n파이썬"))) HttpAssert.Status(HttpStatusCode.Created, imported);
