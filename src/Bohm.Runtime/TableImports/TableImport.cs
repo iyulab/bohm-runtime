@@ -67,8 +67,9 @@ public sealed record ImportPlan(
 public sealed record ColumnMapping(string Column, string? Field);
 
 /// <param name="Row">The row's number in the file, the header being row 1.</param>
-/// <param name="Reason">What was wrong, naming the field.</param>
-public sealed record InvalidRow(int Row, string Reason);
+/// <param name="Field">The field it could not fill.</param>
+/// <param name="Cell">The cell that is not the field's kind, or <see langword="null"/> when a required field is empty.</param>
+public sealed record InvalidRow(int Row, string Field, string? Cell);
 
 /// <summary>
 /// Rows of a table file put into a collection of an application's records — decided by the declaration
@@ -162,18 +163,18 @@ public static partial class TableImport
             if (row.All(string.IsNullOrWhiteSpace)) continue;
 
             var record = new JsonObject();
-            string? problem = null;
+            InvalidRow? problem = null;
             for (var c = 0; c < mapping.Count && problem is null; c++)
             {
                 if (mapping[c].Field is not { } name) continue;
                 var cell = row[c].Trim();
                 if (cell.Length == 0) continue;
                 if (Value(fieldsByName[name].Kind, cell) is { } value) record[name] = value;
-                else problem = $"\"{cell}\" is not a {fieldsByName[name].Kind} for {name}";
+                else problem = new InvalidRow(r + 2, name, cell);
             }
 
-            problem ??= declaration.Fields.FirstOrDefault(f => f.Required && record[f.Name] is null) is { } missing ? $"{missing.Name} is empty" : null;
-            if (problem is not null) { invalid.Add(new InvalidRow(r + 2, problem)); continue; }
+            problem ??= declaration.Fields.FirstOrDefault(f => f.Required && record[f.Name] is null) is { } missing ? new InvalidRow(r + 2, missing.Name, null) : null;
+            if (problem is not null) { invalid.Add(problem); continue; }
 
             if (declaration.Identity is { } key && IdentityText(record[key]) is { } id && index.TryGetValue(id, out var there))
             {
