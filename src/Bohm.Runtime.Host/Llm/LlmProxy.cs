@@ -74,9 +74,8 @@ internal static class LlmProxy
                 return;
             }
 
-            var serverKey = context.RequestServices.GetRequiredService<ICredentialVault>().Read(CompanyModel.VaultName);
             await RelayAsync(context, CompanyModelShape(server), server.Endpoint, providerPath,
-                QueryHelpers.ParseQuery(request.QueryString.Value), string.IsNullOrEmpty(serverKey) ? null : serverKey).ConfigureAwait(false);
+                QueryHelpers.ParseQuery(request.QueryString.Value), company.Key).ConfigureAwait(false);
             return;
         }
 

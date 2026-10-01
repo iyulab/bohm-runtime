@@ -19,6 +19,15 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
     /// <summary>What whoever set the server said about the model's limits.</summary>
     public ModelLimits Limits { get; init; } = ModelLimits.Unknown;
 
+    /// <summary>The listed server it is on (<see cref="CompanyModelList"/>); <see langword="null"/> for one the person set by its address.</summary>
+    public string? Server { get; init; }
+
+    /// <summary>The name to show the person, when the list gives one.</summary>
+    public string? DisplayName { get; init; }
+
+    /// <summary>What the model takes in, when the list says: <c>text</c>, and <c>image</c>.</summary>
+    public IReadOnlyList<string>? Input { get; init; }
+
     /// <summary>Whether <paramref name="endpoint"/> and <paramref name="model"/> name a usable model server, normalized.</summary>
     public static bool TryCreate(string? endpoint, string? model, out CompanyModelOptions? options)
     {
@@ -38,10 +47,11 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 }
 
 /// <summary>
-/// The organization's model server (<see cref="CompanyModelOptions"/>). Either fixed by whoever started
-/// the runtime — an administrator's policy, which the person cannot change — or set by the person and
-/// remembered in <c>company-model.json</c> at the data root. A key, when the server wants one, is kept in
-/// the vault like a provider's.
+/// The organization's model server (<see cref="CompanyModelOptions"/>). Either listed by whoever started
+/// the runtime — an administrator's policy (<see cref="CompanyModelList"/>): the person chooses among the
+/// listed models and cannot set another — or set by the person by its address. The choice is remembered
+/// in <c>company-model.json</c> at the data root. A key, when a server wants one, is kept in the vault
+/// like a provider's — one per listed server.
 /// </summary>
 /// <remarks>
 /// When it is set, it answers an application's AI chat requests for a provider with no key connected,
@@ -49,62 +59,99 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 /// being the one the organization provides. Requests leave this computer, so each is counted as sent to
 /// the server's host.
 /// </remarks>
-internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress) : IDisposable
+internal sealed class CompanyModel : IDisposable
 {
     /// <summary>Format identifier written into <c>company-model.json</c>.</summary>
     public const string Format = "bohm.company-model/0";
 
-    /// <summary>Where the server's key, if any, is kept in the vault.</summary>
+    /// <summary>Where the key of a server set by its address (or given the older way) is kept in the vault.</summary>
     public const string VaultName = "llm/company-model";
 
     private const string FileName = "company-model.json";
 
+    private readonly RuntimeHostOptions _options;
+    private readonly ICredentialVault _vault;
+    private readonly Egress _egress;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
-    private CompanyModelOptions? _chosen = Read(options);
+    private CompanyModelOptions? _current;
     private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
 
-    /// <summary>Whether the server was fixed by whoever started the runtime, so the person cannot change it.</summary>
-    public bool Fixed => options.CompanyModel is not null;
+    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress)
+    {
+        (_options, _vault, _egress) = (options, vault, egress);
+        var remembered = Read(options);
+        // A listed choice is taken from the list as it is now: a model no longer listed falls back to the first.
+        _current = options.CompanyModels is { } list
+            ? list.Find(remembered?.Server ?? "", remembered?.Model) ?? list.First
+            : remembered;
+    }
+
+    /// <summary>Whether an administrator listed the servers, so the person only chooses among them.</summary>
+    public bool Fixed => _options.CompanyModels is not null;
+
+    /// <summary>What the person may choose from, when the servers are listed.</summary>
+    public CompanyModelList? List => _options.CompanyModels;
 
     /// <summary>The server in use, or <see langword="null"/> when there is none.</summary>
-    public CompanyModelOptions? Current => options.CompanyModel ?? _chosen;
+    public CompanyModelOptions? Current => _current;
 
     /// <summary>Whether a server is set at all — not whether it answers.</summary>
     public bool Configured => Current is not null;
 
-    /// <summary>Whether a key for the server is connected.</summary>
-    public bool KeyConnected => !string.IsNullOrEmpty(vault.Read(VaultName));
+    /// <summary>Where the key of <paramref name="server"/> (a listed server's name; empty or <see langword="null"/> otherwise) is kept.</summary>
+    public static string VaultNameOf(string? server) => string.IsNullOrEmpty(server) ? VaultName : $"{VaultName}/{server}";
+
+    /// <summary>Where the key of the server in use is kept.</summary>
+    public string KeyVaultName => VaultNameOf(Current?.Server);
+
+    /// <summary>The key of the server in use, or <see langword="null"/>.</summary>
+    public string? Key => _vault.Read(KeyVaultName) is { Length: > 0 } key ? key : null;
+
+    /// <summary>Whether a key for the server in use is connected.</summary>
+    public bool KeyConnected => Key is not null;
+
+    /// <summary>Whether a key for <paramref name="server"/> is connected.</summary>
+    public bool KeyConnectedFor(string? server) => !string.IsNullOrEmpty(_vault.Read(VaultNameOf(server)));
 
     /// <summary>The host requests go to — what they are counted as sent to.</summary>
     public string? Host => Current?.Endpoint.Authority;
 
-    /// <summary>Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> uses none.</summary>
-    /// <exception cref="InvalidOperationException">The server is fixed.</exception>
+    /// <summary>
+    /// Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> uses none.
+    /// When the servers are listed, the choice must be one of their models — taken as listed.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The servers are listed and <paramref name="choice"/> is not one of their models.</exception>
     public async Task ChooseAsync(CompanyModelOptions? choice, CancellationToken cancellationToken)
     {
-        if (Fixed) throw new InvalidOperationException("The organization's model server was set when the runtime was started.");
+        if (List is { } list)
+        {
+            choice = choice is null ? null : list.Find(choice.Server ?? "", choice.Model);
+            if (choice is null)
+                throw new InvalidOperationException("The organization's model servers were listed when the runtime was started.");
+        }
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var path = Path.Combine(options.DataRoot, FileName);
+            var path = Path.Combine(_options.DataRoot, FileName);
             if (choice is null)
             {
                 File.Delete(path);
             }
             else
             {
-                Directory.CreateDirectory(options.DataRoot);
+                Directory.CreateDirectory(_options.DataRoot);
                 var aside = path + ".tmp";
                 await File.WriteAllTextAsync(aside,
                     JsonSerializer.Serialize(new Stored(Format, choice.Endpoint.AbsoluteUri, choice.Model,
-                        choice.Limits.ContextWindow, choice.Limits.MaxOutputTokens, choice.Limits.Reasoning), CompanyModelJson.Default.Stored) + "\n",
+                        choice.Limits.ContextWindow, choice.Limits.MaxOutputTokens, choice.Limits.Reasoning,
+                        string.IsNullOrEmpty(choice.Server) ? null : choice.Server), CompanyModelJson.Default.Stored) + "\n",
                     new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
                 File.Move(aside, path, overwrite: true);
             }
 
-            _chosen = choice;
+            _current = choice;
         }
         finally
         {
@@ -136,15 +183,14 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     private ModelFitChatClient? FittedClient()
     {
         if (Current is not { } current) return null;
-        var key = vault.Read(VaultName);
-        if (string.IsNullOrEmpty(key)) key = null;
+        var key = Key;
         lock (_clientLock)
         {
             if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
             // The whole address the person gave is the base — no API path is added to it.
             var generator = new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = current.Endpoint.AbsoluteUri, Path = "", ApiKey = key });
             var client = new ModelFitChatClient(
-                new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), egress, current.Endpoint.Authority), current.Limits);
+                new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority), current.Limits);
             _client = (current, key, client);
             return client;
         }
@@ -162,6 +208,8 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
                 && root.TryGetProperty("endpoint", out var endpoint) && root.TryGetProperty("model", out var model)
                 && CompanyModelOptions.TryCreate(endpoint.GetString(), model.GetString(), out var stored))
             {
+                if (root.TryGetProperty("server", out var server) && server.ValueKind == JsonValueKind.String)
+                    stored = stored! with { Server = server.GetString() };
                 // Limits were added later: a file without them, or with ones that do not make sense, keeps the server.
                 return ModelLimits.TryCreate(Number(root, "contextWindow"), Number(root, "maxTokens"),
                     root.TryGetProperty("reasoning", out var reasoning) && reasoning.ValueKind is JsonValueKind.True or JsonValueKind.False ? reasoning.GetBoolean() : null,
@@ -192,10 +240,10 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     {
         if (Current is not { } server) return null;
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(server.Endpoint, "models"));
-        if (vault.Read(VaultName) is { Length: > 0 } key) request.Headers.Authorization = new("Bearer", key);
+        if (Key is { } key) request.Headers.Authorization = new("Bearer", key);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(CheckTimeout);
-        egress.Sent(server.Endpoint.Authority);
+        _egress.Sent(server.Endpoint.Authority);
         try
         {
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
@@ -251,7 +299,8 @@ internal sealed class CompanyModel(RuntimeHostOptions options, ICredentialVault 
     internal sealed record Stored(string Format, string Endpoint, string Model,
         [property: System.Text.Json.Serialization.JsonPropertyName("contextWindow")] int? ContextWindow = null,
         [property: System.Text.Json.Serialization.JsonPropertyName("maxTokens")] int? MaxTokens = null,
-        [property: System.Text.Json.Serialization.JsonPropertyName("reasoning")] bool? Reasoning = null);
+        [property: System.Text.Json.Serialization.JsonPropertyName("reasoning")] bool? Reasoning = null,
+        [property: System.Text.Json.Serialization.JsonPropertyName("server")] string? Server = null);
 
     /// <summary>A whole number at <paramref name="name"/> that fits an <see cref="int"/>, or <see langword="null"/>.</summary>
     private static int? Number(JsonElement root, string name) =>

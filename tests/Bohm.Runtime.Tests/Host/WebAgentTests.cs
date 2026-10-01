@@ -196,7 +196,7 @@ public sealed class WebAgentTests : IDisposable
     public async Task Each_page_result_reaches_the_organizations_server_as_it_was_read_even_when_the_model_reused_a_call_id()
     {
         await using var server = await FakeProvider.StartAsync();
-        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModel = new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model") });
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")) });
 
         using var response = await TurnAsync(host, """
             {"messages":[
@@ -263,7 +263,7 @@ public sealed class WebAgentTests : IDisposable
         await using var server = await FakeProvider.StartAsync();
         await using var host = await RunningHost.StartAsync(configure: o => o with
         {
-            CompanyModel = new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model"),
+            CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")),
             LocalModel = new LocalModelOptions { ModelPath = "unused.gguf", Client = _model },
         });
 
@@ -425,7 +425,7 @@ public sealed class WebAgentTests : IDisposable
         // The status is already sent once lines begin, so the failure a 503 would carry comes as the last line.
         await using var provider = await FakeProvider.StartAsync();
         provider.Refusal = (429, """{"error":{"message":"Slow down.","type":"rate_limit"}}""");
-        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModel = new CompanyModelOptions(new Uri(provider.Address, "v1/"), "org-model") });
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(provider.Address, "v1/"), "org-model")) });
 
         using var response = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
 
@@ -477,7 +477,7 @@ public sealed class WebAgentTests : IDisposable
         Assert.SkipWhen(string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(name), "BOHM_TEST_COMPANY_ENDPOINT and BOHM_TEST_COMPANY_MODEL are not set.");
         Assert.True(CompanyModelOptions.TryCreate(endpoint, name, out var company));
 
-        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModel = company });
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(company!) });
         if (Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_KEY") is { Length: > 0 } key)
             using (var connected = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(key))) HttpAssert.Status(HttpStatusCode.OK, connected);
         await AssertReadsThePageAndAnswersAsync(host);

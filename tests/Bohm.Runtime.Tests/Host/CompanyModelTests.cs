@@ -343,12 +343,131 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Empty(_server.Received);
     }
 
+    [Fact]
+    public void A_listed_shape_keeps_its_openai_compatible_servers_and_models_in_order_and_leaves_out_what_cannot_be_used()
+    {
+        const string json = """
+            {"providers":{
+              "gpu":{"baseUrl":"http://models.example:8000/v1","api":"openai-completions","apiKey":"never-taken",
+                "models":[{"id":"qwen3","name":"Qwen 3","contextWindow":32768,"maxTokens":8192,"reasoning":true,"input":["text","image","audio"]},
+                          {"id":" "},{"name":"no id"},{"id":"qwen3","name":"again"},
+                          {"id":"small","contextWindow":4096,"maxTokens":8192}]},
+              "cloud":{"baseUrl":"https://api.anthropic.com","api":"anthropic-messages","models":[{"id":"claude"}]},
+              "bad":{"baseUrl":"http://user:secret@models.example/v1","models":[{"id":"x"}]},
+              "empty":{"baseUrl":"http://models.example/v1","models":[]},
+              "GPU":{"baseUrl":"http://other.example/v1","models":[{"id":"y"}]},
+              "cpu":{"baseUrl":"http://cpu.example/v1/","models":[{"id":"phi"}]}
+            }}
+            """;
+
+        Assert.True(CompanyModelList.TryParse(json, out var list));
+        Assert.Equal(["gpu", "cpu"], list!.Servers.Select(s => s.Name));
+        Assert.Equal(["qwen3", "small", "phi"], list.Choices.Select(c => c.Model));
+
+        var first = list.First;
+        Assert.Equal(("gpu", "qwen3", "Qwen 3", "http://models.example:8000/v1/"), (first.Server, first.Model, first.DisplayName, first.Endpoint.AbsoluteUri));
+        Assert.Equal(new ModelLimits(32768, 8192, true), first.Limits);
+        Assert.Equal(["text", "image"], first.Input!);
+        // An answer larger than the window makes no sense: that model's limits are unknown, the model is kept.
+        Assert.Equal(ModelLimits.Unknown, list.Find("GPU", "small")!.Limits);
+        Assert.Equal(["text"], list.Find("cpu", "phi")!.Input!);
+        Assert.Null(list.Find("gpu", "claude"));
+        Assert.DoesNotContain("never-taken", JsonSerializer.Serialize(list));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("""{"gpu":{"baseUrl":"http://models.example/v1","models":[{"id":"x"}]}}""")]
+    [InlineData("""{"providers":{"cloud":{"baseUrl":"https://api.anthropic.com","api":"anthropic-messages","models":[{"id":"claude"}]}}}""")]
+    [InlineData("""{"providers":{"a/b":{"baseUrl":"http://models.example/v1","models":[{"id":"x"}]}}}""")]
+    public void A_shape_with_nothing_usable_is_no_list(string json) =>
+        Assert.False(CompanyModelList.TryParse(json, out _));
+
+    [Fact]
+    public async Task With_listed_servers_the_person_chooses_among_their_models_the_choice_is_remembered_and_a_model_no_longer_listed_falls_back_to_the_first()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-models-").FullName;
+        var list = Listed($$$$"""
+            {"providers":{
+              "gpu":{"baseUrl":"{{{{_server.Address.AbsoluteUri}}}}v1","models":[{"id":"big","name":"Big","contextWindow":32768,"maxTokens":4096,"reasoning":true}]},
+              "cpu":{"baseUrl":"{{{{_server.Address.AbsoluteUri}}}}v1","models":[{"id":"small"},{"id":"tiny","maxTokens":512}]}}}
+            """);
+        var first = await RunningHost.StartAsync(dataRoot, configure: o => o with { CompanyModels = list });
+
+        var state = await GetAsync(first);
+        Assert.True(state.GetProperty("fixed").GetBoolean());
+        Assert.Equal(("gpu", "big", "Big", 32768), (state.GetProperty("server").GetString(), state.GetProperty("model").GetString(),
+            state.GetProperty("name").GetString(), state.GetProperty("contextWindow").GetInt32()));
+        Assert.Equal(["gpu/big", "cpu/small", "cpu/tiny"], state.GetProperty("choices").EnumerateArray()
+            .Select(c => $"{c.GetProperty("server").GetString()}/{c.GetProperty("model").GetString()}"));
+
+        using (var unlisted = await SetAsync(first, """{"server":"cpu","model":"big"}""")) HttpAssert.Status(HttpStatusCode.Conflict, unlisted);
+        using (var byAddress = await SetAsync(first, "http://elsewhere.example/v1", "other")) HttpAssert.Status(HttpStatusCode.Conflict, byAddress);
+        using (var none = await first.ControlClient().DeleteAsync("/__control/llm/company-model")) HttpAssert.Status(HttpStatusCode.Conflict, none);
+        // The listed limits come with the choice; limits sent with it are not the person's to set here.
+        using (var chosen = await SetAsync(first, """{"server":"CPU","model":"tiny","maxTokens":9000}"""))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, chosen);
+            var now = JsonDocument.Parse(await chosen.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal(("cpu", "tiny", 512), (now.GetProperty("server").GetString(), now.GetProperty("model").GetString(), now.GetProperty("maxTokens").GetInt32()));
+        }
+
+        await first.StopKeepingDataAsync();
+
+        await using (var second = await RunningHost.StartAsync(dataRoot, configure: o => o with { CompanyModels = list }))
+            Assert.Equal("tiny", (await GetAsync(second)).GetProperty("model").GetString());
+
+        var changed = Listed($$$$"""{"providers":{"gpu":{"baseUrl":"{{{{_server.Address.AbsoluteUri}}}}v1","models":[{"id":"big"}]}}}""");
+        await using var third = await RunningHost.StartAsync(dataRoot, configure: o => o with { CompanyModels = changed });
+        Assert.Equal(("gpu", "big"), ((await GetAsync(third)).GetProperty("server").GetString(), (await GetAsync(third)).GetProperty("model").GetString()));
+    }
+
+    [Fact]
+    public async Task Each_listed_server_has_its_own_key_and_requests_go_with_the_key_of_the_server_in_use()
+    {
+        var list = Listed($$$$"""
+            {"providers":{
+              "gpu":{"baseUrl":"{{{{_server.Address.AbsoluteUri}}}}v1","models":[{"id":"big"}]},
+              "cpu":{"baseUrl":"{{{{_server.Address.AbsoluteUri}}}}v1","models":[{"id":"small"}]}}}
+            """);
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = list });
+
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(ServerKey))) HttpAssert.Status(HttpStatusCode.OK, key);
+        using (var chosen = await SetAsync(host, """{"server":"cpu","model":"small"}""")) HttpAssert.Status(HttpStatusCode.OK, chosen);
+
+        var state = await GetAsync(host);
+        Assert.False(state.GetProperty("keyConnected").GetBoolean());
+        Assert.Equal([true, false], state.GetProperty("choices").EnumerateArray().Select(c => c.GetProperty("keyConnected").GetBoolean()));
+
+        var app = await host.AdoptAsync(App);
+        using (var response = await PostFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/chat/completions",
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello?"}]}"""))
+            HttpAssert.Status(HttpStatusCode.OK, response);
+        var request = Assert.Single(_server.Received);
+        Assert.Equal("small", JsonDocument.Parse(request.Body).RootElement.GetProperty("model").GetString());
+        Assert.False(request.Headers.ContainsKey("Authorization")); // the other server's key does not go
+
+        _server.Received.Clear();
+        using (var back = await SetAsync(host, """{"server":"gpu","model":"big"}""")) HttpAssert.Status(HttpStatusCode.OK, back);
+        using (var response = await PostFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/chat/completions",
+            """{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello?"}]}"""))
+            HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal($"Bearer {ServerKey}", Assert.Single(_server.Received).Headers["Authorization"]);
+    }
+
+    private static CompanyModelList Listed(string json)
+    {
+        Assert.True(CompanyModelList.TryParse(json, out var list));
+        return list!;
+    }
+
     private async Task<RunningHost> StartAsync(bool fixedAtStart, bool withLocalModel = false)
     {
         var endpoint = new Uri(_server.Address, "v1/");
         var host = await RunningHost.StartAsync(configure: o => o with
         {
-            CompanyModel = fixedAtStart ? new CompanyModelOptions(endpoint, "fixed-model") : null,
+            CompanyModels = fixedAtStart ? CompanyModelList.Of(new CompanyModelOptions(endpoint, "fixed-model")) : null,
             LocalModel = withLocalModel ? new LocalModelOptions { ModelPath = "unused.gguf", Client = _local } : null,
         });
         if (!fixedAtStart)

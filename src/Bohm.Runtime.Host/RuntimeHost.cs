@@ -51,11 +51,12 @@ public sealed record RuntimeHostOptions
     public Llm.LocalModelOptions? LocalModel { get; init; }
 
     /// <summary>
-    /// The organization's model server, fixed for this run — typically an administrator's policy passed
-    /// on by whoever starts the runtime. <see langword="null"/> (the default): the person sets one, or
-    /// none, through the control API.
+    /// The organization's model servers and their models, listed for this run — typically an
+    /// administrator's policy passed on by whoever starts the runtime: the person chooses among them and
+    /// cannot set another. <see langword="null"/> (the default): the person sets one, or none, through
+    /// the control API.
     /// </summary>
-    public Llm.CompanyModelOptions? CompanyModel { get; init; }
+    public Llm.CompanyModelList? CompanyModels { get; init; }
 
     /// <summary>
     /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).

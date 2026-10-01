@@ -627,7 +627,7 @@ public sealed class BrowserTests : IAsyncLifetime
         await _host.StopKeepingDataAsync();
         _host = await RunningHost.StartAsync(_host.DataRoot, configure: o => o with
         {
-            CompanyModel = new Bohm.Runtime.Host.Llm.CompanyModelOptions(endpoint, "org-model"),
+            CompanyModels = Bohm.Runtime.Host.Llm.CompanyModelList.Of(new Bohm.Runtime.Host.Llm.CompanyModelOptions(endpoint, "org-model")),
         });
 
         // A page someone wrote on the organization's network: it calls the server's address itself,
