@@ -424,7 +424,7 @@ internal static class ControlPlane
                 break;
 
             case ("GET", ["apps", var tabOf, "tabs", var tabId]):
-                if (context.RequestServices.GetRequiredService<AppSessions>().Find(tabOf, tabId) is not { } tab)
+                if (context.RequestServices.GetRequiredService<LocalOrigin.AspNetCore.Storage.StorageChannel>().Sessions.Find(tabOf, tabId) is not { } tab)
                 {
                     response.StatusCode = StatusCodes.Status404NotFound;
                     break;
@@ -708,7 +708,7 @@ internal static class ControlPlane
         {
             // Drain before revoking: a write the closing page sent must land, not be refused as stale.
             await DrainAsync(context, cancel).ConfigureAwait(false);
-            services.GetRequiredService<AppSessions>().RevokeApp(appId);
+            services.GetRequiredService<LocalOrigin.AspNetCore.Storage.StorageChannel>().Sessions.Revoke(appId);
             try
             {
                 changed = await change(app.Storage).ConfigureAwait(false);
