@@ -28,6 +28,15 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>
+    /// What <c>GET …/models</c> answers when there is no <see cref="Refusal"/> — and then <c>GET …/models/{id}</c>
+    /// is not found, as on vLLM, which serves only the list; <see langword="null"/> answers both like any other request.
+    /// </summary>
+    public string? Models { get; set; }
+
+    /// <summary>The requests received other than for the model list — what was asked of a model.</summary>
+    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)))];
+
     public sealed record ReceivedRequest(string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string Body);
 
     public static async Task<FakeProvider> StartAsync()
@@ -49,6 +58,21 @@ public sealed class FakeProvider : IAsyncDisposable
                 context.Response.StatusCode = refusal.Status;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(refusal.Body);
+                return;
+            }
+
+            if (self.Models is { } models && context.Request.Method == "GET" && context.Request.Path.Value?.EndsWith("/models", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(models);
+                return;
+            }
+
+            if (self.Models is not null && context.Request.Method == "GET" && context.Request.Path.Value?.Contains("/models/", StringComparison.Ordinal) == true)
+            {
+                context.Response.StatusCode = 404;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("""{"detail":"Not Found"}""");
                 return;
             }
 

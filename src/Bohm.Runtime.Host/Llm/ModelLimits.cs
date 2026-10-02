@@ -42,7 +42,8 @@ public sealed record ModelLimits(int? ContextWindow = null, int? MaxOutputTokens
 /// Keeps each request to a model inside what the model takes: an answer bound above the model's own
 /// is lowered to it, no thinking setting goes to a model that has none, and a request the model
 /// refuses as too long for its context is tried once more with a smaller answer when that is what
-/// did not fit. The window learned from a refusal is kept for later requests.
+/// did not fit. The window learned from a refusal is kept for later requests; a window the server
+/// reported (<see cref="Reported"/>) stands until a refusal says otherwise.
 /// </summary>
 /// <remarks>
 /// The refusal arrives as <see cref="ContextOverflowException"/> — the provider turns each server's
@@ -54,9 +55,22 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) 
     public const int SmallestUsefulAnswer = 256;
 
     private int? _learnedWindow;
+    private int? _reportedWindow;
 
-    /// <summary>The limits as known now: as given, with a context window learned from a refusal when none was given.</summary>
-    public ModelLimits Limits => limits.ContextWindow is null && _learnedWindow is { } learned ? limits with { ContextWindow = learned } : limits;
+    /// <summary>
+    /// The limits as known now: as given, and when no context window was given, the one learned from a
+    /// refusal, or else the one the server reported.
+    /// </summary>
+    public ModelLimits Limits => limits.ContextWindow is null && (_learnedWindow ?? _reportedWindow) is { } known ? limits with { ContextWindow = known } : limits;
+
+    /// <summary>The context window the server reported, or <see langword="null"/> when it reported none.</summary>
+    public int? ReportedWindow => _reportedWindow;
+
+    /// <summary>Keeps the context window the server reported for the model; one that is not above zero is not kept.</summary>
+    public void Reported(int contextWindow)
+    {
+        if (contextWindow > 0) _reportedWindow = contextWindow;
+    }
 
     public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {

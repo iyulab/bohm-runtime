@@ -211,7 +211,7 @@ public sealed class WebAgentTests : IDisposable
             """);
 
         HttpAssert.Status(HttpStatusCode.OK, response);
-        using var sent = JsonDocument.Parse(Assert.Single(server.Received).Body);
+        using var sent = JsonDocument.Parse(Assert.Single(server.Asked).Body);
         var tools = sent.RootElement.GetProperty("messages").EnumerateArray().Where(m => m.GetProperty("role").GetString() == "tool")
             .Select(m => m.GetProperty("content").ToString()).ToList();
         Assert.Equal(2, tools.Count);
@@ -274,7 +274,7 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal("company/org-model", turn.GetProperty("model").GetString());
         Assert.Equal(FakeProvider.Reply, turn.GetProperty("text").GetString());
         Assert.Empty(_model.Calls);
-        using var sentBody = JsonDocument.Parse(Assert.Single(server.Received).Body);
+        using var sentBody = JsonDocument.Parse(Assert.Single(server.Asked).Body);
         Assert.Equal(["click", "list_tabs", "read_page", "snapshot_page", "type"], sentBody.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("function").GetProperty("name").GetString()).Order());
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal(server.Address.Authority, sent.GetProperty("host").GetString());

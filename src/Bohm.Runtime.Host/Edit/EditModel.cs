@@ -113,7 +113,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         if (Remembered is not { } chosen)
         {
             if (company.Client() is { } organizations)
-                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false, company.Limits);
+                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false,
+                    await company.LimitsAsync(cancellationToken).ConfigureAwait(false));
             if (!local.Configured) return null;
             var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);
             return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits);

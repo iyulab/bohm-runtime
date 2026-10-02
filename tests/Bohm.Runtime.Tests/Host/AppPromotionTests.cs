@@ -82,7 +82,7 @@ public sealed class AppPromotionTests : IAsyncLifetime
 
         HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
         Assert.Contains(FakeProvider.Reply, JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("detail").GetString(), StringComparison.Ordinal);
-        Assert.Contains("propose_app", Assert.Single(_server.Received).Body, StringComparison.Ordinal);
+        Assert.Contains("propose_app", Assert.Single(_server.Asked).Body, StringComparison.Ordinal);
         Assert.Empty(AdoptedFolders());
     }
 
