@@ -86,6 +86,22 @@ public sealed class AppPromotionTests : IAsyncLifetime
         Assert.Empty(AdoptedFolders());
     }
 
+    [Fact]
+    public async Task An_answer_that_reached_its_length_limit_says_so()
+    {
+        _server.FinishReason = "length";
+        using (var set = await _host.ControlClient().PutAsync("/__control/llm/company-model", Json($$"""{"endpoint":"{{new Uri(_server.Address, "v1/")}}","model":"m"}""")))
+            HttpAssert.Status(HttpStatusCode.OK, set);
+
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/proposals", Json(Request));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var failure = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("output-limit", failure.GetProperty("stopped").GetString());
+        Assert.Contains("length limit", failure.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        Assert.Empty(AdoptedFolders());
+    }
+
     [Theory]
     [InlineData("""{"question":"q","pages":[]}""")]
     [InlineData("""{"pages":[{"url":"https://a.example/","tables":[]}]}""")]

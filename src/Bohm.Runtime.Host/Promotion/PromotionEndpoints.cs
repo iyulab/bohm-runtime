@@ -59,7 +59,7 @@ internal static class PromotionEndpoints
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e), (e as AppProposalFailedException)?.Stopped), cancel).ConfigureAwait(false);
             return;
         }
 
