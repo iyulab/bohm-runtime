@@ -126,7 +126,9 @@ internal static partial class AppProposals
         {
             throw new AppProposalFailedException(refusals.Count > 0
                 ? "The model proposed no application that could be kept: " + refusals[^1]
-                : "The model proposed no application." + (closing.Length > 0 ? " It said: " + closing : ""));
+                : response.StopReason == TurnStopReason.OutputLimit
+                    ? "The model's answer reached its length limit before it proposed an application."
+                    : "The model proposed no application." + (closing.Length > 0 ? " It said: " + closing : ""));
         }
 
         return accepted with { Summary = closing };
