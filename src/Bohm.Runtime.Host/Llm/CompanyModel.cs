@@ -220,11 +220,8 @@ internal sealed class CompanyModel : IDisposable
         _egress.Sent(server.Endpoint.Authority);
         try
         {
-            // TODO(upstream): IronHive's FindModelAsync asks GET {base}models/{id}, which vLLM does not serve — it serves
-            // only the list. Find the model in the list until FindModelAsync reaches a list-only server.
             using var finder = new OpenAICompatibleModelFinder(ConfigOf(server, key));
-            var cards = await finder.ListModelsAsync(timeout.Token).ConfigureAwait(false);
-            if (cards.FirstOrDefault(c => string.Equals(c.ModelId, server.Model, StringComparison.Ordinal)) is LanguageModelCard { ContextWindow: { } window })
+            if (await finder.FindModelAsync(server.Model, timeout.Token).ConfigureAwait(false) is LanguageModelCard { ContextWindow: { } window })
                 client.Reported(window);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
