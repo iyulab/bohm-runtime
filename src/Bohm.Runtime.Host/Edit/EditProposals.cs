@@ -31,7 +31,8 @@ internal sealed record SourceEdit(string Old, string New);
 /// change the person asked for, which has no such test.
 /// </param>
 /// <param name="Left">For a named fix that did not finish, what is left — so the person, and a measurement, can see why.</param>
-internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null);
+/// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, otherwise <see langword="null"/>.</param>
+internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null);
 
 /// <summary>What a storage move left: lines that still load or call the online database, and names still used whose declaration it removed.</summary>
 /// <param name="OnlineLines">1-based line numbers in the proposed source.</param>
@@ -153,6 +154,7 @@ internal static partial class EditProposals
         var text = SourceText.Of(source);
         var proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
             Prompt(text.Lf.Split('\n'), target, instruction), cancellationToken).ConfigureAwait(false);
+        StoppedBeforeAnyChange(proposal);
         return proposal with { Html = text.Restore(proposal.Html) };
     }
 
@@ -167,6 +169,7 @@ internal static partial class EditProposals
         var draft = text.Lf;
         var edits = new List<SourceEdit>();
         var summary = "";
+        string? stopped = null;
         // A model may stop after a few places, saying what it will do next, or remove a declaration that
         // other code still uses. Each pass shows it what is left: the database, and the names it took away.
         IReadOnlyList<string> dangling = [];
@@ -175,6 +178,7 @@ internal static partial class EditProposals
             var step = await RunAsync(model, onThisComputer, limits, draft, StorageSystemPrompt, MaxStorageRounds,
                 onThisComputer ? MaxStorageOutputTokensHere : MaxStorageOutputTokensProvider,
                 StoragePrompt(draft.Split('\n'), again: pass > 0, dangling), cancellationToken).ConfigureAwait(false);
+            stopped = step.Stopped;
             if (step.Edits.Count == 0) break;
             draft = step.Html;
             edits.AddRange(step.Edits);
@@ -184,7 +188,20 @@ internal static partial class EditProposals
 
         var online = draft.Split('\n').Select((line, i) => (line, number: i + 1)).Where(x => OnlineUse().IsMatch(x.line)).Select(x => x.number).ToList();
         var complete = online.Count == 0 && dangling.Count == 0;
-        return new EditProposal(text.Restore(draft), summary, edits, complete, complete ? null : new StorageLeft(online, dangling));
+        var proposal = new EditProposal(text.Restore(draft), summary, edits, complete, complete ? null : new StorageLeft(online, dangling), complete ? null : stopped);
+        StoppedBeforeAnyChange(proposal);
+        return proposal;
+    }
+
+    /// <summary>
+    /// A proposal with no change because the answer ran out of room is a failure with that reason —
+    /// not «the model suggested nothing», which would send the person to reword a request the model
+    /// never finished answering.
+    /// </summary>
+    private static void StoppedBeforeAnyChange(EditProposal proposal)
+    {
+        if (proposal.Edits.Count == 0 && proposal.Stopped == ProposalFailedException.OutputLimit)
+            throw new ProposalFailedException("The model's answer reached its length limit before it proposed a change.", ProposalFailedException.OutputLimit);
     }
 
     /// <summary>
@@ -453,7 +470,8 @@ internal static partial class EditProposals
         var loop = new AgentLoop(client, new AgentOptions { Tools = [readSource, replace], SystemPrompt = systemPrompt });
 
         var response = await loop.RunAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return new EditProposal(draft, response.Content?.Trim() ?? "", edits);
+        return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
+            Stopped: response.StopReason == TurnStopReason.OutputLimit ? ProposalFailedException.OutputLimit : null);
     }
 
     private static string Prompt(string[] lines, EditTarget target, string instruction)

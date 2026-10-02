@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bohm.Runtime.Host.Edit;
 using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Host.Promotion;
 using Microsoft.Extensions.AI;
@@ -110,7 +111,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price"), html));
         model.Script.Enqueue(new TextContent("Done."));
 
-        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Contains(reason, failure.Message, StringComparison.Ordinal);
     }
@@ -120,7 +121,7 @@ public sealed class AppProposalTests
     {
         var model = new FakeChatModel { Reply = "I cannot do that." };
 
-        var failure = await Assert.ThrowsAsync<AppProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
+        var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Contains("I cannot do that.", failure.Message, StringComparison.Ordinal);
     }

@@ -142,6 +142,58 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_answer_that_reached_its_length_limit_before_any_change_says_so()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Reply = "I will change the button. First I need to look at";
+        _model.Finish = ChatFinishReason.Length;
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var failure = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("output-limit", failure.GetProperty("stopped").GetString());
+        Assert.Contains("length limit", failure.GetProperty("detail").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Changes_made_before_the_answer_reached_its_length_limit_are_proposed_and_say_it_stopped()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "Add Task</button>",
+            ["new_text"] = "Save</button>",
+        }));
+        _model.Reply = "I changed the button and will now";
+        _model.Finish = ChatFinishReason.Length;
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+        Assert.Equal("output-limit", proposal.GetProperty("stopped").GetString());
+    }
+
+    [Fact]
+    public async Task A_finished_proposal_does_not_say_it_stopped()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "Add Task</button>",
+            ["new_text"] = "Save</button>",
+        }));
+        _model.Reply = "I changed the button text.";
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("stopped").ValueKind);
+    }
+
+    [Fact]
     public async Task Without_a_model_on_this_computer_there_is_no_proposal()
     {
         await using var host = await RunningHost.StartAsync();

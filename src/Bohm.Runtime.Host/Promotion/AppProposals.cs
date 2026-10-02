@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Bohm.Runtime.Host.Edit;
 using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Sources;
 using IronHive.Agent.Invocation;
@@ -26,17 +27,6 @@ internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 
 /// <summary>A proposed application: nothing is kept until the person takes it in.</summary>
 internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused);
-
-/// <summary>No application could be proposed: the model proposed none the runtime could keep, or none at all.</summary>
-/// <param name="stopped"><c>output-limit</c> when the model's answer reached its length limit first, otherwise <see langword="null"/>.</param>
-internal sealed class AppProposalFailedException(string message, string? stopped = null) : Exception(message)
-{
-    /// <summary>The answer's length limit stopped the model: <see cref="OutputLimit"/>.</summary>
-    public const string OutputLimit = "output-limit";
-
-    /// <summary><see cref="OutputLimit"/> when the model's answer reached its length limit first, otherwise <see langword="null"/>.</summary>
-    public string? Stopped { get; } = stopped;
-}
 
 /// <summary>
 /// Turns an answer into a proposed application that reads the same tables again: the model picks, by
@@ -132,10 +122,10 @@ internal static partial class AppProposals
         var closing = response.Content?.Trim() ?? "";
         if (accepted is null)
         {
-            if (refusals.Count > 0) throw new AppProposalFailedException("The model proposed no application that could be kept: " + refusals[^1]);
+            if (refusals.Count > 0) throw new ProposalFailedException("The model proposed no application that could be kept: " + refusals[^1]);
             if (response.StopReason == TurnStopReason.OutputLimit)
-                throw new AppProposalFailedException("The model's answer reached its length limit before it proposed an application.", AppProposalFailedException.OutputLimit);
-            throw new AppProposalFailedException("The model proposed no application." + (closing.Length > 0 ? " It said: " + closing : ""));
+                throw new ProposalFailedException("The model's answer reached its length limit before it proposed an application.", ProposalFailedException.OutputLimit);
+            throw new ProposalFailedException("The model proposed no application." + (closing.Length > 0 ? " It said: " + closing : ""));
         }
 
         return accepted with { Summary = closing };
