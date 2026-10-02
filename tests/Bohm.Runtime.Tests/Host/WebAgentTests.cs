@@ -111,6 +111,32 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task An_answer_that_reached_the_length_limit_says_it_may_be_cut_short()
+    {
+        _model.Reply = "The page lists three suppliers: the first";
+        _model.Finish = ChatFinishReason.Length;
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Summarize this page."}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("done", turn.GetProperty("status").GetString());
+        Assert.Equal("output-limit", turn.GetProperty("stopped").GetString());
+    }
+
+    [Fact]
+    public async Task A_finished_answer_does_not_say_it_was_cut()
+    {
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hello?"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("stopped").ValueKind);
+    }
+
+    [Fact]
     public async Task A_refusal_that_is_not_about_the_pages_stands()
     {
         // The question alone is past the window — no page to cut.

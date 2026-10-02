@@ -18,7 +18,8 @@ internal sealed record HostToolCall(string Id, string Name, JsonElement Argument
 /// What a turn ended with: an answer (<c>done</c>), or calls for the host to make and send back
 /// (<c>requires_action</c>) — with any text the model wrote before them.
 /// </summary>
-internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model)
+/// <param name="Stopped"><c>output-limit</c> when the answer reached the model's length limit before it finished, so it may be cut short; otherwise <see langword="null"/>.</param>
+internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model, string? Stopped = null)
 {
     /// <summary>The text as HTML to show (<see cref="Adoption.AnswerMarkdown"/>) — nothing in it runs or loads.</summary>
     public string? Html => Text is { Length: > 0 } text ? Adoption.AnswerMarkdown.ToHtml(text) : null;
@@ -93,6 +94,7 @@ internal static class WebAgent
             })
             .Build();
         var written = new System.Text.StringBuilder();
+        var cutShort = false;
         var sent = conversation;
         AgentLoop loop;
         int before;
@@ -134,6 +136,8 @@ internal static class WebAgent
 
             await foreach (var chunk in chunks.ConfigureAwait(false))
             {
+                // The last chunk carries the turn's record, and with it why the model stopped.
+                if (chunk.Turn is { } record) cutShort = record.StopReason == TurnStopReason.OutputLimit;
                 if (chunk.TextDelta is not { Length: > 0 } delta) continue;
                 written.Append(delta);
                 if (onText is not null) await onText(delta, cancellationToken).ConfigureAwait(false);
@@ -157,7 +161,8 @@ internal static class WebAgent
             .Select(call => new HostToolCall(FreeId(call.CallId, taken), call.Name, JsonSerializer.SerializeToElement(call.Arguments ?? new Dictionary<string, object?>(), AgentJson.Default.IDictionaryStringObject)))
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-        return pending.Count > 0 ? new("requires_action", text, pending, modelName) : new("done", text ?? "", [], modelName);
+        return pending.Count > 0 ? new("requires_action", text, pending, modelName)
+            : new("done", text ?? "", [], modelName, cutShort ? Edit.ProposalFailedException.OutputLimit : null);
     }
 
     /// <summary>A page text shorter than this is not worth cutting.</summary>
