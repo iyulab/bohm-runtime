@@ -453,19 +453,18 @@ internal static partial class EditProposals
         // on each answer — a model that reasons by default otherwise spends the local server's whole
         // request limit before its first tool call. A provider's model keeps its own settings except for
         // the bound a task sets — and the thinking setting, when the model is known to think.
-        var thinks = limits.ThinksOn(onThisComputer);
-        var builder = model.AsBuilder();
-        builder.ConfigureOptions(options =>
-        {
-            if (thinks) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
-            options.MaxOutputTokens ??= maxOutputTokens;
-        });
-
+        // Inside the tool loop, so each round's request is configured: thinking seen in this task's
+        // first answer turns it off for the rest.
         var pipeline = new ToolInvocationPipeline(
             [new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)],
             [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
-        var client = builder
+        var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
+            .ConfigureOptions(options =>
+            {
+                if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+                options.MaxOutputTokens ??= maxOutputTokens;
+            })
             .Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [readSource, replace], SystemPrompt = systemPrompt });
 

@@ -108,14 +108,16 @@ internal static partial class AppProposals
             "Proposes the application: its title, the tables it reads (by page and table number, with the header names of the columns to keep) and its whole HTML.");
 
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
-        var builder = model.AsBuilder();
-        builder.ConfigureOptions(options =>
-        {
-            options.MaxOutputTokens ??= MaxOutputTokens;
-            if (limits.Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
-        });
         var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
-        var client = builder.UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds).Build();
+        // Inside the tool loop, so a round after a refused proposal is asked to think briefly once the model showed it thinks.
+        var client = model.AsBuilder()
+            .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
+            .ConfigureOptions(options =>
+            {
+                options.MaxOutputTokens ??= MaxOutputTokens;
+                if (ModelLimits.Of(model, limits).Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
+            })
+            .Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt });
 
         var response = await loop.RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);

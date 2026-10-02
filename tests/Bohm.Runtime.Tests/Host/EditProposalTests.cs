@@ -194,6 +194,50 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_server_model_that_thinks_in_the_first_round_is_asked_not_to_in_the_next()
+    {
+        var thinking = new ThinksThenCalls();
+        var model = new ModelFitChatClient(thinking, ModelLimits.Unknown); // nobody said whether it thinks
+
+        var proposal = await EditProposals.ProposeAsync(model, onThisComputer: false, ModelLimits.Unknown, App,
+            new EditTarget("""<button onclick="addTask()">Add Task</button>""", "Add Task"), "Change this text to Save", TestContext.Current.CancellationToken);
+
+        Assert.Single(proposal.Edits);
+        Assert.Equal([null, ReasoningEffort.None], thinking.Efforts); // the first round as the server likes; after its thinking, none
+    }
+
+    /// <summary>A server model that thinks before a replacement, then closes — recording the thinking it was asked for each round.</summary>
+    private sealed class ThinksThenCalls : IChatClient
+    {
+        public List<ReasoningEffort?> Efforts { get; } = [];
+
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            Efforts.Add(options?.Reasoning?.Effort);
+            ChatMessage answer = Efforts.Count == 1
+                ? new(ChatRole.Assistant, [new TextReasoningContent("The button text is in the markup."), new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+                {
+                    ["old_text"] = "Add Task</button>",
+                    ["new_text"] = "Save</button>",
+                })])
+                : new(ChatRole.Assistant, "I changed the button text.");
+            return Task.FromResult(new ChatResponse(answer) { FinishReason = Efforts.Count == 1 ? ChatFinishReason.ToolCalls : ChatFinishReason.Stop });
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var update in (await GetResponseAsync(messages, options, cancellationToken)).ToChatResponseUpdates()) yield return update;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    [Fact]
     public async Task Without_a_model_on_this_computer_there_is_no_proposal()
     {
         await using var host = await RunningHost.StartAsync();
