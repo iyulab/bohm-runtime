@@ -43,7 +43,8 @@ public sealed record ModelLimits(int? ContextWindow = null, int? MaxOutputTokens
 /// is lowered to it, no thinking setting goes to a model that has none, and a request the model
 /// refuses as too long for its context is tried once more with a smaller answer when that is what
 /// did not fit. The window learned from a refusal is kept for later requests; a window the server
-/// reported (<see cref="Reported"/>) stands until a refusal says otherwise.
+/// reported (<see cref="Reported"/>) stands until a refusal says otherwise. Thinking in an answer marks
+/// a model nobody described as one that thinks.
 /// </summary>
 /// <remarks>
 /// The refusal arrives as <see cref="ContextOverflowException"/> — the provider turns each server's
@@ -56,12 +57,23 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) 
 
     private int? _learnedWindow;
     private int? _reportedWindow;
+    private volatile bool _seenThinking;
 
     /// <summary>
     /// The limits as known now: as given, and when no context window was given, the one learned from a
-    /// refusal, or else the one the server reported.
+    /// refusal, or else the one the server reported; when nobody said whether the model thinks, it does
+    /// once an answer of its carried thinking.
     /// </summary>
-    public ModelLimits Limits => limits.ContextWindow is null && (_learnedWindow ?? _reportedWindow) is { } known ? limits with { ContextWindow = known } : limits;
+    public ModelLimits Limits
+    {
+        get
+        {
+            var known = limits;
+            if (known.ContextWindow is null && (_learnedWindow ?? _reportedWindow) is { } window) known = known with { ContextWindow = window };
+            if (known.Reasoning is null && _seenThinking) known = known with { Reasoning = true };
+            return known;
+        }
+    }
 
     /// <summary>The context window the server reported, or <see langword="null"/> when it reported none.</summary>
     public int? ReportedWindow => _reportedWindow;
@@ -76,14 +88,28 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) 
     {
         var list = messages as IList<ChatMessage> ?? [.. messages];
         var fitted = Fit(options);
+        ChatResponse response;
         try
         {
-            return await base.GetResponseAsync(list, fitted, cancellationToken).ConfigureAwait(false);
+            response = await base.GetResponseAsync(list, fitted, cancellationToken).ConfigureAwait(false);
         }
         catch (ContextOverflowException refused) when (Smaller(refused, fitted) is { } smaller)
         {
-            return await base.GetResponseAsync(list, smaller, cancellationToken).ConfigureAwait(false);
+            response = await base.GetResponseAsync(list, smaller, cancellationToken).ConfigureAwait(false);
         }
+
+        foreach (var message in response.Messages) Saw(message.Contents);
+        return response;
+    }
+
+    /// <summary>
+    /// Notes thinking in what the model sent. A model that thinks without being asked spends its answer's
+    /// room on it — a long task then ends before its result — so features that know it ask it to think
+    /// briefly (<see cref="ModelLimits.ThinksOn"/>). Kept for this client's life, like the learned window.
+    /// </summary>
+    private void Saw(IList<AIContent> contents)
+    {
+        if (!_seenThinking && contents.Any(c => c is TextReasoningContent { Text.Length: > 0 })) _seenThinking = true;
     }
 
     public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
@@ -109,14 +135,21 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) 
             if (retry is null)
             {
                 if (!any) yield break;
-                do yield return updates.Current;
+                do
+                {
+                    Saw(updates.Current.Contents);
+                    yield return updates.Current;
+                }
                 while (await updates.MoveNextAsync().ConfigureAwait(false));
                 yield break;
             }
         }
 
         await foreach (var update in base.GetStreamingResponseAsync(list, retry, cancellationToken).ConfigureAwait(false))
+        {
+            Saw(update.Contents);
             yield return update;
+        }
     }
 
     /// <summary>The request's options with the model's own bounds applied; the caller's are not changed.</summary>

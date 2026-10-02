@@ -130,6 +130,62 @@ public sealed class ModelLimitsTests
         Assert.Equal([4000, 2192], model.Asked);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Thinking_in_an_answer_marks_a_model_nobody_described_as_one_that_thinks(bool streamed)
+    {
+        var fitted = new ModelFitChatClient(new Thinks(), ModelLimits.Unknown);
+        Assert.Null(fitted.Limits.Reasoning);
+
+        if (streamed) await fitted.GetStreamingResponseAsync(Question, null, TestContext.Current.CancellationToken).ToListAsync(TestContext.Current.CancellationToken);
+        else await fitted.GetResponseAsync(Question, null, TestContext.Current.CancellationToken);
+
+        Assert.True(fitted.Limits.Reasoning);
+        Assert.True(fitted.Limits.ThinksOn(onThisComputer: false)); // so the next task asks it to think briefly
+    }
+
+    [Fact]
+    public async Task A_model_said_not_to_think_stays_so_whatever_its_answers_carry()
+    {
+        var fitted = new ModelFitChatClient(new Thinks(), new ModelLimits(Reasoning: false));
+
+        await fitted.GetResponseAsync(Question, null, TestContext.Current.CancellationToken);
+
+        Assert.False(fitted.Limits.Reasoning);
+    }
+
+    [Fact]
+    public async Task An_answer_without_thinking_leaves_it_unknown()
+    {
+        var fitted = new ModelFitChatClient(new FakeChatModel(), ModelLimits.Unknown);
+
+        await fitted.GetResponseAsync(Question, null, TestContext.Current.CancellationToken);
+
+        Assert.Null(fitted.Limits.Reasoning);
+    }
+
+    /// <summary>A model that thinks before every answer, as a server sends it (the thinking as its own content).</summary>
+    private sealed class Thinks : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [new TextReasoningContent("The person wants OK."), new TextContent("OK")])));
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("The person wants OK.")]);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "OK");
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
     /// <summary>A model that refuses the first <c>times</c> requests and then answers "ok".</summary>
     private sealed class RefusesOnce(Exception refusal, int times = 1) : IChatClient
     {
