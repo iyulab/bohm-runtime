@@ -317,8 +317,32 @@ internal sealed class CompanyModel : IDisposable
         }
         catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
-            return new(CheckResult.Unreachable, null, null);
+            return new(CheckResult.Unreachable, null, null, Unreached: UnreachedOf(e));
         }
+    }
+
+    /// <summary>
+    /// Why a server was not reached, as far as the failure says — the name does not resolve, nothing
+    /// accepts the connection, or no answer came in time — so the person is told what to look at; <see langword="null"/>
+    /// when it says none of these. Read from the failure's kind, not its message, which the system words in its own language.
+    /// </summary>
+    internal static string? UnreachedOf(Exception failure)
+    {
+        if (failure is OperationCanceledException) return CheckResult.NoAnswer;
+        if (failure is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError }) return CheckResult.HostNotFound;
+        for (var e = failure.InnerException; e is not null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException socket)
+                return socket.SocketErrorCode switch
+                {
+                    System.Net.Sockets.SocketError.ConnectionRefused => CheckResult.ConnectionRefused,
+                    System.Net.Sockets.SocketError.HostNotFound or System.Net.Sockets.SocketError.NoData => CheckResult.HostNotFound,
+                    System.Net.Sockets.SocketError.TimedOut => CheckResult.NoAnswer,
+                    _ => null,
+                };
+        }
+
+        return null;
     }
 
     /// <summary>Whether an OpenAI-shaped model list (<c>{ data: [{ id }] }</c>) names <paramref name="model"/>; <see langword="null"/> when the answer is not such a list.</summary>
@@ -345,13 +369,23 @@ internal sealed class CompanyModel : IDisposable
     /// <param name="Status">The server's HTTP status, when it answered.</param>
     /// <param name="ModelListed">Whether its model list names the model it was set with; <see langword="null"/> when it gave no such list.</param>
     /// <param name="ReportedContextWindow">The context window the server reports for the model, when it lists the model and says it and nobody set one.</param>
-    internal sealed record CheckResult(string Result, int? Status, bool? ModelListed, int? ReportedContextWindow = null)
+    /// <param name="Unreached">For <see cref="Unreachable"/>, why when the failure says: <see cref="HostNotFound"/>, <see cref="ConnectionRefused"/> or <see cref="NoAnswer"/>.</param>
+    internal sealed record CheckResult(string Result, int? Status, bool? ModelListed, int? ReportedContextWindow = null, string? Unreached = null)
     {
         public const string Answers = "answers";
         public const string KeyRefused = "key-refused";
         public const string NotFound = "not-found";
         public const string Refused = "refused";
         public const string Unreachable = "unreachable";
+
+        /// <summary>The server's name does not resolve.</summary>
+        public const string HostNotFound = "host-not-found";
+
+        /// <summary>Nothing accepts connections at the address.</summary>
+        public const string ConnectionRefused = "connection-refused";
+
+        /// <summary>No answer came within <see cref="CheckTimeout"/>.</summary>
+        public const string NoAnswer = "no-answer";
     }
 
     public void Dispose()
