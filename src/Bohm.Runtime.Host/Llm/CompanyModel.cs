@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
+using IronHive.Abstractions.Models;
 using IronHive.Extensions.AI;
 using IronHive.Providers.OpenAI.Compatible;
 using Microsoft.Extensions.AI;
@@ -76,6 +77,7 @@ internal sealed class CompanyModel : IDisposable
     private readonly Lock _clientLock = new();
     private CompanyModelOptions? _current;
     private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
+    private ModelFitChatClient? _askedFor;
 
     public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress)
     {
@@ -170,6 +172,16 @@ internal sealed class CompanyModel : IDisposable
     /// </remarks>
     public IChatClient? Client() => FittedClient();
 
+    /// <summary>The context window the server reported for the model in use (<see cref="LimitsAsync"/>), or <see langword="null"/> when it has not been asked or said none.</summary>
+    public int? ReportedContextWindow
+    {
+        get
+        {
+            lock (_clientLock)
+                return _client is { } kept && kept.Server == Current ? kept.Client.ReportedWindow : null;
+        }
+    }
+
     /// <summary>The server model's limits as known now — as set, with a context window learned from a refusal when none was set.</summary>
     public ModelLimits Limits
     {
@@ -180,6 +192,59 @@ internal sealed class CompanyModel : IDisposable
         }
     }
 
+    /// <summary>
+    /// The server model's limits as known now, after asking the server once — per server, model and
+    /// key — for the context it accepts when nobody set one. A server that does not say, or does not
+    /// answer, leaves the window unknown; the request it was asked for goes on either way.
+    /// </summary>
+    /// <remarks>
+    /// The window comes from the server's model list as IronHive's OpenAI-compatible model finder reads
+    /// it (vLLM's <c>max_model_len</c>) — not from the model's name, and not from what the model was
+    /// trained on. The request leaves this computer, so it is counted as sent to the server's host.
+    /// </remarks>
+    /// <param name="again">Asks even when the server was asked before and said nothing — the person checking it again.</param>
+    public async Task<ModelLimits> LimitsAsync(CancellationToken cancellationToken, bool again = false)
+    {
+        if (FittedClient() is not { } client) return ModelLimits.Unknown;
+        CompanyModelOptions server;
+        string? key;
+        lock (_clientLock)
+        {
+            if (client.Limits.ContextWindow is not null || (!again && ReferenceEquals(_askedFor, client)) || _client is not { } kept || kept.Client != client)
+                return client.Limits;
+            (_askedFor, server, key) = (client, kept.Server, kept.Key);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(CheckTimeout);
+        _egress.Sent(server.Endpoint.Authority);
+        try
+        {
+            // TODO(upstream): IronHive's FindModelAsync asks GET {base}models/{id}, which vLLM does not serve — it serves
+            // only the list. Find the model in the list until FindModelAsync reaches a list-only server.
+            using var finder = new OpenAICompatibleModelFinder(ConfigOf(server, key));
+            var cards = await finder.ListModelsAsync(timeout.Token).ConfigureAwait(false);
+            if (cards.FirstOrDefault(c => string.Equals(c.ModelId, server.Model, StringComparison.Ordinal)) is LanguageModelCard { ContextWindow: { } window })
+                client.Reported(window);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Not reported: the window stays unknown until a refusal tells it.
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_clientLock)
+                if (ReferenceEquals(_askedFor, client)) _askedFor = null; // asked again next time
+            throw;
+        }
+
+        return client.Limits;
+    }
+
+    /// <summary>The whole address the person gave is the base — no API path is added to it.</summary>
+    private static OpenAICompatibleConfig ConfigOf(CompanyModelOptions server, string? key) =>
+        new() { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key };
+
     private ModelFitChatClient? FittedClient()
     {
         if (Current is not { } current) return null;
@@ -187,8 +252,7 @@ internal sealed class CompanyModel : IDisposable
         lock (_clientLock)
         {
             if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
-            // The whole address the person gave is the base — no API path is added to it.
-            var generator = new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = current.Endpoint.AbsoluteUri, Path = "", ApiKey = key });
+            var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key));
             var client = new ModelFitChatClient(
                 new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority), current.Limits);
             _client = (current, key, client);
@@ -250,7 +314,9 @@ internal sealed class CompanyModel : IDisposable
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
                 return new(status is 401 or 403 ? CheckResult.KeyRefused : status == 404 ? CheckResult.NotFound : CheckResult.Refused, status, null);
-            return new(CheckResult.Answers, status, await ListsAsync(response, server.Model, timeout.Token).ConfigureAwait(false));
+            var listed = await ListsAsync(response, server.Model, timeout.Token).ConfigureAwait(false);
+            if (listed == true) await LimitsAsync(timeout.Token, again: true).ConfigureAwait(false);
+            return new(CheckResult.Answers, status, listed, ReportedContextWindow);
         }
         catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
@@ -281,7 +347,8 @@ internal sealed class CompanyModel : IDisposable
     /// <param name="Result">One of <see cref="Answers"/>, <see cref="KeyRefused"/>, <see cref="NotFound"/>, <see cref="Refused"/>, <see cref="Unreachable"/>.</param>
     /// <param name="Status">The server's HTTP status, when it answered.</param>
     /// <param name="ModelListed">Whether its model list names the model it was set with; <see langword="null"/> when it gave no such list.</param>
-    internal sealed record CheckResult(string Result, int? Status, bool? ModelListed)
+    /// <param name="ReportedContextWindow">The context window the server reports for the model, when it lists the model and says it and nobody set one.</param>
+    internal sealed record CheckResult(string Result, int? Status, bool? ModelListed, int? ReportedContextWindow = null)
     {
         public const string Answers = "answers";
         public const string KeyRefused = "key-refused";

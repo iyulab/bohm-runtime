@@ -121,7 +121,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
             """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
             Encoding.UTF8, "application/json")))
             HttpAssert.Status(HttpStatusCode.OK, proposal);
-        using var proposed = JsonDocument.Parse(_server.Received.First().Body);
+        using var proposed = JsonDocument.Parse(_server.Asked[0].Body);
         Assert.Equal("none", proposed.RootElement.GetProperty("reasoning_effort").GetString());
         Assert.Equal(1024, AnswerBound(proposed.RootElement));
     }
@@ -157,9 +157,12 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal("answers", listed.GetProperty("result").GetString());
         Assert.Equal(200, listed.GetProperty("status").GetInt32());
         Assert.True(listed.GetProperty("modelListed").GetBoolean());
-        var request = Assert.Single(_server.Received);
-        Assert.Equal(("GET", "/v1/models"), (request.Method, request.PathAndQuery));
-        Assert.Equal($"Bearer {ServerKey}", request.Headers["Authorization"]);
+        // The list once to tell how the server answered, and once more for the model's limits as IronHive reads them.
+        Assert.All(_server.Received, request =>
+        {
+            Assert.Equal(("GET", "/v1/models"), (request.Method, request.PathAndQuery));
+            Assert.Equal($"Bearer {ServerKey}", request.Headers["Authorization"]);
+        });
 
         _server.Refusal = (200, """{"object":"list","data":[{"id":"other-model"}]}""");
         Assert.False((await CheckAsync(host)).GetProperty("modelListed").GetBoolean());
@@ -169,6 +172,21 @@ public sealed class CompanyModelTests : IAsyncLifetime
         // Nothing of an application's went, but the requests left this computer.
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
+    }
+
+    [Fact]
+    public async Task A_check_takes_the_context_window_a_vllm_server_reports_for_the_model()
+    {
+        await using var host = await StartAsync(fixedAtStart: false);
+        _server.Models = """{"object":"list","data":[{"id":"other-model","object":"model","max_model_len":4096},{"id":"set-model","object":"model","owned_by":"vllm","max_model_len":32768}]}""";
+
+        var check = await CheckAsync(host);
+
+        Assert.Equal("answers", check.GetProperty("result").GetString());
+        Assert.Equal(32768, check.GetProperty("reportedContextWindow").GetInt32());
+        var state = await GetAsync(host);
+        Assert.Equal(32768, state.GetProperty("reportedContextWindow").GetInt32());
+        Assert.Equal(JsonValueKind.Null, state.GetProperty("contextWindow").ValueKind); // as set: nobody set one
     }
 
     [Theory]
@@ -274,22 +292,33 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task By_default_proposals_are_made_by_the_server_ahead_of_the_model_on_this_computer()
+    public async Task By_default_proposals_are_made_by_the_server_ahead_of_the_model_on_this_computer_which_is_first_asked_once_for_the_models_context_window()
     {
         await using var host = await StartAsync(fixedAtStart: true, withLocalModel: true);
+        _server.Models = """{"object":"list","data":[{"id":"fixed-model","object":"model","max_model_len":8192}]}""";
         var model = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement;
         Assert.Equal(JsonValueKind.Null, model.GetProperty("missing").ValueKind);
 
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
+        var app = await host.AdoptAsync(App);
+        using var response = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
             """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
             Encoding.UTF8, "application/json"));
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         Assert.Equal("company/fixed-model", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
-        Assert.Equal("/v1/chat/completions", Assert.Single(_server.Received).PathAndQuery);
+        Assert.Equal([("GET", "/v1/models"), ("POST", "/v1/chat/completions")], _server.Received.Select(r => (r.Method, r.PathAndQuery)));
+        Assert.Equal(8192, (await GetAsync(host)).GetProperty("reportedContextWindow").GetInt32());
         Assert.Empty(_local.Calls);
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
+
+        // Asked once: the next proposal goes straight to the model.
+        _server.Received.Clear();
+        using (var again = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json")))
+            HttpAssert.Status(HttpStatusCode.OK, again);
+        Assert.Equal("/v1/chat/completions", Assert.Single(_server.Received).PathAndQuery);
     }
 
     [Fact]
