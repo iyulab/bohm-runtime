@@ -477,17 +477,41 @@ public sealed class WebAgentTests : IDisposable
         Assert.SkipWhen(string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(name), "BOHM_TEST_COMPANY_ENDPOINT and BOHM_TEST_COMPANY_MODEL are not set.");
         Assert.True(CompanyModelOptions.TryCreate(endpoint, name, out var company));
 
-        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(company!) });
-        if (Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_KEY") is { Length: > 0 } key)
-            using (var connected = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(key))) HttpAssert.Status(HttpStatusCode.OK, connected);
+        await using var host = await StartWithCompanyServerAsync(company!);
         await AssertReadsThePageAndAnswersAsync(host);
     }
 
+    [Fact]
+    public async Task A_real_organization_model_server_refuses_a_page_past_its_context_and_answers_from_the_part_that_fits()
+    {
+        var endpoint = Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_ENDPOINT");
+        var name = Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_MODEL");
+        Assert.SkipWhen(string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(name), "BOHM_TEST_COMPANY_ENDPOINT and BOHM_TEST_COMPANY_MODEL are not set.");
+        Assert.True(CompanyModelOptions.TryCreate(endpoint, name, out var company));
+
+        await using var host = await StartWithCompanyServerAsync(company!);
+        // About 100,000 tokens: a server with a smaller context refuses it with its window, the turn is asked again with
+        // the page cut to fit, and the answer comes from the page's beginning, which is kept.
+        await AssertReadsThePageAndAnswersAsync(host, LunchPage + "\n" + string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog near the river bank. ", 8000)));
+    }
+
+    private const string LunchPage = "Title: School cafeteria\nAddress: http://school.example/menu\nText: Today's lunch: kimchi stew, rice and an apple.";
+
+    /// <summary>A host whose organization's model server is <paramref name="company"/>, with <c>BOHM_TEST_COMPANY_KEY</c> connected when it is set.</summary>
+    private static async Task<RunningHost> StartWithCompanyServerAsync(CompanyModelOptions company)
+    {
+        var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(company) });
+        if (Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_KEY") is { Length: > 0 } key)
+            using (var connected = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(key))) HttpAssert.Status(HttpStatusCode.OK, connected);
+        return host;
+    }
+
     /// <summary>
-    /// Plays the caller's side of the round trip, answering the tools from one fixed page, until the turn is done —
-    /// asking for lines, as the shell does, and saying how many pieces the answer came in.
+    /// Plays the caller's side of the round trip, answering the tools from one page (<see cref="LunchPage"/> unless
+    /// <paramref name="page"/> is given), until the turn is done — asking for lines, as the shell does, and saying how
+    /// many pieces the answer came in.
     /// </summary>
-    private static async Task AssertReadsThePageAndAnswersAsync(RunningHost host)
+    private static async Task AssertReadsThePageAndAnswersAsync(RunningHost host, string page = LunchPage)
     {
         using var client = host.ControlClient();
         client.Timeout = TimeSpan.FromMinutes(10);
@@ -513,7 +537,7 @@ public sealed class WebAgentTests : IDisposable
                 calls.Add(name);
                 messages.Add(new { role = "tool", toolCallId = call.GetProperty("id").GetString(), text = name == "list_tabs"
                     ? "web-1 | School cafeteria | http://school.example/menu"
-                    : string.Join('\n', "Title: School cafeteria", "Address: http://school.example/menu", "Text: Today's lunch: kimchi stew, rice and an apple.") });
+                    : page });
             }
         }
 
