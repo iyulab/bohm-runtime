@@ -36,6 +36,14 @@ public sealed record ModelLimits(int? ContextWindow = null, int? MaxOutputTokens
     /// step makes them too slow to use).
     /// </summary>
     public bool ThinksOn(bool onThisComputer) => onThisComputer ? Reasoning != false : Reasoning == true;
+
+    /// <summary>
+    /// What is known of <paramref name="model"/> now: what its client has learned since
+    /// <paramref name="given"/> was read — thinking seen in an answer, a window from a refusal — or
+    /// <paramref name="given"/> when its client learns nothing. A task of several rounds reads it for
+    /// each request, so a model that thought in the first round is asked not to in the next.
+    /// </summary>
+    public static ModelLimits Of(IChatClient model, ModelLimits given) => model.GetService<ModelFitChatClient>()?.Limits ?? given;
 }
 
 /// <summary>

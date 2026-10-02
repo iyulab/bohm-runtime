@@ -81,20 +81,17 @@ internal static class WebAgent
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
         Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken)
     {
-        var builder = model.AsBuilder();
-        var thinks = limits.ThinksOn(onThisComputer);
-        if (onThisComputer || thinks)
-        {
-            // As for proposals: no thinking unless asked, and on this computer a bound on each answer.
-            builder.ConfigureOptions(options =>
-            {
-                if (thinks) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
-                if (onThisComputer) options.MaxOutputTokens ??= MaxOutputTokensPerRound;
-            });
-        }
-
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
-        var client = builder.UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds).Build();
+        // As for proposals, inside it: no thinking unless asked — read for each request, so thinking seen
+        // in one turns it off for the next — and on this computer a bound on each answer.
+        var client = model.AsBuilder()
+            .UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
+            .ConfigureOptions(options =>
+            {
+                if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+                if (onThisComputer) options.MaxOutputTokens ??= MaxOutputTokensPerRound;
+            })
+            .Build();
         var written = new System.Text.StringBuilder();
         var sent = conversation;
         AgentLoop loop;
