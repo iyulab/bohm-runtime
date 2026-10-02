@@ -34,6 +34,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// </summary>
     public string? Models { get; set; }
 
+    /// <summary>The OpenAI-compatible answer's <c>finish_reason</c> — <c>length</c> as a server ends an answer at its length limit; <see langword="null"/> leaves it out.</summary>
+    public string? FinishReason { get; set; }
+
     /// <summary>The requests received other than for the model list — what was asked of a model.</summary>
     public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)))];
 
@@ -159,13 +162,16 @@ public sealed class FakeProvider : IAsyncDisposable
                     await Task.Delay(50);
                 }
 
+                if (self.FinishReason is { } streamedFinish)
+                    await context.Response.WriteAsync($"data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{streamedFinish}\"}}]}}\n\n");
                 await context.Response.WriteAsync("data: [DONE]\n\n");
                 return;
             }
 
             context.Response.ContentType = "application/json";
             context.Response.Headers["x-provider-request-id"] = "req-1";
-            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{Reply}\"}}}}]}}");
+            var finish = self.FinishReason is { } reason ? $",\"finish_reason\":\"{reason}\"" : "";
+            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{Reply}\"}}{finish}}}]}}");
         });
         await app.StartAsync();
         var address = new Uri(app.Urls.First() + "/");
