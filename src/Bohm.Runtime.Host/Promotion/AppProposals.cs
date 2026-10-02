@@ -118,9 +118,19 @@ internal static partial class AppProposals
                 if (ModelLimits.Of(model, limits).Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
             })
             .Build();
-        var loop = new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt });
+        var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
+        var response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt })
+            .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
+        // A model nobody described as one that thinks can spend its whole answer thinking the first time it
+        // is asked. That answer taught it does, so the same request goes once more, asked to think briefly —
+        // before the person is told it failed.
+        if (accepted is null && refusals.Count == 0 && response.StopReason == TurnStopReason.OutputLimit
+            && !knewItThinks && ModelLimits.Of(model, limits).Reasoning == true)
+        {
+            response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt })
+                .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
-        var response = await loop.RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
         var closing = response.Content?.Trim() ?? "";
         if (accepted is null)
         {

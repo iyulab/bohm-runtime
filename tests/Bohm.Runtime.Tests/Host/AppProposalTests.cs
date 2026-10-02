@@ -117,6 +117,68 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task A_model_that_thought_its_first_answer_away_is_asked_again_to_think_briefly()
+    {
+        var thinking = new ThinksAwayFirst(Propose("c1", PricesFrom(2, "Item", "Price")));
+        var model = new ModelFitChatClient(thinking, ModelLimits.Unknown); // nobody said whether it thinks
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Prices", proposal.Title);
+        Assert.Equal([null, ReasoningEffort.Low, ReasoningEffort.Low], thinking.Efforts); // the first as the server likes; again, briefly
+        Assert.Equal(thinking.Sent[0], thinking.Sent[1]); // the same request again, not a continuation of the cut answer
+    }
+
+    [Fact]
+    public async Task A_model_known_to_think_whose_answer_still_reached_the_limit_is_not_asked_again()
+    {
+        var thinking = new ThinksAwayFirst(Propose("c1", PricesFrom(2, "Item", "Price")));
+        var model = new ModelFitChatClient(thinking, new ModelLimits(Reasoning: true));
+
+        var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
+
+        Assert.Equal(ProposalFailedException.OutputLimit, failure.Stopped);
+        Assert.Single(thinking.Efforts);
+    }
+
+    /// <summary>
+    /// A server model whose first answer is all thinking, cut at the length limit; after that it proposes, then closes —
+    /// recording the thinking it was asked for and how many messages it was sent each time.
+    /// </summary>
+    private sealed class ThinksAwayFirst(FunctionCallContent proposal) : IChatClient
+    {
+        public List<ReasoningEffort?> Efforts { get; } = [];
+
+        public List<int> Sent { get; } = [];
+
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            var list = messages.ToList();
+            Efforts.Add(options?.Reasoning?.Effort);
+            Sent.Add(list.Count);
+            var (answer, finish) = Efforts.Count switch
+            {
+                1 => (new ChatMessage(ChatRole.Assistant, [new TextReasoningContent("The person wants a price list. Let me think about every column")]), ChatFinishReason.Length),
+                2 => (new ChatMessage(ChatRole.Assistant, [proposal]), ChatFinishReason.ToolCalls),
+                _ => (new ChatMessage(ChatRole.Assistant, "A price list read from the shop."), ChatFinishReason.Stop),
+            };
+            return Task.FromResult(new ChatResponse(answer) { FinishReason = finish });
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var update in (await GetResponseAsync(messages, options, cancellationToken)).ToChatResponseUpdates()) yield return update;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    [Fact]
     public async Task A_model_that_never_proposes_fails_the_proposal()
     {
         var model = new FakeChatModel { Reply = "I cannot do that." };
