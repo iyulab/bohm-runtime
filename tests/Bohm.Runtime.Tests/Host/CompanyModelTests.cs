@@ -217,7 +217,27 @@ public sealed class CompanyModelTests : IAsyncLifetime
         using (var set = await SetAsync(host, $"http://127.0.0.1:{port}/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
         var check = await CheckAsync(host);
         Assert.Equal("unreachable", check.GetProperty("result").GetString());
+        Assert.Equal("connection-refused", check.GetProperty("unreached").GetString());
         Assert.Equal(JsonValueKind.Null, check.GetProperty("status").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_check_of_an_address_whose_name_does_not_resolve_says_so()
+    {
+        await using var host = await RunningHost.StartAsync();
+        using (var set = await SetAsync(host, "http://models.invalid/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
+
+        var check = await CheckAsync(host);
+
+        Assert.Equal("unreachable", check.GetProperty("result").GetString());
+        Assert.Equal("host-not-found", check.GetProperty("unreached").GetString());
+    }
+
+    [Fact]
+    public void A_check_that_ran_out_of_time_says_no_answer_and_an_unknown_failure_says_nothing()
+    {
+        Assert.Equal("no-answer", CompanyModel.UnreachedOf(new TaskCanceledException()));
+        Assert.Null(CompanyModel.UnreachedOf(new HttpRequestException("reset", new IOException("reset"))));
     }
 
     [Theory]
