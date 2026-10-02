@@ -1,1 +1,3 @@
-*.sh text eol=lf
+# Line endings are LF in the repository and in the working tree, so a test that compares text built from
+# a raw string literal does not change with the editor or the checkout on Windows.
+* text=auto eol=lf
