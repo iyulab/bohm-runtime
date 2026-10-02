@@ -30,6 +30,9 @@ internal sealed class FakeChatModel : IChatClient
     /// <summary>Token counts to report, or none.</summary>
     public UsageDetails? Usage { get; set; }
 
+    /// <summary>How the answer after the script ends — <see cref="ChatFinishReason.Length"/> as a model stopped at its length limit; the usual reason when not set.</summary>
+    public ChatFinishReason? Finish { get; set; }
+
     public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
         Calls.Add(([.. messages], options));
@@ -48,7 +51,7 @@ internal sealed class FakeChatModel : IChatClient
         return Task.FromResult(new ChatResponse(message)
         {
             ModelId = "local-test",
-            FinishReason = Call is null ? ChatFinishReason.Stop : ChatFinishReason.ToolCalls,
+            FinishReason = Finish ?? (Call is null ? ChatFinishReason.Stop : ChatFinishReason.ToolCalls),
             Usage = Usage,
         });
     }
@@ -76,7 +79,7 @@ internal sealed class FakeChatModel : IChatClient
             yield return new ChatResponseUpdate(ChatRole.Assistant, chunk) { ModelId = "local-test", ResponseId = "r-1" };
         }
 
-        yield return new ChatResponseUpdate { FinishReason = ChatFinishReason.Stop, ModelId = "local-test", ResponseId = "r-1", Contents = Usage is null ? [] : [new UsageContent(Usage)] };
+        yield return new ChatResponseUpdate { FinishReason = Finish ?? ChatFinishReason.Stop, ModelId = "local-test", ResponseId = "r-1", Contents = Usage is null ? [] : [new UsageContent(Usage)] };
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
