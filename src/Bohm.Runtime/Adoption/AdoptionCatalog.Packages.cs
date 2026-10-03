@@ -64,7 +64,7 @@ public sealed partial class AdoptionCatalog
         try
         {
             await ExportAsync(id, folder, openStorage, data == PackageData.All, cancellationToken).ConfigureAwait(false);
-            await KeepFileNamesOnlyAsync(folder, cancellationToken).ConfigureAwait(false);
+            await KeepWhatTravelsAsync(folder, cancellationToken).ConfigureAwait(false);
             var files = PackageFiles(folder);
             var manifest = new PackageManifest(
                 AppPackage.ManifestVersion, AppPackage.Format, app.Id, version.ToString(CultureInfo.InvariantCulture), DisplayName(app), AppPackage.PlainContract,
@@ -88,7 +88,7 @@ public sealed partial class AdoptionCatalog
         }
         finally
         {
-            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+            RemoveWorkingFolder(folder);
         }
     }
 
@@ -131,8 +131,11 @@ public sealed partial class AdoptionCatalog
         return next;
     }
 
-    /// <summary>Shortens every recorded original path in an exported folder to its file name.</summary>
-    private static async Task KeepFileNamesOnlyAsync(string folder, CancellationToken cancellationToken)
+    /// <summary>
+    /// Shortens every recorded original path in an exported folder to its file name, and drops the record of the
+    /// registry it was installed from — where this computer's files and registries are is not the receiver's.
+    /// </summary>
+    private static async Task KeepWhatTravelsAsync(string folder, CancellationToken cancellationToken)
     {
         var records = new List<string> { Path.Combine(folder, RecordFile) };
         var revisions = Path.Combine(folder, RevisionsDirectory);
@@ -141,10 +144,15 @@ public sealed partial class AdoptionCatalog
         {
             if (!File.Exists(record)) continue;
             var node = JsonNode.Parse(await File.ReadAllBytesAsync(record, cancellationToken).ConfigureAwait(false));
-            if (node?["source"]?["originalPath"] is not JsonValue value || !value.TryGetValue(out string? path) || path is null) continue;
-            var name = path[(path.LastIndexOfAny(['/', '\\']) + 1)..];
-            if (name == path) continue;
-            node["source"]!["originalPath"] = name;
+            var changed = node is JsonObject recordObject && recordObject.Remove("installedFrom");
+            if (node?["source"]?["originalPath"] is JsonValue value && value.TryGetValue(out string? path) && path is not null
+                && path[(path.LastIndexOfAny(['/', '\\']) + 1)..] is var name && name != path)
+            {
+                node["source"]!["originalPath"] = name;
+                changed = true;
+            }
+
+            if (!changed) continue;
             await File.WriteAllBytesAsync(record, JsonSerializer.SerializeToUtf8Bytes(node), cancellationToken).ConfigureAwait(false);
         }
     }
@@ -285,7 +293,7 @@ public sealed partial class AdoptionCatalog
         }
         finally
         {
-            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            RemoveWorkingFolder(staging);
         }
     }
 
@@ -329,7 +337,7 @@ public sealed partial class AdoptionCatalog
         }
         finally
         {
-            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            RemoveWorkingFolder(staging);
         }
     }
 
