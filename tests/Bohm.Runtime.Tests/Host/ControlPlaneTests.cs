@@ -469,6 +469,7 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal([null, "버튼을 파랗게 해 줘", null, null], history.Select(r => r.GetProperty("request").GetString()));
         Assert.Equal([0, 0, 0, 1], history.Select(r => r.GetProperty("restoredFrom").ValueKind == JsonValueKind.Number ? r.GetProperty("restoredFrom").GetInt32() : 0));
         Assert.Equal("도서대출.html", history[2].GetProperty("file").GetString());
+        Assert.Equal(history[0].GetProperty("sha256").GetString(), history[3].GetProperty("sha256").GetString()); // the same code as revision 1
 
         // «Revert» undoes going back: the code before, and the data as it was at that moment — the same data.
         using (var reverted = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/revert", null))

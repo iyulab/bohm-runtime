@@ -604,7 +604,7 @@ internal static partial class ControlPlane
                         UndoneData.Imported => "imported",
                         UndoneData.Diverged => "diverged",
                         _ => null,
-                    }, r.Request, r.RestoredFrom))
+                    }, r.Request, r.RestoredFrom, r.Source.Sha256))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -1121,7 +1121,8 @@ internal static partial class ControlPlane
     /// <c>undone</c>, for a revision the application was put back from, is where the data it wrote stands: <c>"importable"</c>,
     /// <c>"imported"</c> or <c>"diverged"</c> (see <see cref="UndoneData"/>).
     /// </summary>
-    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone, string? Request, int? RestoredFrom);
+    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone, string? Request, int? RestoredFrom,
+        string Sha256);
 
     internal sealed record ExportedView(string Id, string Path);
 
