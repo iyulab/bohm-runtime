@@ -320,6 +320,7 @@ public sealed class AppPackageTests : IAsyncLifetime
             Assert.Equal(id, answer.GetProperty("manifest").GetProperty("id").GetString());
             Assert.Equal(["anthropic"], Strings(answer.GetProperty("manifest").GetProperty("permissions").GetProperty("ai")));
             Assert.False(answer.GetProperty("alreadyHere").GetBoolean());
+            Assert.Empty(Strings(answer.GetProperty("compatibility")));   // the AI service is relayed, not outside data
         }
 
         Assert.False(Directory.Exists(Path.Combine(other.DataRoot, "adopted", id)));
@@ -336,6 +337,20 @@ public sealed class AppPackageTests : IAsyncLifetime
         using var refused = await InspectAsync(other, changed);
         HttpAssert.Status(HttpStatusCode.BadRequest, refused);
         Assert.Equal("damaged", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task Inspecting_a_package_says_what_in_its_page_will_not_work_as_written()
+    {
+        var id = await _host.AdoptAsync("""<script>indexedDB.open("notes", 1); fetch("https://rates.example.com/today");</script>""");
+        var package = Path.Combine(_out, "notes.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        await using var other = await RunningHost.StartAsync();
+
+        using var inspected = await InspectAsync(other, package);
+
+        HttpAssert.Status(HttpStatusCode.OK, inspected);
+        Assert.Equal(["indexeddb", "outside-data"], Strings(JsonDocument.Parse(await inspected.Content.ReadAsStringAsync()).RootElement.GetProperty("compatibility")));
     }
 
     [Fact]
