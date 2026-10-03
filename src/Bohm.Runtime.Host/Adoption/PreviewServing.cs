@@ -81,6 +81,12 @@ internal static class PreviewServing
             return;
         }
 
+        if (path.StartsWithSegments(PagesServing.PathPrefix))
+        {
+            await (app is null ? PagesServing.ServeEmptyAsync(context) : PagesServing.ServeToPreviewAsync(context, app)).ConfigureAwait(false);
+            return;
+        }
+
         if (path != "/" || !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method))
         {
             response.StatusCode = StatusCodes.Status404NotFound;

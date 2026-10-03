@@ -6,6 +6,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Bohm.Runtime.Assets;
+using Bohm.Runtime.Pages;
 using Bohm.Runtime.Sources;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Usage;
@@ -913,6 +914,14 @@ public sealed partial class AdoptionCatalog
         RequireValidId(id);
         if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
         return AppSources.Open(AppDirectory(id), _clock);
+    }
+
+    /// <summary>Opens the pages people sent to application <paramref name="id"/>.</summary>
+    public AppPages OpenPages(string id)
+    {
+        RequireValidId(id);
+        if (!Directory.Exists(AppDirectory(id))) throw new KeyNotFoundException($"No adopted application '{id}'.");
+        return AppPages.Open(AppDirectory(id), _clock);
     }
 
     /// <summary>Opens the local usage record of application <paramref name="id"/>.</summary>

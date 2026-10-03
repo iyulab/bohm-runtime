@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Bohm.Runtime.Pages;
 using Bohm.Runtime.Sources;
 using LocalOrigin.Storage;
 
@@ -216,6 +217,7 @@ public sealed partial class AdoptionCatalog
         if (Directory.Exists(revisions) && Directory.EnumerateFiles(revisions, "*", SearchOption.AllDirectories)
                 .Any(f => Path.GetFileName(f) is DataBeforeFile or DataUndoneFile)) includes.Add("revision-data");
         if (HasFiles(Path.Combine(folder, AppSources.ReadingsDirectory))) includes.Add("read-rows");
+        if (HasFiles(Path.Combine(folder, AppPages.Directory))) includes.Add("received-pages");
         if (HasFiles(Path.Combine(folder, ImportsDirectory))) includes.Add("import-data");
         return includes;
     }

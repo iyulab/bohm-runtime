@@ -60,7 +60,7 @@ public enum PackageData
 /// <param name="Contract">The contract the application runs under (<see cref="AppPackage.PlainContract"/>).</param>
 /// <param name="Contents">Each part's format and the version of it the package holds — read from the parts present, so a part not packed is not listed.</param>
 /// <param name="Data"><c>none</c> or <c>all</c> (see <see cref="PackageData"/>).</param>
-/// <param name="Includes">What of the application's data is actually inside: <c>storage</c>, <c>usage</c>, <c>revision-data</c>, <c>read-rows</c>, <c>import-data</c>. Empty for <c>none</c>.</param>
+/// <param name="Includes">What of the application's data is actually inside: <c>storage</c>, <c>usage</c>, <c>revision-data</c>, <c>read-rows</c>, <c>received-pages</c>, <c>import-data</c>. Empty for <c>none</c>.</param>
 /// <param name="Permissions">What the application asks to do.</param>
 /// <param name="Provenance">Where it came from and how to check it arrived whole.</param>
 public sealed record PackageManifest(string ManifestVersion, string Format, string Id, string Version, string Name, int Contract,

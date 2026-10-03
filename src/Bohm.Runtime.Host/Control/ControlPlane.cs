@@ -7,6 +7,7 @@ using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
 using Bohm.Runtime.Host.Llm;
+using Bohm.Runtime.Pages;
 using Bohm.Runtime.Usage;
 
 namespace Bohm.Runtime.Host.Control;
@@ -36,6 +37,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay.</description></item>
+/// <item><term><c>GET /__control/apps/page-targets</c></term><description>The applications a web page can be sent to — those whose manifest declares a <c>share_target</c> (GET) — in the catalog's order: <c>[{ id, params: { title, text, url } }]</c>, each param the query name the manifest gives it, or <c>null</c>. Archived applications are not among them.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/pages</c></term><description>Keeps a web page the person sent to the application, <c>{ url, title, text, html, lang, byline }</c> — the shell read it and cleaned its HTML — and answers <c>{ page: { id, receivedAt, url, title, lang, byline, excerpt }, withoutHtml }</c>; the HTML is left out when text and HTML together pass 2 MB. 400 without a web address or text; 413 when the text alone passes 2 MB. The application reads it at <c>/__bohm/pages/{id}</c> (see <see cref="PagesServing"/>).</description></item>
 /// <item><term><c>POST /__control/packages/inspect</c></term><description>Checks the package (<c>.bohm</c>) at the full path in the body exactly as taking it in would — and takes nothing in: <c>{ manifest, alreadyHere, sameCode, sameCodeInUse, compatibility }</c>, so the person can see what the application asks to do before it lands. <c>compatibility</c> lists what in its page will not work as written: <c>online-database</c>, <c>indexeddb</c>, <c>session-storage</c>, <c>cookies</c> (data kept where it does not stay) or <c>outside-data</c> (requests to an outside server other than an AI service). 400 for a path that is not full, or <c>{ reason }</c> as for taking it in.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. With <c>?as=separate</c> (a package only) the package's application is taken in separately — under a new identity, named as the package names it (numbered when another application has that name), with <c>forkedFrom</c> — so an application already here stays and both are kept. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c>, <c>damaged</c> or <c>too-large</c> (it unpacks to more than the drive has room for); 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
@@ -121,6 +124,25 @@ internal static partial class ControlPlane
             case ("GET", ["apps"]):
                 // The usage record is read from its file: appends reach it at once, and reading it does not open the application.
                 await WriteAsync(response, (await ListAsync(catalog, port, cancel).ConfigureAwait(false)).Apps, cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", "page-targets"]):
+                var targets = new List<PagesServing.PageTarget>();
+                foreach (var listed in (await catalog.ReadListingAsync(cancel).ConfigureAwait(false)).Apps)
+                {
+                    if (listed.ArchivedAt is not null) continue;
+                    try
+                    {
+                        if (ShareTarget.Find(Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(listed.Id, cancel).ConfigureAwait(false))) is { } shareTarget)
+                            targets.Add(new PagesServing.PageTarget(listed.Id, shareTarget));
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        // An application whose code cannot be read now is not offered; the catalog reports it elsewhere.
+                    }
+                }
+
+                await response.WriteAsJsonAsync(targets, PagesHttpJson.Default.ListPageTarget, cancellationToken: cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", "unreadable"]):
@@ -573,6 +595,16 @@ internal static partial class ControlPlane
                 }
 
                 await SourcesServing.HandleControlAsync(context, await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(sourcesId).ConfigureAwait(false), sourcesRest).ConfigureAwait(false);
+                break;
+
+            case (_, ["apps", var pagesId, "pages", .. var pagesRest]):
+                if (await catalog.GetAsync(pagesId, cancel).ConfigureAwait(false) is not { ArchivedAt: null })
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await PagesServing.HandleControlAsync(context, await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(pagesId).ConfigureAwait(false), pagesRest).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var removeId]):

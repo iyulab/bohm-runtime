@@ -147,6 +147,13 @@ internal static class AdoptedAppServing
             return;
         }
 
+        if (path.StartsWithSegments(PagesServing.PathPrefix))
+        {
+            var pagesApp = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
+            await PagesServing.ServeToAppAsync(context, appId, pagesApp).ConfigureAwait(false);
+            return;
+        }
+
         if (path != "/" || !HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
         {
             // An adopted application is one file. A page that asks for files next to itself (as it
