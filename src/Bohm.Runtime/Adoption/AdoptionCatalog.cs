@@ -890,6 +890,23 @@ public sealed partial class AdoptionCatalog
 
     private string AppDirectory(string id) => Path.Combine(_root, id);
 
+    /// <summary>
+    /// Removes a working folder once the operation it served has finished — best effort: a file held open for a
+    /// moment (a scanner reading what was just written) must not turn a finished operation into a failure. A
+    /// folder left behind is skipped by every listing, its name not being an identifier.
+    /// </summary>
+    private static void RemoveWorkingFolder(string folder)
+    {
+        try
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Left for a later run; nothing reads it.
+        }
+    }
+
     private static void RequireValidId(string id)
     {
         if (!IsValidId(id)) throw new ArgumentException($"'{id}' is not an adopted application identifier.", nameof(id));
@@ -944,6 +961,15 @@ public sealed partial class AdoptionCatalog
                 writer.WriteString("id", fork.Id);
                 writer.WriteString("name", fork.Name);
                 writer.WriteString("version", fork.Version);
+                writer.WriteEndObject();
+            }
+
+            if (app.InstalledFrom is { } install)
+            {
+                writer.WriteStartObject("installedFrom");
+                writer.WriteString("registry", install.Registry);
+                writer.WriteString("channel", install.Channel);
+                writer.WriteString("version", install.Version);
                 writer.WriteEndObject();
             }
 
@@ -1031,6 +1057,10 @@ public sealed partial class AdoptionCatalog
                 // Absent for every application not taken in separately from a package.
                 ForkedFrom = root.TryGetProperty("forkedFrom", out var fork) && fork.ValueKind == JsonValueKind.Object
                     ? new AppFork(fork.GetProperty("id").GetString()!, fork.GetProperty("name").GetString()!, fork.GetProperty("version").GetString()!)
+                    : null,
+                // Absent for every application not installed from a registry.
+                InstalledFrom = root.TryGetProperty("installedFrom", out var install) && install.ValueKind == JsonValueKind.Object
+                    ? new AppInstall(install.GetProperty("registry").GetString()!, install.GetProperty("channel").GetString()!, install.GetProperty("version").GetString()!)
                     : null,
             };
         }

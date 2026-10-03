@@ -40,8 +40,20 @@ namespace Bohm.Runtime.Adoption;
 /// taken in under a new identity so both stay. <see langword="null"/> for every other application.
 /// Informational: nothing follows the original's updates.
 /// </param>
+/// <param name="InstalledFrom">
+/// The registry the application was last installed or updated from on this computer, so a newer version
+/// there can arrive as a proposal. <see langword="null"/> for an application from anywhere else. It is this
+/// computer's record: a package made of the application does not carry it.
+/// </param>
 public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
-    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null, AppFork? ForkedFrom = null);
+    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null, AppFork? ForkedFrom = null,
+    AppInstall? InstalledFrom = null);
+
+/// <summary>Where an application was installed from: a registry, the channel followed and the version taken.</summary>
+/// <param name="Registry">The registry's root, as given when installing.</param>
+/// <param name="Channel">The channel followed (<see cref="AppRegistry.DefaultChannel"/> unless the version taken was only on another).</param>
+/// <param name="Version">The published version taken.</param>
+public sealed record AppInstall(string Registry, string Channel, string Version);
 
 /// <summary>Where an application taken in separately came from: the package's application and the version it was published as.</summary>
 /// <param name="Id">The identifier of the application in the package.</param>

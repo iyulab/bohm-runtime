@@ -81,7 +81,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
 /// </remarks>
-internal static class ControlPlane
+internal static partial class ControlPlane
 {
     public const string PathPrefix = "/__control";
     public const string OriginalPathHeader = "X-Bohm-Original-Path";
@@ -154,6 +154,14 @@ internal static class ControlPlane
                 var result = await catalog.AdoptAsync(page.Render(), originalPath: null, unsaved: true, page.Title, cancel).ConfigureAwait(false);
                 response.StatusCode = StatusCodes.Status201Created;
                 await WriteAsync(response, View(result, port, canRevert: false), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["registries", "read"]):
+                await ReadRegistryAsync(context, catalog, cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["registries", "install"]):
+                await InstallFromRegistryAsync(context, catalog, port, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["packages", "inspect"]):
@@ -457,7 +465,7 @@ internal static class ControlPlane
                         ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(exportId).ConfigureAwait(false)
                         : null;
                     var withData = request.Query["data"] != "leave";
-                    exported = await catalog.ExportAsync(exportId, target, open?.Storage, withData, cancel).ConfigureAwait(false);
+                    exported = await WhileNotFetchingAsync(open, () => catalog.ExportAsync(exportId, target, open?.Storage, withData, cancel), cancel).ConfigureAwait(false);
                 }
                 catch (IOException)
                 {
@@ -489,7 +497,8 @@ internal static class ControlPlane
                     var openToPack = await catalog.GetAsync(packId, cancel).ConfigureAwait(false) is { ArchivedAt: null }
                         ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(packId).ConfigureAwait(false)
                         : null;
-                    packed = await catalog.PackAsync(packId, packageTarget, packageData.Value, AiServices, openToPack?.Storage, cancel).ConfigureAwait(false);
+                    packed = await WhileNotFetchingAsync(openToPack,
+                        () => catalog.PackAsync(packId, packageTarget, packageData.Value, AiServices, openToPack?.Storage, cancel), cancel).ConfigureAwait(false);
                 }
                 catch (IOException)
                 {
@@ -970,10 +979,29 @@ internal static class ControlPlane
         return (apps, unreadable);
     }
 
+    /// <summary>
+    /// Runs <paramref name="copy"/> — a copy of the application's folder — while no background fetch of its code is
+    /// writing there: a fetch runs after every adoption and new revision, and rewrites the folder's index through a
+    /// temporary file a copy listing the folder at that moment would fail on.
+    /// </summary>
+    private static async Task<T> WhileNotFetchingAsync<T>(OpenApp? app, Func<Task<T>> copy, CancellationToken cancel)
+    {
+        if (app is null) return await copy().ConfigureAwait(false);
+        await app.AssetFetch.WaitAsync(cancel).ConfigureAwait(false);
+        try
+        {
+            return await copy().ConfigureAwait(false);
+        }
+        finally
+        {
+            app.AssetFetch.Release();
+        }
+    }
+
     private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
             app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt,
-            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title, app.ForkedFrom);
+            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title, app.ForkedFrom, app.InstalledFrom);
 
     private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -1002,10 +1030,12 @@ internal static class ControlPlane
     /// <c>LeftAt</c> is when the person last left it and <c>ExpiresAt</c> when the next start after it removes it.
     /// <c>Title</c> names an application when no file does — one the runtime made, or one whose change was applied without a file; otherwise an adopted file is known by <c>OriginalPath</c>.
     /// <c>ForkedFrom</c> names the application in the package an application was taken in separately from (<c>{ id, name, version }</c>).
+    /// <c>InstalledFrom</c> is the registry it was installed from (<c>{ registry, channel, version }</c>).
     /// </summary>
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
-        bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null, AppFork? ForkedFrom = null);
+        bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null, AppFork? ForkedFrom = null,
+        AppInstall? InstalledFrom = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c>, <c>"sameName"</c> (same folder, same name but for a browser's download number) or <c>"sameStoredKeys"</c> (the source names every key the application stored).</summary>
     internal sealed record MatchView(AppView App, string Match);
@@ -1414,6 +1444,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackageRefusal))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(PackageInspection))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RegistryReadView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AlreadyHereView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]

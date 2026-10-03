@@ -27,6 +27,9 @@ public sealed partial class RunningHost : IAsyncDisposable
     public int Port { get; }
     public AdoptionCatalog Catalog { get; }
 
+    /// <summary>The host's services — for a test that must hold what a request waits on.</summary>
+    public IServiceProvider Services => _app.Services;
+
     /// <summary>The port the data root was served on before, when it could not be used again.</summary>
     public int? PreviousPort { get; private init; }
 

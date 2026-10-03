@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Sources;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Bohm.Runtime.Tests.Host;
 
@@ -395,6 +396,32 @@ public sealed class AppPackageTests : IAsyncLifetime
 
         HttpAssert.Status(HttpStatusCode.Created, taken);
         Assert.Equal("<p>second</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task Packing_and_exporting_wait_while_the_apps_code_is_being_fetched()
+    {
+        // A fetch runs after every adoption and new revision and rewrites the assets index through a temporary file;
+        // a copy listing the folder meanwhile failed now and then with a 409.
+        var id = await _host.AdoptAsync("<p>one</p>");
+        var open = await _host.Services.GetRequiredService<Bohm.Runtime.Host.Adoption.OpenApps>().GetAsync(id);
+        await open.AssetFetch.WaitAsync(TestContext.Current.CancellationToken);
+        Task<HttpResponseMessage> packing, exporting;
+        try
+        {
+            packing = PackAsync(id, Path.Combine(_out, "waits.bohm"), "none");
+            exporting = _host.ControlClient().PostAsync($"/__control/apps/{id}/export", new StringContent(Path.Combine(_out, "waits"), Encoding.UTF8));
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            Assert.False(packing.IsCompleted, "packing waits for the fetch");
+            Assert.False(exporting.IsCompleted, "exporting waits for the fetch");
+        }
+        finally
+        {
+            open.AssetFetch.Release();
+        }
+
+        using (var packed = await packing) HttpAssert.Status(HttpStatusCode.OK, packed);
+        using (var exported = await exporting) HttpAssert.Status(HttpStatusCode.OK, exported);
     }
 
     [Fact]
