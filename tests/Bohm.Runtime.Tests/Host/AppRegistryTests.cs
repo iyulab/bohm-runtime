@@ -141,6 +141,97 @@ public sealed class AppRegistryTests : IAsyncLifetime
         Assert.Empty(Directory.EnumerateFiles(Path.Combine(_reader.DataRoot, "adopted"), ".fetching-*"));
     }
 
+    [Fact]
+    public async Task A_published_app_is_listed_once_per_code_and_installs_on_another_computer()
+    {
+        var id = await _publisher.AdoptAsync("<p>one</p>");
+        var registry = Path.Combine(_registry, "Team apps");
+        Directory.CreateDirectory(registry);
+
+        using (var first = await PublishThroughApiAsync(_publisher, registry, id))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, first);
+            Assert.Equal("1", JsonDocument.Parse(await first.Content.ReadAsStringAsync()).RootElement.GetProperty("version").GetProperty("version").GetString());
+        }
+
+        using (var again = await PublishThroughApiAsync(_publisher, registry, id)) HttpAssert.Status(HttpStatusCode.OK, again);
+        using (var revised = await _publisher.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>two</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, revised);
+        using (var second = await PublishThroughApiAsync(_publisher, registry, id)) HttpAssert.Status(HttpStatusCode.OK, second);
+
+        var index = JsonNode.Parse(File.ReadAllText(Path.Combine(registry, "index.json")))!;
+        Assert.Equal("Team apps", index["name"]!.GetValue<string>());
+        var versions = index["apps"]!.AsArray().Single()!["versions"]!.AsArray().Select(v => v!["version"]!.GetValue<string>()).ToArray();
+        Assert.Equal(["1", "2"], versions);
+        Assert.Equal(["1.bohm", "2.bohm"], Directory.GetFiles(Path.Combine(registry, "apps", id)).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray());
+        Assert.False(File.Exists(Path.Combine(registry, "index.lock")));
+
+        using var installed = await _reader.ControlClient().PostAsync("/__control/registries/install",
+            new StringContent(JsonSerializer.Serialize(new { registry, id }), Encoding.UTF8));
+        HttpAssert.Status(HttpStatusCode.Created, installed);
+        Assert.Equal("<p>two</p>", Encoding.UTF8.GetString(await _reader.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task Ten_publishers_at_once_from_two_computers_are_all_listed()
+    {
+        var registry = Path.Combine(_registry, "busy");
+        Directory.CreateDirectory(registry);
+        var mine = new List<(RunningHost Host, string Id)>();
+        for (var i = 0; i < 5; i++)
+        {
+            mine.Add((_publisher, await _publisher.AdoptAsync($"<p>publisher {i}</p>")));
+            mine.Add((_reader, await _reader.AdoptAsync($"<p>reader {i}</p>")));
+        }
+
+        var answers = await Task.WhenAll(mine.Select(m => PublishThroughApiAsync(m.Host, registry, m.Id)));
+
+        foreach (var answer in answers)
+        {
+            HttpAssert.Status(HttpStatusCode.OK, answer);
+            answer.Dispose();
+        }
+
+        var listed = JsonNode.Parse(File.ReadAllText(Path.Combine(registry, "index.json")))!["apps"]!.AsArray().Select(a => a!["id"]!.GetValue<string>()).ToHashSet();
+        Assert.True(mine.All(m => listed.Contains(m.Id)), $"listed {listed.Count} of {mine.Count}");
+        Assert.Equal(["index.json"], Directory.GetFiles(registry).Select(Path.GetFileName).ToArray());
+    }
+
+    [Fact]
+    public async Task Publishing_never_overwrites_a_version_or_an_index_it_did_not_write()
+    {
+        var id = await _publisher.AdoptAsync("<p>mine</p>");
+        var registry = Path.Combine(_registry, "shared");
+        Directory.CreateDirectory(Path.Combine(registry, "apps", id));
+
+        // Someone else's code already published as version 1.
+        var other = await _reader.AdoptAsync("<p>someone else's</p>");
+        var theirs = Path.Combine(Path.GetTempPath(), $"bohm-theirs-{Guid.NewGuid():n}.bohm");
+        using (var packed = await _reader.ControlClient().PostAsync($"/__control/apps/{other}/package?data=none", new StringContent(theirs, Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.OK, packed);
+        File.Move(theirs, Path.Combine(registry, "apps", id, "1.bohm"));
+        var before = File.ReadAllBytes(Path.Combine(registry, "apps", id, "1.bohm"));
+        using (var taken = await PublishThroughApiAsync(_publisher, registry, id))
+        {
+            HttpAssert.Status(HttpStatusCode.Conflict, taken);
+            Assert.Equal("version-taken", JsonDocument.Parse(await taken.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(registry, "apps", id, "1.bohm")));
+
+        // An index in another format is left as it is.
+        var foreign = Path.Combine(_registry, "foreign");
+        Directory.CreateDirectory(foreign);
+        File.WriteAllText(Path.Combine(foreign, "index.json"), """{"format":"someone.else/3"}""");
+        using (var unknown = await PublishThroughApiAsync(_publisher, foreign, id)) Assert.Equal("unknown-format", await ReasonAsync(unknown));
+        Assert.Equal("""{"format":"someone.else/3"}""", File.ReadAllText(Path.Combine(foreign, "index.json")));
+
+        using (var away = await PublishThroughApiAsync(_publisher, Path.Combine(_registry, "away"), id)) Assert.Equal("unreachable", await ReasonAsync(away));
+    }
+
+    private static Task<HttpResponseMessage> PublishThroughApiAsync(RunningHost host, string registry, string id) =>
+        host.ControlClient().PostAsync("/__control/registries/publish", new StringContent(JsonSerializer.Serialize(new { registry, id }), Encoding.UTF8));
+
     private async Task AssertRefusedAsync(string id, string reason)
     {
         using var refused = await InstallAsync(id);
