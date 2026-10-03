@@ -160,6 +160,10 @@ internal static partial class ControlPlane
                 await ReadRegistryAsync(context, catalog, cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["registries", "publish"]):
+                await PublishToRegistryAsync(context, catalog, cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["registries", "install"]):
                 await InstallFromRegistryAsync(context, catalog, port, cancel).ConfigureAwait(false);
                 break;
@@ -1445,6 +1449,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackageRefusal))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(PackageInspection))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RegistryReadView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(RegistryPublished))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AlreadyHereView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
