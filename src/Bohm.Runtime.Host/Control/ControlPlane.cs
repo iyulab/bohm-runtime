@@ -164,6 +164,10 @@ internal static partial class ControlPlane
                 await PublishToRegistryAsync(context, catalog, cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["registries", "inspect"]):
+                await InspectFromRegistryAsync(context, catalog, cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["registries", "install"]):
                 await InstallFromRegistryAsync(context, catalog, port, cancel).ConfigureAwait(false);
                 break;
@@ -1126,11 +1130,18 @@ internal static partial class ControlPlane
             {
                 var discarded = Path.Combine(options.DataRoot, "discarded");
                 Directory.CreateDirectory(discarded);
-                Directory.Move(folder, Path.Combine(discarded, Path.GetFileName(folder)));
+                Directory.Move(folder, Path.Combine(discarded, DiscardedName(folder)));
             }
 
             return Task.CompletedTask;
         });
+
+    /// <summary>
+    /// The name a removed application's folder is kept under where it is discarded — its own name and a mark of its own:
+    /// the same application can be removed again (taken back in from a package or a registry, then removed), and a
+    /// second removal must not find the first one in its way.
+    /// </summary>
+    internal static string DiscardedName(string folder) => Path.GetFileName(folder) + "-" + Guid.NewGuid().ToString("n")[..8];
 
     internal sealed record UsageDayView(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, int LossSuspected, int Repaired);
 

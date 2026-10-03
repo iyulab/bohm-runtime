@@ -46,6 +46,19 @@ public sealed class AppRegistryTests : IAsyncLifetime
             Assert.Equal(id, answer.GetProperty("index").GetProperty("apps")[0].GetProperty("id").GetString());
         }
 
+        // Inspecting fetches and checks it as installing would, and takes nothing in.
+        using (var inspected = await _reader.ControlClient().PostAsync("/__control/registries/inspect",
+                   new StringContent(JsonSerializer.Serialize(new { registry = _registry, id }), Encoding.UTF8)))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, inspected);
+            var seen = JsonDocument.Parse(await inspected.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal("1", seen.GetProperty("manifest").GetProperty("version").GetString());
+            Assert.False(seen.GetProperty("alreadyHere").GetBoolean());
+            Assert.Empty(seen.GetProperty("compatibility").EnumerateArray());
+        }
+
+        Assert.Null(await _reader.Catalog.GetAsync(id, TestContext.Current.CancellationToken));
+
         using var installed = await InstallAsync(id);
 
         HttpAssert.Status(HttpStatusCode.Created, installed);
