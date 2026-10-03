@@ -290,6 +290,61 @@ public sealed partial class AdoptionCatalog
     }
 
     /// <summary>
+    /// Takes in the application in package <paramref name="file"/> separately: after the same checks as
+    /// <see cref="ImportPackageAsync"/>, under a new identity, so an application already here stays as it is
+    /// and both are kept. It is a new application adopted now, with whatever the package carries — code,
+    /// revisions, data — and a record of where it came from (<see cref="AdoptedApp.ForkedFrom"/>). Its name is
+    /// the package's, numbered as a repeated download is when another application already has it. The
+    /// record of the last package made of it does not come along: the new application publishes its own versions.
+    /// </summary>
+    /// <exception cref="InvalidPackageException">The file is not a package, its format is unknown, it did not arrive whole or it would not fit.</exception>
+    public async Task<AdoptedApp> ImportPackageSeparatelyAsync(string file, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(file);
+        file = Path.GetFullPath(file);
+        if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
+
+        var now = _clock.GetUtcNow();
+        var id = Guid.CreateVersion7(now).ToString("n");
+        var staging = Path.Combine(_root, StagingPrefix + id);
+        try
+        {
+            var (manifest, record) = await UnpackAsync(file, staging, write: true, cancellationToken).ConfigureAwait(false);
+            var name = string.IsNullOrWhiteSpace(manifest.Name) ? DisplayName(record) : manifest.Name.Trim();
+            var names = (await ListAsync(cancellationToken).ConfigureAwait(false)).Select(DisplayName).ToHashSet(StringComparer.CurrentCultureIgnoreCase);
+            var app = record with
+            {
+                Id = id,
+                AdoptedAt = now,
+                ArchivedAt = null,
+                Unsaved = false,
+                LeftAt = null,
+                Title = Numbered(name, names),
+                ForkedFrom = new AppFork(manifest.Id, name, manifest.Version),
+            };
+            await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
+            File.Delete(Path.Combine(staging, PublishedFile));
+            Directory.Move(staging, AppDirectory(id));
+            return app;
+        }
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+        }
+    }
+
+    /// <summary><paramref name="name"/>, or the first of <c>name (2)</c>, <c>name (3)</c>… that is not among <paramref name="taken"/>.</summary>
+    private static string Numbered(string name, HashSet<string> taken)
+    {
+        if (!taken.Contains(name)) return name;
+        for (var n = 2; ; n++)
+        {
+            var numbered = string.Create(CultureInfo.InvariantCulture, $"{name} ({n})");
+            if (!taken.Contains(numbered)) return numbered;
+        }
+    }
+
+    /// <summary>
     /// Checks package <paramref name="file"/> as <see cref="ImportPackageAsync"/> would, without taking
     /// anything in or writing anything: what it holds, and whether that application is already here.
     /// </summary>

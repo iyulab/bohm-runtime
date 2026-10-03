@@ -35,8 +35,19 @@ namespace Bohm.Runtime.Adoption;
 /// numbered name) does not rename it. <see langword="null"/> for an adopted file never revised, which is
 /// known by that file. Once set, it stays.
 /// </param>
+/// <param name="ForkedFrom">
+/// The application this one was taken in separately from — a package of an application already here,
+/// taken in under a new identity so both stay. <see langword="null"/> for every other application.
+/// Informational: nothing follows the original's updates.
+/// </param>
 public sealed record AdoptedApp(string Id, DateTimeOffset AdoptedAt, AdoptionSource Source, string Protection, int Revision = 1, DateTimeOffset? RevisedAt = null,
-    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null);
+    DateTimeOffset? ArchivedAt = null, bool Unsaved = false, DateTimeOffset? LeftAt = null, string? Title = null, AppFork? ForkedFrom = null);
+
+/// <summary>Where an application taken in separately came from: the package's application and the version it was published as.</summary>
+/// <param name="Id">The identifier of the application in the package.</param>
+/// <param name="Name">The name the package gave it.</param>
+/// <param name="Version">The published version of the package.</param>
+public sealed record AppFork(string Id, string Name, string Version);
 
 /// <summary>The file a revision of an application was taken in from.</summary>
 /// <param name="Sha256">Lowercase hexadecimal SHA-256 of the adopted bytes.</param>
