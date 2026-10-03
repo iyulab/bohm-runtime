@@ -16,6 +16,7 @@ public sealed partial class AdoptionCatalog
 
     private const string PublishedFile = "published.json";
     private const string PackingPrefix = ".packing-";
+    private const string UnpackingPrefix = ".unpacking-";
 
     /// <summary>
     /// Writes application <paramref name="id"/> into a package at <paramref name="target"/> — a new
@@ -235,6 +236,144 @@ public sealed partial class AdoptionCatalog
 
         stream.Flush(flushToDisk: true);
     }
+
+    /// <summary>
+    /// Takes in the application in package <paramref name="file"/> (see <see cref="PackAsync"/>) — from
+    /// this computer or another — as <see cref="ImportAsync"/> takes in a folder: same application, same
+    /// identity, with whatever data the package carries. The package is checked before anything lands:
+    /// its manifest must be of a known format, every entry a plain relative path listed in the manifest
+    /// with the hash it has there, and every listed file present. The file is only read.
+    /// </summary>
+    /// <exception cref="InvalidPackageException">The file is not a package, its format is unknown, or it did not arrive whole.</exception>
+    /// <exception cref="AppAlreadyHereException">This application is already here — nothing is replaced.</exception>
+    public async Task<AdoptedApp> ImportPackageAsync(string file, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(file);
+        file = Path.GetFullPath(file);
+        if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
+
+        var staging = Path.Combine(_root, UnpackingPrefix + Guid.NewGuid().ToString("n")[..8]);
+        try
+        {
+            var manifest = await UnpackAsync(file, staging, cancellationToken).ConfigureAwait(false);
+            AdoptedApp? record;
+            try
+            {
+                record = ReadRecord(await DurableFile.ReadAsync(Path.Combine(staging, RecordFile), cancellationToken).ConfigureAwait(false));
+            }
+            catch (Exception e) when (e is JsonException or IOException)
+            {
+                throw new InvalidPackageException(PackageProblem.Damaged, "The application record cannot be read.", e);
+            }
+
+            if (record is null || record.Id != manifest.Id || !File.Exists(Path.Combine(staging, HtmlFile)))
+                throw new InvalidPackageException(PackageProblem.Damaged, "The package does not hold the application its manifest names.");
+            if (Directory.Exists(AppDirectory(record.Id))) throw await AlreadyHereAsync(record.Id, manifest, cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                return await ImportAsync(staging, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidDataException e)
+            {
+                throw new InvalidPackageException(PackageProblem.Damaged, e.Message, e);
+            }
+            catch (InvalidOperationException)
+            {
+                // Taken in by another request since the check above.
+                throw await AlreadyHereAsync(record.Id, manifest, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+        }
+    }
+
+    private async Task<AppAlreadyHereException> AlreadyHereAsync(string id, PackageManifest manifest, CancellationToken cancellationToken)
+    {
+        var revisions = await ListRevisionsAsync(id, cancellationToken).ConfigureAwait(false);
+        var code = manifest.Provenance.ContentSha256;
+        return new AppAlreadyHereException(id, revisions.Any(r => r.Source.Sha256 == code), revisions.Any(r => r.InUse && r.Source.Sha256 == code));
+    }
+
+    /// <summary>Checks package <paramref name="file"/> and writes its files into <paramref name="folder"/>, hashing each as it is written.</summary>
+    private static async Task<PackageManifest> UnpackAsync(string file, string folder, CancellationToken cancellationToken)
+    {
+        ZipArchive zip;
+        try
+        {
+            zip = ZipFile.OpenRead(file);
+        }
+        catch (InvalidDataException e)
+        {
+            throw new InvalidPackageException(PackageProblem.NotAPackage, "The file is not a zip archive.", e);
+        }
+
+        using (zip)
+        {
+            if (zip.GetEntry(AppPackage.ManifestFile) is not { } manifestEntry)
+                throw new InvalidPackageException(PackageProblem.NotAPackage, "The file has no manifest.");
+            PackageManifest? manifest;
+            try
+            {
+                await using var stream = manifestEntry.Open();
+                manifest = await JsonSerializer.DeserializeAsync(stream, PackageJson.Default.PackageManifest, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is JsonException or InvalidDataException)
+            {
+                throw new InvalidPackageException(PackageProblem.NotAPackage, "The manifest cannot be read.", e);
+            }
+
+            if (manifest?.Format != AppPackage.Format || manifest.Provenance?.Files is null || string.IsNullOrEmpty(manifest.Id))
+                throw new InvalidPackageException(PackageProblem.UnknownFormat, $"The package is not in the format '{AppPackage.Format}'.");
+
+            var expected = manifest.Provenance.Files;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Directory.CreateDirectory(folder);
+            var root = Path.GetFullPath(folder) + Path.DirectorySeparatorChar;
+            foreach (var entry in zip.Entries)
+            {
+                if (entry.FullName == AppPackage.ManifestFile || entry.FullName.EndsWith('/')) continue;
+                if (!IsPlainRelativePath(entry.FullName) || !seen.Add(entry.FullName))
+                    throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' is not a plain relative path, or appears twice.");
+                if (!expected.TryGetValue(entry.FullName, out var hash))
+                    throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' is not listed in the manifest.");
+                var target = Path.GetFullPath(Path.Combine(folder, entry.FullName));
+                if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' points outside the package.");
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (!string.Equals(await WriteHashedAsync(entry, target, cancellationToken).ConfigureAwait(false), hash, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' is not what the manifest says it is.");
+            }
+
+            if (expected.Keys.FirstOrDefault(k => !seen.Contains(k)) is { } missing)
+                throw new InvalidPackageException(PackageProblem.Damaged, $"The listed file '{missing}' is missing.");
+            return manifest;
+        }
+    }
+
+    /// <summary>Writes the entry to <paramref name="target"/> and returns its hash as the manifest writes it.</summary>
+    private static async Task<string> WriteHashedAsync(ZipArchiveEntry entry, string target, CancellationToken cancellationToken)
+    {
+        await using var input = entry.Open();
+        await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        int read;
+        while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            sha.AppendData(buffer, 0, read);
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+
+        return "sha256:" + Convert.ToHexStringLower(sha.GetHashAndReset());
+    }
+
+    /// <summary>A path inside the package: <c>/</c>-separated names, none empty, <c>.</c> or <c>..</c>, with no drive, root or backslash.</summary>
+    private static bool IsPlainRelativePath(string path) =>
+        path.Length > 0 && !path.Contains('\\') && !path.Contains(':') && !path.StartsWith('/')
+        && path.Split('/').All(part => part.Length > 0 && part is not ("." or ".."));
 
     [GeneratedRegex(@"^(?<part>bohm\.[a-z][a-z-]*)/(?<version>\d{1,6})$")]
     private static partial Regex FormatName();

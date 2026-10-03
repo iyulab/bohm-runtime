@@ -93,6 +93,44 @@ public sealed record PackageProvenance(string ContentSha256, IReadOnlyDictionary
 /// <summary>An application written into a package.</summary>
 public sealed record PackedApp(AdoptedApp App, PackageManifest Manifest, string Path);
 
+/// <summary>Why a file could not be taken in as a package.</summary>
+public enum PackageProblem
+{
+    /// <summary>Not a zip archive with a readable manifest — or no file at all.</summary>
+    NotAPackage,
+
+    /// <summary>A manifest of a format this runtime does not know.</summary>
+    UnknownFormat,
+
+    /// <summary>The package did not arrive whole: an entry unlisted, changed, missing or outside the package, or the application it names absent.</summary>
+    Damaged,
+}
+
+/// <summary>A file that cannot be taken in as a package. Nothing was taken in.</summary>
+public sealed class InvalidPackageException(PackageProblem problem, string message, Exception? inner = null) : Exception(message, inner)
+{
+    /// <summary>Why.</summary>
+    public PackageProblem Problem { get; } = problem;
+}
+
+/// <summary>
+/// The application a package holds is already here. Nothing was replaced.
+/// </summary>
+/// <param name="id">The application's id.</param>
+/// <param name="sameCode">The package's code is one of the revisions here.</param>
+/// <param name="sameCodeInUse">The package's code is the revision in use here.</param>
+public sealed class AppAlreadyHereException(string id, bool sameCode, bool sameCodeInUse) : InvalidOperationException("This application is already here.")
+{
+    /// <summary>The application's id.</summary>
+    public string Id { get; } = id;
+
+    /// <summary>The package's code is one of the revisions here.</summary>
+    public bool SameCode { get; } = sameCode;
+
+    /// <summary>The package's code is the revision in use here.</summary>
+    public bool SameCodeInUse { get; } = sameCodeInUse;
+}
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PackageManifest))]
 internal sealed partial class PackageJson : JsonSerializerContext;
