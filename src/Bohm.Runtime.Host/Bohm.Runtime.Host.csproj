@@ -31,8 +31,8 @@
     <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.48.0" />
     <PackageReference Include="IronHive.Providers.OpenAI" Version="0.48.0" />
     <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.48.0" />
-    <PackageReference Include="IronProw.LMSupply" Version="0.13.4" />
-    <PackageReference Include="LMSupply.Generator" Version="0.99.0" />
+    <PackageReference Include="IronProw.LMSupply" Version="0.13.5" />
+    <PackageReference Include="LMSupply.Generator" Version="0.100.0" />
     <PackageReference Include="Markdig" Version="1.4.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
   </ItemGroup>
