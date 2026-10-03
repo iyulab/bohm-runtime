@@ -24,6 +24,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, of a file at the same path (optional <c>X-Bohm-Original-Path</c>), or of a file beside it under the same name but for a browser's download number, each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions/from-package</c></term><description>Takes in the code of the package (<c>.bohm</c>) at the full path in the body — the page of the revision in use there, after the checks taking a package in runs — as a new revision of this application, its data here unchanged (as <c>revisions</c> does; the package's data is not used). 400 <c>{ reason }</c> as for taking a package in; 409 when the package holds another application, or its code is the revision already in use.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
 /// <item><term><c>POST /__control/results</c></term><description>Makes a page out of an answer the person was given — <c>{ title, text, sources?: [{ name, url? }], lang?, sourcesHeading? }</c> — and adds it as an unsaved result (201, the application). The page is the text as read, escaped, with its sources; no script. 400 when the body is not that shape.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/keep</c></term><description>Keeps an unsaved result: it becomes one of the person's applications, with its data. 404 for an unknown id.</description></item>
@@ -215,6 +216,43 @@ internal static class ControlPlane
 
                 response.StatusCode = StatusCodes.Status201Created;
                 await WriteAsync(response, View(imported, port, await catalog.CanRevertAsync(imported, cancel).ConfigureAwait(false), catalog.OpenUsage(imported.Id).LastUsedOn), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var fromPackageId, "revisions", "from-package"]):
+                if (await catalog.GetAsync(fromPackageId, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var packageFile = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (!Path.IsPathFullyQualified(packageFile))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                byte[] packagePage;
+                try
+                {
+                    var (packageManifest, packedPage) = await catalog.ReadPackagePageAsync(packageFile, cancel).ConfigureAwait(false);
+                    if (packageManifest.Id != fromPackageId)
+                    {
+                        response.StatusCode = StatusCodes.Status409Conflict;
+                        break;
+                    }
+
+                    packagePage = packedPage;
+                }
+                catch (InvalidPackageException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                    break;
+                }
+
+                await ChangeRevisionAsync(context, fromPackageId, StatusCodes.Status201Created,
+                    storage => catalog.ReviseAsync(fromPackageId, packagePage, packageFile, storage, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var revisedId, "revisions"]):

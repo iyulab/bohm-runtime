@@ -338,6 +338,53 @@ public sealed class AppPackageTests : IAsyncLifetime
         Assert.Equal("damaged", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
     }
 
+    [Fact]
+    public async Task A_package_of_an_app_already_here_comes_in_as_its_new_revision_keeping_the_data_here()
+    {
+        var id = await _host.AdoptAsync("<p>one</p>");
+        var package = Path.Combine(_out, "one-v1.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        using (var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>two</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, revised);
+        var page = await _host.LoadAsync(id);
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"mine","value":"kept"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+
+        using var taken = await FromPackageAsync(id, package);
+
+        HttpAssert.Status(HttpStatusCode.Created, taken);
+        Assert.Equal(3, JsonDocument.Parse(await taken.Content.ReadAsStringAsync()).RootElement.GetProperty("revision").GetInt32());
+        Assert.Equal("<p>one</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+        Assert.Contains("kept", (await _host.LoadAsync(id)).Items, StringComparison.Ordinal);
+
+        // The same code again is not a new revision; a package of another app, or a damaged one, is refused.
+        using (var again = await FromPackageAsync(id, package)) HttpAssert.Status(HttpStatusCode.Conflict, again);
+        var other = await _host.AdoptAsync("<p>other</p>");
+        using (var otherApp = await FromPackageAsync(other, package)) HttpAssert.Status(HttpStatusCode.Conflict, otherApp);
+        var changed = Rewrite(package, "one-changed.bohm", (name, bytes) => name == "app.html" ? "<p>evil</p>"u8.ToArray() : bytes);
+        using (var damaged = await FromPackageAsync(id, changed)) HttpAssert.Status(HttpStatusCode.BadRequest, damaged);
+        Assert.Equal("<p>one</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task The_new_revision_is_the_revision_the_package_was_using()
+    {
+        var id = await _host.AdoptAsync("<p>first</p>");
+        using (var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>second</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, revised);
+        var package = Path.Combine(_out, "second.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        using (var back = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>third</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, back);
+
+        using var taken = await FromPackageAsync(id, package);
+
+        HttpAssert.Status(HttpStatusCode.Created, taken);
+        Assert.Equal("<p>second</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+    }
+
+    private Task<HttpResponseMessage> FromPackageAsync(string id, string path) =>
+        _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/from-package", new StringContent(path, Encoding.UTF8));
+
     private static Task<HttpResponseMessage> InspectAsync(RunningHost host, string path) =>
         host.ControlClient().PostAsync("/__control/packages/inspect", new StringContent(path, Encoding.UTF8));
 
