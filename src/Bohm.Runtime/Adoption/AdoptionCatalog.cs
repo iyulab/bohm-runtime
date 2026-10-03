@@ -885,7 +885,7 @@ public sealed partial class AdoptionCatalog
     /// Whether <paramref name="id"/> has the shape of an issued identifier. Anything else — path
     /// separators, dots, uppercase — is rejected before it can reach the file system.
     /// </summary>
-    public static bool IsValidId(string? id) =>
+    public static bool IsValidId([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? id) =>
         id is { Length: 32 } && id.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
 
     private string AppDirectory(string id) => Path.Combine(_root, id);

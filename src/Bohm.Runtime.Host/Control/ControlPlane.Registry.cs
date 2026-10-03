@@ -11,6 +11,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/registries/read</c></term><description>Reads the registry whose root (a full folder path) is the body:
 /// <c>{ state, index }</c> — <c>state</c> is <c>ok</c> (with the index), <c>unreachable</c> (not reachable now — offline is a state, not an
 /// error), <c>expired</c> (past its <c>validUntil</c>) or <c>unknown-format</c>. 400 for a path that is not full.</description></item>
+/// <item><term><c>POST /__control/registries/inspect</c></term><description>Fetches <c>{ registry, id, version? }</c> as installing would and inspects
+/// it as <c>packages/inspect</c> does — <c>{ manifest, alreadyHere, sameCode, sameCodeInUse, compatibility }</c> — taking nothing in. 400 <c>{ reason }</c>
+/// as for installing.</description></item>
 /// <item><term><c>POST /__control/registries/install</c></term><description>Installs <c>{ registry, id, version? }</c> — the given version, or the
 /// highest on the default channel. The package is fetched, held to the hash the index lists, then taken in as a package is: a new
 /// application (201), or — when the application is already here with other code — its new revision, its data here unchanged (201, as
@@ -42,7 +45,8 @@ internal static partial class ControlPlane
         await WriteAsync(context.Response, new RegistryReadView(RegistryStates[(int)read.State], read.Index), cancel).ConfigureAwait(false);
     }
 
-    private static async Task InstallFromRegistryAsync(HttpContext context, AdoptionCatalog catalog, int port, CancellationToken cancel)
+    /// <summary>Reads <c>{ registry, id, version? }</c> and fetches that package (see <see cref="AdoptionCatalog.FetchFromRegistryAsync"/>) — or answers 400 and returns <see langword="null"/>.</summary>
+    private static async Task<(string Id, FetchedPackage Fetched)?> FetchRequestedAsync(HttpContext context, AdoptionCatalog catalog, CancellationToken cancel)
     {
         var response = context.Response;
         string? root, id, version;
@@ -56,42 +60,76 @@ internal static partial class ControlPlane
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
-            return;
+            return null;
         }
 
         if (root is null || !Path.IsPathFullyQualified(root) || !AdoptionCatalog.IsValidId(id))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
-            return;
+            return null;
         }
 
-        FetchedPackage fetched;
         try
         {
-            fetched = await catalog.FetchFromRegistryAsync(root, id!, version, AppRegistry.ReachLimit, cancel).ConfigureAwait(false);
+            return (id, await catalog.FetchFromRegistryAsync(root, id, version, AppRegistry.ReachLimit, cancel).ConfigureAwait(false));
         }
         catch (RegistryRefusedException e)
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             await WriteAsync(response, new PackageRefusal(e.Reason), cancel).ConfigureAwait(false);
-            return;
         }
         catch (InvalidPackageException e)
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
-            return;
         }
 
+        return null;
+    }
+
+    private static void DeleteFetched(FetchedPackage fetched)
+    {
         try
         {
-            if (await catalog.GetAsync(id!, cancel).ConfigureAwait(false) is null)
+            File.Delete(fetched.File);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A finished request stays finished; the copy's name keeps it out of every listing.
+        }
+    }
+
+    private static async Task InspectFromRegistryAsync(HttpContext context, AdoptionCatalog catalog, CancellationToken cancel)
+    {
+        if (await FetchRequestedAsync(context, catalog, cancel).ConfigureAwait(false) is not var (_, fetched)) return;
+        try
+        {
+            await WriteAsync(context.Response, await catalog.InspectPackageAsync(fetched.File, AiServices.Values, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+        }
+        catch (InvalidPackageException e)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await WriteAsync(context.Response, Refusal(e), cancel).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteFetched(fetched);
+        }
+    }
+
+    private static async Task InstallFromRegistryAsync(HttpContext context, AdoptionCatalog catalog, int port, CancellationToken cancel)
+    {
+        var response = context.Response;
+        if (await FetchRequestedAsync(context, catalog, cancel).ConfigureAwait(false) is not var (id, fetched)) return;
+        try
+        {
+            if (await catalog.GetAsync(id, cancel).ConfigureAwait(false) is null)
             {
                 AdoptedApp installed;
                 try
                 {
                     await catalog.ImportPackageAsync(fetched.File, cancel).ConfigureAwait(false);
-                    installed = await catalog.SetInstalledFromAsync(id!, fetched.Install, cancel).ConfigureAwait(false);
+                    installed = await catalog.SetInstalledFromAsync(id, fetched.Install, cancel).ConfigureAwait(false);
                 }
                 catch (InvalidPackageException e)
                 {
@@ -135,22 +173,15 @@ internal static partial class ControlPlane
             }
 
             var source = fetched.Version.Src[(fetched.Version.Src.LastIndexOf('/') + 1)..];
-            await ChangeRevisionAsync(context, id!, StatusCodes.Status201Created, async storage =>
+            await ChangeRevisionAsync(context, id, StatusCodes.Status201Created, async storage =>
             {
-                await catalog.ReviseAsync(id!, page, source, storage, cancel).ConfigureAwait(false);
-                return await catalog.SetInstalledFromAsync(id!, fetched.Install, cancel).ConfigureAwait(false);
+                await catalog.ReviseAsync(id, page, source, storage, cancel).ConfigureAwait(false);
+                return await catalog.SetInstalledFromAsync(id, fetched.Install, cancel).ConfigureAwait(false);
             }, app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
         }
         finally
         {
-            try
-            {
-                File.Delete(fetched.File);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                // A finished install stays finished; the copy's name keeps it out of every listing.
-            }
+            DeleteFetched(fetched);
         }
     }
 
@@ -181,15 +212,15 @@ internal static partial class ControlPlane
             return;
         }
 
-        var open = await catalog.GetAsync(id!, cancel).ConfigureAwait(false) is { ArchivedAt: null }
-            ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(id!).ConfigureAwait(false)
+        var open = await catalog.GetAsync(id, cancel).ConfigureAwait(false) is { ArchivedAt: null }
+            ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(id).ConfigureAwait(false)
             : null;
         RegistryPublished? published;
         try
         {
             var registryName = string.IsNullOrWhiteSpace(name) ? Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root))) : name.Trim();
             published = await WhileNotFetchingAsync(open,
-                () => catalog.PublishToRegistryAsync(root, id!, registryName, AiServices, FolderIndexValidity, cancel), cancel).ConfigureAwait(false);
+                () => catalog.PublishToRegistryAsync(root, id, registryName, AiServices, FolderIndexValidity, cancel), cancel).ConfigureAwait(false);
         }
         catch (RegistryRefusedException e)
         {
