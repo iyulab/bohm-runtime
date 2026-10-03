@@ -30,6 +30,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/left</c></term><description>The person left an unsaved result (closed its tab): its retention counts from now, and serving its page again ends it. Nothing changes for a saved application.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export?data=leave</c></term><description>Copies only what makes the application — its record, its code in every revision, the code it loads from other hosts and its sources' rules — leaving out its data, what its sources read, its usage record and the permissions to read. Whoever takes it in starts with none of them.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/package?data=none|all</c></term><description>Writes the application into a package (<c>.bohm</c>) at the full path in the body: a zip of <c>manifest.json</c> and the folder an export with the same data makes, each recorded original path shortened to its file name. <c>data</c> is required. Answers <c>{ id, path, version, contentSha256, data, includes, permissions }</c> — <c>version</c> goes up by one when the current code differs from the last package's. 400 for a path that is not full or does not end in <c>.bohm</c>, or a missing <c>data</c>; 409 when something with that name is already there or its folder is missing.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
@@ -390,6 +391,39 @@ internal static class ControlPlane
                 }
 
                 await WriteAsync(response, new ExportedView(exported.Id, Path.GetFullPath(target)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var packId, "package"]):
+                var packageTarget = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                PackageData? packageData = request.Query["data"].ToString() switch { "none" => PackageData.None, "all" => PackageData.All, _ => null };
+                if (!Path.IsPathFullyQualified(packageTarget) || !packageTarget.EndsWith(AppPackage.Extension, StringComparison.OrdinalIgnoreCase) || packageData is null)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                PackedApp? packed;
+                try
+                {
+                    var openToPack = await catalog.GetAsync(packId, cancel).ConfigureAwait(false) is { ArchivedAt: null }
+                        ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(packId).ConfigureAwait(false)
+                        : null;
+                    packed = await catalog.PackAsync(packId, packageTarget, packageData.Value, AiServices, openToPack?.Storage, cancel).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                if (packed is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new PackedView(packed.App.Id, packed.Path, packed.Manifest.Version, packed.Manifest.Provenance.ContentSha256,
+                    packed.Manifest.Data, packed.Manifest.Includes, packed.Manifest.Permissions), cancel).ConfigureAwait(false);
                 break;
 
             case (_, ["apps", var sourcesId, "sources", .. var sourcesRest]):
@@ -947,6 +981,12 @@ internal static class ControlPlane
 
     internal sealed record ExportedView(string Id, string Path);
 
+    internal sealed record PackedView(string Id, string Path, string Version, string ContentSha256, string Data, IReadOnlyList<string> Includes, PackagePermissions Permissions);
+
+    /// <summary>Each AI service an application may call, with the text that names it in a page — its host, or the path its calls to the organization's model server arrive under.</summary>
+    private static readonly IReadOnlyDictionary<string, string> AiServices = LlmProviders.All.ToDictionary(p => p.Id, p => p.Host)
+        .Append(KeyValuePair.Create(LlmProxy.CompanyModelSegment, "/__bohm/llm/" + LlmProxy.CompanyModelSegment + "/")).ToDictionary();
+
     internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
         {
@@ -1277,6 +1317,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.RevisionView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.CheckResult))]
