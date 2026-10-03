@@ -18,7 +18,8 @@ namespace Bohm.Runtime.Adoption;
 /// <c>app.json</c> (the record), <c>app.html</c> (the adopted bytes, never modified),
 /// <c>storage/</c> (its data, see <see cref="KeyValueStore"/>), <c>usage.ndjson</c> (its local
 /// usage record, see <see cref="UsageLog"/>), <c>revisions/</c> (see <see cref="ReviseAsync"/>) and,
-/// for an application that reads web pages, <c>sources.json</c> and <c>sources/</c> (see <see cref="AppSources"/>).
+/// for an application that reads web pages, <c>sources.json</c> and <c>sources/</c> (see <see cref="AppSources"/>) and,
+/// once it has been packed, <c>published.json</c> (see <see cref="PackAsync"/>).
 /// </summary>
 /// <remarks>
 /// The catalog does not decide what to do when the same file — or another version of it — is
@@ -334,6 +335,9 @@ public sealed partial class AdoptionCatalog
         Directory.CreateDirectory(to);
         foreach (var file in new[] { RecordFile, HtmlFile })
             await CopyFileAsync(Path.Combine(from, file), Path.Combine(to, file), cancellationToken).ConfigureAwait(false);
+        // The record of the last package travels with the code, so the next package counts on from it.
+        if (File.Exists(Path.Combine(from, PublishedFile)))
+            await CopyFileAsync(Path.Combine(from, PublishedFile), Path.Combine(to, PublishedFile), cancellationToken).ConfigureAwait(false);
 
         var revisions = Path.Combine(from, RevisionsDirectory);
         if (Directory.Exists(revisions))
