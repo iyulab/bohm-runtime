@@ -280,6 +280,67 @@ public sealed class AppPackageTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task An_entry_that_cannot_be_decompressed_is_refused_as_damaged()
+    {
+        var id = await _host.AdoptAsync("<p>" + new string('a', 4000) + "</p>");
+        var package = Path.Combine(_out, "headers.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        // app.html's compressed data starts with a block of the reserved type: it cannot be decompressed.
+        var bytes = await File.ReadAllBytesAsync(package, TestContext.Current.CancellationToken);
+        var name = "app.html"u8.ToArray();
+        var header = Enumerable.Range(30, bytes.Length - 30 - name.Length)
+            .First(i => bytes.AsSpan(i, name.Length).SequenceEqual(name) && bytes.AsSpan(i - 30, 4).SequenceEqual("PK\u0003\u0004"u8)) - 30;
+        Assert.Equal(8, BitConverter.ToUInt16(bytes, header + 8));   // deflate
+        var data = header + 30 + BitConverter.ToUInt16(bytes, header + 26) + BitConverter.ToUInt16(bytes, header + 28);
+        bytes[data] = 0xFF;
+        var broken = Path.Combine(_out, "broken.bohm");
+        await File.WriteAllBytesAsync(broken, bytes, TestContext.Current.CancellationToken);
+        await using var other = await RunningHost.StartAsync();
+
+        using var refused = await ImportAsync(other, broken);
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        Assert.Equal("damaged", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        Assert.False(Directory.Exists(Path.Combine(other.DataRoot, "adopted", id)));
+    }
+
+    [Fact]
+    public async Task Inspecting_a_package_says_what_it_holds_and_takes_nothing_in()
+    {
+        var id = await _host.AdoptAsync("""<script>fetch("https://api.anthropic.com/v1/messages")</script>""");
+        var package = Path.Combine(_out, "inspect.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        await using var other = await RunningHost.StartAsync();
+
+        using (var fresh = await InspectAsync(other, package))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, fresh);
+            var answer = JsonDocument.Parse(await fresh.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal(id, answer.GetProperty("manifest").GetProperty("id").GetString());
+            Assert.Equal(["anthropic"], Strings(answer.GetProperty("manifest").GetProperty("permissions").GetProperty("ai")));
+            Assert.False(answer.GetProperty("alreadyHere").GetBoolean());
+        }
+
+        Assert.False(Directory.Exists(Path.Combine(other.DataRoot, "adopted", id)));
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(other.DataRoot, "adopted"), ".unpacking-*"));
+
+        using (var here = await InspectAsync(_host, package))
+        {
+            var answer = JsonDocument.Parse(await here.Content.ReadAsStringAsync()).RootElement;
+            Assert.True(answer.GetProperty("alreadyHere").GetBoolean());
+            Assert.True(answer.GetProperty("sameCodeInUse").GetBoolean());
+        }
+
+        var changed = Rewrite(package, "inspect-changed.bohm", (name, bytes) => name == "app.html" ? "<p>evil</p>"u8.ToArray() : bytes);
+        using var refused = await InspectAsync(other, changed);
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        Assert.Equal("damaged", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+    }
+
+    private static Task<HttpResponseMessage> InspectAsync(RunningHost host, string path) =>
+        host.ControlClient().PostAsync("/__control/packages/inspect", new StringContent(path, Encoding.UTF8));
+
     /// <summary>A copy of a package with each entry passed through <paramref name="change"/> (null drops it) and <paramref name="extra"/> entries added.</summary>
     private string Rewrite(string package, string name, Func<string, byte[], byte[]?> change, params (string Name, byte[] Bytes)[] extra)
     {

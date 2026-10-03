@@ -18,6 +18,17 @@ public sealed partial class AdoptionCatalog
     private const string PackingPrefix = ".packing-";
     private const string UnpackingPrefix = ".unpacking-";
 
+    /// <summary>The most entries a package may hold — far above an application's files, far below what slows a disk to a crawl.</summary>
+    private const int MaxPackageEntries = 100_000;
+
+    /// <summary>Room left free on the data root's drive after unpacking a package, so taking one in never fills the disk.</summary>
+    private const long PackageRoomToSpare = 256L * 1024 * 1024;
+
+    /// <summary>The longest application record read from a package — records are a few hundred bytes.</summary>
+    private const long MaxRecordLength = 1024 * 1024;
+
+    private static long FreeSpace(string folder) => new DriveInfo(Path.GetPathRoot(Path.GetFullPath(folder))!).AvailableFreeSpace;
+
     /// <summary>
     /// Writes application <paramref name="id"/> into a package at <paramref name="target"/> — a new
     /// file the caller names (see <see cref="AppPackage"/>). The package holds the folder an export
@@ -255,19 +266,7 @@ public sealed partial class AdoptionCatalog
         var staging = Path.Combine(_root, UnpackingPrefix + Guid.NewGuid().ToString("n")[..8]);
         try
         {
-            var manifest = await UnpackAsync(file, staging, cancellationToken).ConfigureAwait(false);
-            AdoptedApp? record;
-            try
-            {
-                record = ReadRecord(await DurableFile.ReadAsync(Path.Combine(staging, RecordFile), cancellationToken).ConfigureAwait(false));
-            }
-            catch (Exception e) when (e is JsonException or IOException)
-            {
-                throw new InvalidPackageException(PackageProblem.Damaged, "The application record cannot be read.", e);
-            }
-
-            if (record is null || record.Id != manifest.Id || !File.Exists(Path.Combine(staging, HtmlFile)))
-                throw new InvalidPackageException(PackageProblem.Damaged, "The package does not hold the application its manifest names.");
+            var (manifest, record) = await UnpackAsync(file, staging, write: true, cancellationToken).ConfigureAwait(false);
             if (Directory.Exists(AppDirectory(record.Id))) throw await AlreadyHereAsync(record.Id, manifest, cancellationToken).ConfigureAwait(false);
 
             try
@@ -290,6 +289,22 @@ public sealed partial class AdoptionCatalog
         }
     }
 
+    /// <summary>
+    /// Checks package <paramref name="file"/> as <see cref="ImportPackageAsync"/> would, without taking
+    /// anything in or writing anything: what it holds, and whether that application is already here.
+    /// </summary>
+    /// <exception cref="InvalidPackageException">The file is not a package, its format is unknown, it did not arrive whole or it would not fit.</exception>
+    public async Task<PackageInspection> InspectPackageAsync(string file, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(file);
+        file = Path.GetFullPath(file);
+        if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
+        var (manifest, record) = await UnpackAsync(file, Path.Combine(_root, UnpackingPrefix + "check"), write: false, cancellationToken).ConfigureAwait(false);
+        if (!Directory.Exists(AppDirectory(record.Id))) return new PackageInspection(manifest, false, false, false);
+        var here = await AlreadyHereAsync(record.Id, manifest, cancellationToken).ConfigureAwait(false);
+        return new PackageInspection(manifest, true, here.SameCode, here.SameCodeInUse);
+    }
+
     private async Task<AppAlreadyHereException> AlreadyHereAsync(string id, PackageManifest manifest, CancellationToken cancellationToken)
     {
         var revisions = await ListRevisionsAsync(id, cancellationToken).ConfigureAwait(false);
@@ -297,8 +312,12 @@ public sealed partial class AdoptionCatalog
         return new AppAlreadyHereException(id, revisions.Any(r => r.Source.Sha256 == code), revisions.Any(r => r.InUse && r.Source.Sha256 == code));
     }
 
-    /// <summary>Checks package <paramref name="file"/> and writes its files into <paramref name="folder"/>, hashing each as it is written.</summary>
-    private static async Task<PackageManifest> UnpackAsync(string file, string folder, CancellationToken cancellationToken)
+    /// <summary>
+    /// Checks package <paramref name="file"/> and, when <paramref name="write"/>, writes its files into
+    /// <paramref name="folder"/> — hashing each as it is read either way. Returns the manifest and the
+    /// application record the package holds.
+    /// </summary>
+    private static async Task<(PackageManifest Manifest, AdoptedApp Record)> UnpackAsync(string file, string folder, bool write, CancellationToken cancellationToken)
     {
         ZipArchive zip;
         try
@@ -329,8 +348,16 @@ public sealed partial class AdoptionCatalog
                 throw new InvalidPackageException(PackageProblem.UnknownFormat, $"The package is not in the format '{AppPackage.Format}'.");
 
             var expected = manifest.Provenance.Files;
+            // The archive itself sets no limit on what it unpacks to: a small file can claim terabytes. The sizes its
+            // headers claim are what it can unpack to (reading stops there), so those are what is checked against room.
+            if (write) Directory.CreateDirectory(folder);
+            if (zip.Entries.Count > MaxPackageEntries)
+                throw new InvalidPackageException(PackageProblem.TooLarge, $"The package has more than {MaxPackageEntries} entries.");
+            var unpacked = zip.Entries.Sum(e => e.Length);
+            if (unpacked > FreeSpace(Path.GetDirectoryName(Path.GetFullPath(folder))!) - PackageRoomToSpare)
+                throw new InvalidPackageException(PackageProblem.TooLarge, "The package unpacks to more than there is room for.");
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            Directory.CreateDirectory(folder);
+            byte[]? recordBytes = null;
             var root = Path.GetFullPath(folder) + Path.DirectorySeparatorChar;
             foreach (var entry in zip.Entries)
             {
@@ -342,29 +369,61 @@ public sealed partial class AdoptionCatalog
                 var target = Path.GetFullPath(Path.Combine(folder, entry.FullName));
                 if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' points outside the package.");
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                if (!string.Equals(await WriteHashedAsync(entry, target, cancellationToken).ConfigureAwait(false), hash, StringComparison.OrdinalIgnoreCase))
+                if (write) Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                string written;
+                try
+                {
+                    if (entry.FullName == RecordFile)
+                    {
+                        if (entry.Length > MaxRecordLength) throw new InvalidPackageException(PackageProblem.Damaged, "The application record is too long.");
+                        await using var input = entry.Open();
+                        using var copy = new MemoryStream();
+                        await input.CopyToAsync(copy, cancellationToken).ConfigureAwait(false);
+                        recordBytes = copy.ToArray();
+                        if (write) await File.WriteAllBytesAsync(target, recordBytes, cancellationToken).ConfigureAwait(false);
+                        written = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(recordBytes));
+                    }
+                    else written = await WriteHashedAsync(entry, write ? target : null, cancellationToken).ConfigureAwait(false);
+                }
+                catch (InvalidDataException e)
+                {
+                    throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' cannot be read.", e);
+                }
+
+                if (!string.Equals(written, hash, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' is not what the manifest says it is.");
             }
 
             if (expected.Keys.FirstOrDefault(k => !seen.Contains(k)) is { } missing)
                 throw new InvalidPackageException(PackageProblem.Damaged, $"The listed file '{missing}' is missing.");
-            return manifest;
+            AdoptedApp? record;
+            try
+            {
+                record = recordBytes is null ? null : ReadRecord(recordBytes);
+            }
+            catch (JsonException e)
+            {
+                throw new InvalidPackageException(PackageProblem.Damaged, "The application record cannot be read.", e);
+            }
+
+            if (record is null || record.Id != manifest.Id || !seen.Contains(HtmlFile))
+                throw new InvalidPackageException(PackageProblem.Damaged, "The package does not hold the application its manifest names.");
+            return (manifest, record);
         }
     }
 
-    /// <summary>Writes the entry to <paramref name="target"/> and returns its hash as the manifest writes it.</summary>
-    private static async Task<string> WriteHashedAsync(ZipArchiveEntry entry, string target, CancellationToken cancellationToken)
+    /// <summary>Writes the entry to <paramref name="target"/>, if any, and returns its hash as the manifest writes it.</summary>
+    private static async Task<string> WriteHashedAsync(ZipArchiveEntry entry, string? target, CancellationToken cancellationToken)
     {
         await using var input = entry.Open();
-        await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await using var output = target is null ? null : new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[81920];
         int read;
         while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
         {
             sha.AppendData(buffer, 0, read);
-            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            if (output is not null) await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
 
         return "sha256:" + Convert.ToHexStringLower(sha.GetHashAndReset());

@@ -35,7 +35,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay.</description></item>
-/// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c> or <c>damaged</c>; 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
+/// <item><term><c>POST /__control/packages/inspect</c></term><description>Checks the package (<c>.bohm</c>) at the full path in the body exactly as taking it in would — and takes nothing in: <c>{ manifest, alreadyHere, sameCode, sameCodeInUse }</c>, so the person can see what the application asks to do before it lands. 400 for a path that is not full, or <c>{ reason }</c> as for taking it in.</description></item>
+/// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c>, <c>damaged</c> or <c>too-large</c> (it unpacks to more than the drive has room for); 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the model's answer reached its length limit after these edits, so they may not be all it meant to make; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit before any change.</description></item>
 /// <item><term><c>POST /__control/apps/proposals</c></term><description>Proposes a new application from an answer and the tables on the pages behind it: the body is <c>{ question, answer?, lang?, pages: [{ url, title?, tables: [{ selector, headers, rows, preview }] }] }</c> — the tables as the shell found them. Answers <c>{ title, html, sources: [{ name, page, rule: { site, selector, columns } }], summary, model, refused: [reason, …] }</c> — <c>refused</c> holds what was sent back to the model before the proposal was kept; nothing is kept. The rules are made from the tables and columns the model chose among those given, and the application is refused unless it reads exactly the sources it declares and puts their values on the page only as text. Made with the model chosen for proposals, but never the one on this computer — 409 <c>{ needs: "largerModel" }</c> — or 409 with what is missing, 503 with why when the model cannot run, stops or proposes nothing usable — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit first.</description></item>
@@ -154,6 +155,26 @@ internal static class ControlPlane
                 await WriteAsync(response, View(result, port, canRevert: false), cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["packages", "inspect"]):
+                var inspected = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (!Path.IsPathFullyQualified(inspected))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                try
+                {
+                    await WriteAsync(response, await catalog.InspectPackageAsync(inspected, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+                }
+                catch (InvalidPackageException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                }
+
+                break;
+
             case ("POST", ["apps", "import"]):
                 var source = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
                 if (!Path.IsPathFullyQualified(source))
@@ -172,12 +193,7 @@ internal static class ControlPlane
                 catch (InvalidPackageException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new PackageRefusal(e.Problem switch
-                    {
-                        PackageProblem.NotAPackage => "not-a-package",
-                        PackageProblem.UnknownFormat => "unknown-format",
-                        _ => "damaged",
-                    }), cancel).ConfigureAwait(false);
+                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
                     break;
                 }
                 catch (AppAlreadyHereException e)
@@ -1002,6 +1018,14 @@ internal static class ControlPlane
 
     internal sealed record PackageRefusal(string Reason);
 
+    private static PackageRefusal Refusal(InvalidPackageException e) => new(e.Problem switch
+    {
+        PackageProblem.NotAPackage => "not-a-package",
+        PackageProblem.UnknownFormat => "unknown-format",
+        PackageProblem.TooLarge => "too-large",
+        _ => "damaged",
+    });
+
     internal sealed record AlreadyHereView(string Id, bool SameCode, bool SameCodeInUse);
 
     internal sealed record PackedView(string Id, string Path, string Version, string ContentSha256, string Data, IReadOnlyList<string> Includes, PackagePermissions Permissions);
@@ -1342,6 +1366,7 @@ internal static class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackageRefusal))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(PackageInspection))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AlreadyHereView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
