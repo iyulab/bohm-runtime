@@ -93,6 +93,13 @@ public sealed record PackageProvenance(string ContentSha256, IReadOnlyDictionary
 /// <summary>An application written into a package.</summary>
 public sealed record PackedApp(AdoptedApp App, PackageManifest Manifest, string Path);
 
+/// <summary>What a package holds, checked, and whether its application is already here.</summary>
+/// <param name="Manifest">The package's manifest.</param>
+/// <param name="AlreadyHere">The application is already here.</param>
+/// <param name="SameCode">It is, and the package's code is one of its revisions.</param>
+/// <param name="SameCodeInUse">It is, and the package's code is the revision in use.</param>
+public sealed record PackageInspection(PackageManifest Manifest, bool AlreadyHere, bool SameCode, bool SameCodeInUse);
+
 /// <summary>Why a file could not be taken in as a package.</summary>
 public enum PackageProblem
 {
@@ -102,8 +109,11 @@ public enum PackageProblem
     /// <summary>A manifest of a format this runtime does not know.</summary>
     UnknownFormat,
 
-    /// <summary>The package did not arrive whole: an entry unlisted, changed, missing or outside the package, or the application it names absent.</summary>
+    /// <summary>The package did not arrive whole: an entry unlisted, changed, unreadable, missing or outside the package, or the application it names absent.</summary>
     Damaged,
+
+    /// <summary>The package unpacks to more than the drive has room for, or holds too many entries.</summary>
+    TooLarge,
 }
 
 /// <summary>A file that cannot be taken in as a package. Nothing was taken in.</summary>
