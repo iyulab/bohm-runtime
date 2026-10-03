@@ -305,6 +305,42 @@ public sealed partial class AdoptionCatalog
         return new PackageInspection(manifest, true, here.SameCode, here.SameCodeInUse);
     }
 
+    /// <summary>
+    /// The page of the revision in use in package <paramref name="file"/>, after the checks taking the
+    /// package in runs — for taking a package of an application already here in as its new revision
+    /// (see <see cref="ReviseAsync"/>). The page is checked against the manifest's code hash. Nothing is
+    /// written.
+    /// </summary>
+    /// <exception cref="InvalidPackageException">The file is not a package, its format is unknown, it did not arrive whole or it would not fit.</exception>
+    public async Task<(PackageManifest Manifest, byte[] Page)> ReadPackagePageAsync(string file, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(file);
+        file = Path.GetFullPath(file);
+        if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
+        var (manifest, record) = await UnpackAsync(file, Path.Combine(_root, UnpackingPrefix + "check"), write: false, cancellationToken).ConfigureAwait(false);
+        var name = record.Revision <= 1 ? HtmlFile : $"{RevisionsDirectory}/{record.Revision.ToString(CultureInfo.InvariantCulture)}/{HtmlFile}";
+        using var zip = ZipFile.OpenRead(file);
+        if (zip.GetEntry(name) is not { } entry || entry.Length > int.MaxValue)
+            throw new InvalidPackageException(PackageProblem.Damaged, "The package does not hold the page of the revision it names.");
+        byte[] page;
+        try
+        {
+            await using var input = entry.Open();
+            using var copy = new MemoryStream();
+            await input.CopyToAsync(copy, cancellationToken).ConfigureAwait(false);
+            page = copy.ToArray();
+        }
+        catch (InvalidDataException e)
+        {
+            throw new InvalidPackageException(PackageProblem.Damaged, "The page cannot be read.", e);
+        }
+
+        // The file may have changed since it was checked: the page must still be the code the manifest names.
+        if (Convert.ToHexStringLower(SHA256.HashData(page)) != manifest.Provenance.ContentSha256)
+            throw new InvalidPackageException(PackageProblem.Damaged, "The page is not the code the manifest names.");
+        return (manifest, page);
+    }
+
     private async Task<AppAlreadyHereException> AlreadyHereAsync(string id, PackageManifest manifest, CancellationToken cancellationToken)
     {
         var revisions = await ListRevisionsAsync(id, cancellationToken).ConfigureAwait(false);
