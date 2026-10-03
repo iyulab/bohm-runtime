@@ -81,7 +81,10 @@ public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Si
 /// had written was kept aside (<c>data-undone.json</c> in its folder); this says where that data stands
 /// against the data now. <see langword="null"/> when the application was never put back from it.
 /// </param>
-public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, UndoneData? Undone);
+/// <param name="Request">For a revision made by a change the person asked for, their words; otherwise <see langword="null"/>.</param>
+/// <param name="RestoredFrom">For a revision that went back to the code of an earlier one, that revision's number; otherwise <see langword="null"/>.</param>
+public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, UndoneData? Undone,
+    string? Request = null, int? RestoredFrom = null);
 
 /// <summary>Where the data a revision wrote, kept aside when the application was put back from it, stands against the data now.</summary>
 public enum UndoneData

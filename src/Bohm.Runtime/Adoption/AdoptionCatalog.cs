@@ -573,8 +573,46 @@ public sealed partial class AdoptionCatalog
     /// files. The caller makes sure no page is still running the code being replaced.
     /// </para>
     /// </remarks>
+    /// <param name="request">
+    /// For a change the person asked for, their words — kept with the revision so its history says what changed.
+    /// Trimmed and cut at <see cref="MaxRequestLength"/> characters; blank counts as none.
+    /// </param>
     /// <exception cref="InvalidOperationException">The bytes are the revision already in use.</exception>
-    public async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage, CancellationToken cancellationToken = default)
+    public Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage, string? request = null,
+        CancellationToken cancellationToken = default) =>
+        ReviseAsync(id, html, originalPath, storage, Note(request), null, cancellationToken);
+
+    /// <summary>The most characters of a person's request a revision keeps.</summary>
+    public const int MaxRequestLength = 2000;
+
+    private static string? Note(string? request) =>
+        request?.Trim() is { Length: > 0 } words ? words.Length > MaxRequestLength ? words[..MaxRequestLength] : words : null;
+
+    /// <summary>
+    /// Goes back to the code of revision <paramref name="revision"/> — any earlier one, not only the one before —
+    /// by taking it in as a new revision: the data stays exactly as it is now, and the revision left stays in the
+    /// history, so <see cref="RevertAsync"/> undoes this in one step. Going back further than one step does not
+    /// wind the data back, because what was entered since belongs to the person, not to the code (<c>D-56</c>).
+    /// </summary>
+    /// <remarks><paramref name="storage"/> must be this application's open storage — the one writer of its files.</remarks>
+    /// <exception cref="KeyNotFoundException">There is no such revision.</exception>
+    /// <exception cref="InvalidOperationException">That revision's code is the code in use.</exception>
+    public async Task<AdoptedApp> RestoreAsync(string id, int revision, KeyValueStore storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        RequireValidId(id);
+        var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        if (revision <= 0) throw new KeyNotFoundException($"Application '{id}' has no revision {revision}.");
+        if (revision == app.Revision) throw new InvalidOperationException("That revision is the one in use.");
+        var path = revision <= 1 ? Path.Combine(AppDirectory(id), HtmlFile) : Path.Combine(RevisionFolder(id, revision), HtmlFile);
+        if (!File.Exists(path) || (revision > 1 && await ReadRevisionAsync(RevisionFolder(id, revision), cancellationToken).ConfigureAwait(false) is null))
+            throw new KeyNotFoundException($"Application '{id}' has no revision {revision}.");
+        var html = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        return await ReviseAsync(id, html, null, storage, null, revision, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage,
+        string? request, int? restoredFrom, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
@@ -605,7 +643,7 @@ public sealed partial class AdoptionCatalog
                 stream.Flush(flushToDisk: true);
             }
 
-            await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RevisionFile), WriteRevision(number, app.Revision, now, source), cancellationToken).ConfigureAwait(false);
+            await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RevisionFile), WriteRevision(number, app.Revision, now, source, request, restoredFrom), cancellationToken).ConfigureAwait(false);
             await storage.SaveSnapshotAsync(Path.Combine(staging, DataBeforeFile), cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, RevisionFolder(id, number));
         }
@@ -678,7 +716,8 @@ public sealed partial class AdoptionCatalog
                     undone = await UndoneStateAsync(app, number, now, cancellationToken).ConfigureAwait(false);
                 }
 
-                revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source, record.Revision == app.Revision, undone));
+                revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source, record.Revision == app.Revision, undone,
+                    record.Request, record.RestoredFrom));
             }
         }
 
@@ -774,7 +813,7 @@ public sealed partial class AdoptionCatalog
         return await RevertTargetAsync(app, cancellationToken).ConfigureAwait(false) is not null;
     }
 
-    private sealed record RevisionRecord(int Revision, int? Previous, DateTimeOffset? TakenInAt, AdoptionSource Source);
+    private sealed record RevisionRecord(int Revision, int? Previous, DateTimeOffset? TakenInAt, AdoptionSource Source, string? Request = null, int? RestoredFrom = null);
 
     private async Task<RevisionRecord?> RevertTargetAsync(AdoptedApp app, CancellationToken cancellationToken)
     {
@@ -801,7 +840,10 @@ public sealed partial class AdoptionCatalog
                 root.GetProperty("revision").GetInt32(),
                 previous.ValueKind == JsonValueKind.Null ? null : previous.GetInt32(),
                 takenInAt.ValueKind == JsonValueKind.Null ? null : ParseTime(takenInAt.GetString()!),
-                ReadSource(root.GetProperty("source")));
+                ReadSource(root.GetProperty("source")),
+                // Added later: a record written before has neither, and reads as a revision with no words.
+                root.TryGetProperty("request", out var request) && request.ValueKind == JsonValueKind.String ? request.GetString() : null,
+                root.TryGetProperty("restoredFrom", out var restoredFrom) && restoredFrom.ValueKind == JsonValueKind.Number ? restoredFrom.GetInt32() : null);
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
         {
@@ -986,7 +1028,7 @@ public sealed partial class AdoptionCatalog
         return buffer.ToArray();
     }
 
-    private static byte[] WriteRevision(int revision, int? previous, DateTimeOffset? takenInAt, AdoptionSource source)
+    private static byte[] WriteRevision(int revision, int? previous, DateTimeOffset? takenInAt, AdoptionSource source, string? request = null, int? restoredFrom = null)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer, RecordWriter))
@@ -998,6 +1040,8 @@ public sealed partial class AdoptionCatalog
             else writer.WriteNumber("previous", previous.Value);
             WriteTime(writer, "takenInAt", takenInAt);
             WriteSource(writer, source);
+            if (request is not null) writer.WriteString("request", request);
+            if (restoredFrom is not null) writer.WriteNumber("restoredFrom", restoredFrom.Value);
             writer.WriteEndObject();
         }
 

@@ -175,7 +175,7 @@ internal static partial class ControlPlane
             var source = fetched.Version.Src[(fetched.Version.Src.LastIndexOf('/') + 1)..];
             await ChangeRevisionAsync(context, id, StatusCodes.Status201Created, async storage =>
             {
-                await catalog.ReviseAsync(id, page, source, storage, cancel).ConfigureAwait(false);
+                await catalog.ReviseAsync(id, page, source, storage, cancellationToken: cancel).ConfigureAwait(false);
                 return await catalog.SetInstalledFromAsync(id, fetched.Install, cancel).ConfigureAwait(false);
             }, app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
         }

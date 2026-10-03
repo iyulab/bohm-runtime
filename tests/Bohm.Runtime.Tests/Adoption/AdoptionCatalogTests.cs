@@ -306,6 +306,57 @@ public sealed class AdoptionCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task A_revision_keeps_the_request_trimmed_and_bounded_and_a_record_written_before_reads_without_one()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, Path.Combine(_root, "loans.html"));
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), null, storage, "  add a due date column\n");
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v3</p>"), null, storage, new string('x', AdoptionCatalog.MaxRequestLength + 10));
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v4</p>"), null, storage, "   ");
+
+        var history = await catalog.ListRevisionsAsync(app.Id);
+        Assert.Equal([null, "add a due date column", new string('x', AdoptionCatalog.MaxRequestLength), null], history.Select(r => r.Request));
+        Assert.All(history, r => Assert.Null(r.RestoredFrom));
+
+        // A record from before the field: the same shape without «request» still reads.
+        var record = Path.Combine(_root, "adopted", app.Id, "revisions", "2", "revision.json");
+        var node = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(record))!.AsObject();
+        Assert.True(node.Remove("request"));
+        await File.WriteAllTextAsync(record, node.ToJsonString());
+        Assert.Equal([1, 2, 3, 4], (await catalog.ListRevisionsAsync(app.Id)).Select(r => r.Revision));
+        Assert.Null((await catalog.ListRevisionsAsync(app.Id))[1].Request);
+    }
+
+    [Fact]
+    public async Task Going_back_to_an_earlier_revision_takes_its_code_in_as_a_new_one_and_leaves_the_data()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, Path.Combine(_root, "loans.html"));
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v2</p>"), null, storage);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<p>v3</p>"), null, storage);
+        await storage.ApplyAsync([KeyValueOperation.Set("written-in-v3", "yes")]);
+
+        var restored = await catalog.RestoreAsync(app.Id, 1, storage);
+
+        Assert.Equal(4, restored.Revision);
+        Assert.Equal(Html, await catalog.ReadHtmlAsync(app.Id));
+        Assert.Equal("yes", storage.GetItems()["written-in-v3"]);
+        var last = (await catalog.ListRevisionsAsync(app.Id))[^1];
+        Assert.Equal((4, (int?)3, (int?)1, true), (last.Revision, last.Previous, last.RestoredFrom, last.InUse));
+        Assert.Equal(3, (await catalog.RevertAsync(app.Id, storage)).Revision);         // undone in one step
+        Assert.Equal("yes", storage.GetItems()["written-in-v3"]);
+        Assert.Equal(5, (await catalog.RestoreAsync(app.Id, 2, storage)).Revision);      // numbers only grow
+        Assert.Equal("<p>v2</p>", Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(app.Id)));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.RestoreAsync(app.Id, 5, storage)); // in use
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.RestoreAsync(app.Id, 2, storage)); // the same code as in use
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => catalog.RestoreAsync(app.Id, 9, storage));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => catalog.RestoreAsync(app.Id, 0, storage));
+    }
+
+    [Fact]
     public async Task Data_a_revision_wrote_can_be_taken_back_in_only_while_nothing_was_written_since_and_given_back()
     {
         var catalog = new AdoptionCatalog(_root);
