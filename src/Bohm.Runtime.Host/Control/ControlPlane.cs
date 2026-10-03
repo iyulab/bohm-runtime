@@ -37,7 +37,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay.</description></item>
 /// <item><term><c>POST /__control/packages/inspect</c></term><description>Checks the package (<c>.bohm</c>) at the full path in the body exactly as taking it in would — and takes nothing in: <c>{ manifest, alreadyHere, sameCode, sameCodeInUse }</c>, so the person can see what the application asks to do before it lands. 400 for a path that is not full, or <c>{ reason }</c> as for taking it in.</description></item>
-/// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c>, <c>damaged</c> or <c>too-large</c> (it unpacks to more than the drive has room for); 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
+/// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. With <c>?as=separate</c> (a package only) the package's application is taken in separately — under a new identity, named as the package names it (numbered when another application has that name), with <c>forkedFrom</c> — so an application already here stays and both are kept. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c>, <c>damaged</c> or <c>too-large</c> (it unpacks to more than the drive has room for); 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the model's answer reached its length limit after these edits, so they may not be all it meant to make; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit before any change.</description></item>
 /// <item><term><c>POST /__control/apps/proposals</c></term><description>Proposes a new application from an answer and the tables on the pages behind it: the body is <c>{ question, answer?, lang?, pages: [{ url, title?, tables: [{ selector, headers, rows, preview }] }] }</c> — the tables as the shell found them. Answers <c>{ title, html, sources: [{ name, page, rule: { site, selector, columns } }], summary, model, refused: [reason, …] }</c> — <c>refused</c> holds what was sent back to the model before the proposal was kept; nothing is kept. The rules are made from the tables and columns the model chose among those given, and the application is refused unless it reads exactly the sources it declares and puts their values on the page only as text. Made with the model chosen for proposals, but never the one on this computer — 409 <c>{ needs: "largerModel" }</c> — or 409 with what is missing, 503 with why when the model cannot run, stops or proposes nothing usable — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit first.</description></item>
@@ -184,12 +184,20 @@ internal static class ControlPlane
                     break;
                 }
 
+                var isPackage = source.EndsWith(AppPackage.Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(source);
+                var separately = request.Query["as"].ToString() switch { "" => false, "separate" => true, _ => (bool?)null };
+                if (separately is null || (separately == true && !isPackage))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
                 AdoptedApp imported;
                 try
                 {
-                    imported = source.EndsWith(AppPackage.Extension, StringComparison.OrdinalIgnoreCase) && File.Exists(source)
-                        ? await catalog.ImportPackageAsync(source, cancel).ConfigureAwait(false)
-                        : await catalog.ImportAsync(source, cancel).ConfigureAwait(false);
+                    imported = !isPackage ? await catalog.ImportAsync(source, cancel).ConfigureAwait(false)
+                        : separately == true ? await catalog.ImportPackageSeparatelyAsync(source, cancel).ConfigureAwait(false)
+                        : await catalog.ImportPackageAsync(source, cancel).ConfigureAwait(false);
                 }
                 catch (InvalidPackageException e)
                 {
@@ -965,7 +973,7 @@ internal static class ControlPlane
     private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
             app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt,
-            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title);
+            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title, app.ForkedFrom);
 
     private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -993,10 +1001,11 @@ internal static class ControlPlane
     /// (local <c>yyyy-MM-dd</c>) is filled in the listing only. <c>Unsaved</c> marks a result not kept yet;
     /// <c>LeftAt</c> is when the person last left it and <c>ExpiresAt</c> when the next start after it removes it.
     /// <c>Title</c> names an application when no file does — one the runtime made, or one whose change was applied without a file; otherwise an adopted file is known by <c>OriginalPath</c>.
+    /// <c>ForkedFrom</c> names the application in the package an application was taken in separately from (<c>{ id, name, version }</c>).
     /// </summary>
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
-        bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null);
+        bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null, AppFork? ForkedFrom = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c>, <c>"sameName"</c> (same folder, same name but for a browser's download number) or <c>"sameStoredKeys"</c> (the source names every key the application stored).</summary>
     internal sealed record MatchView(AppView App, string Match);

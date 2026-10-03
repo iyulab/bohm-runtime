@@ -382,6 +382,69 @@ public sealed class AppPackageTests : IAsyncLifetime
         Assert.Equal("<p>second</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
     }
 
+    [Fact]
+    public async Task A_package_taken_in_separately_is_a_new_app_beside_the_one_here()
+    {
+        var cancel = TestContext.Current.CancellationToken;
+        var id = (await _host.Catalog.AdoptAsync("<p>books</p>"u8.ToArray(), Path.Combine(_out, "Books.html"), cancellationToken: cancel)).Id;
+        var page = await _host.LoadAsync(id);
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"books","value":"[1,2]"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+        Assert.Equal("1", await VersionAsync(id, "Books-v1.bohm"));
+        using (var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>books 2</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, revised);
+        var package = Path.Combine(_out, "Books.bohm");
+        using (var packed = await PackAsync(id, package, "all")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        using (var mine = await _host.PostStorageAsync(id, await _host.LoadAsync(id), """{"tab":"TAB","ops":[{"seq":2,"op":"set","key":"books","value":"[9]"}]}"""))
+            HttpAssert.Status(HttpStatusCode.OK, mine);
+
+        using var taken = await ImportSeparatelyAsync(_host, package);
+
+        HttpAssert.Status(HttpStatusCode.Created, taken);
+        var app = JsonDocument.Parse(await taken.Content.ReadAsStringAsync()).RootElement;
+        var copy = app.GetProperty("id").GetString()!;
+        Assert.NotEqual(id, copy);
+        Assert.Equal("Books (2)", app.GetProperty("title").GetString());
+        var fork = app.GetProperty("forkedFrom");
+        Assert.Equal(id, fork.GetProperty("id").GetString());
+        Assert.Equal("Books", fork.GetProperty("name").GetString());
+        Assert.Equal("2", fork.GetProperty("version").GetString());
+        // The package's data comes with the new app; the app here keeps its own.
+        Assert.Contains("[1,2]", (await _host.LoadAsync(copy)).Items, StringComparison.Ordinal);
+        Assert.Contains("[9]", (await _host.LoadAsync(id)).Items, StringComparison.Ordinal);
+        Assert.Equal("<p>books 2</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(copy, cancel)));
+        Assert.Equal(id, (await _host.Catalog.GetAsync(copy, cancel))!.ForkedFrom!.Id);
+
+        // A second copy is numbered on; the new app publishes its own versions, from 1.
+        using (var again = await ImportSeparatelyAsync(_host, package))
+            Assert.Equal("Books (3)", JsonDocument.Parse(await again.Content.ReadAsStringAsync()).RootElement.GetProperty("title").GetString());
+        Assert.Equal("1", await VersionAsync(copy, "copy.bohm"));
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_host.DataRoot, "adopted"), ".staging-*"));
+    }
+
+    [Fact]
+    public async Task Only_a_whole_package_is_taken_in_separately()
+    {
+        var id = await _host.AdoptAsync("<p>one</p>");
+        var folder = Path.Combine(_out, "folder");
+        using (var exported = await _host.ControlClient().PostAsync($"/__control/apps/{id}/export", new StringContent(folder, Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.OK, exported);
+        var package = Path.Combine(_out, "one.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        var before = (await _host.Catalog.ListAsync(TestContext.Current.CancellationToken)).Count;
+
+        using (var notAPackage = await ImportSeparatelyAsync(_host, folder)) HttpAssert.Status(HttpStatusCode.BadRequest, notAPackage);
+        using (var unknown = await _host.ControlClient().PostAsync("/__control/apps/import?as=other", new StringContent(package, Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.BadRequest, unknown);
+        var changed = Rewrite(package, "one-changed.bohm", (name, bytes) => name == "app.html" ? "<p>evil</p>"u8.ToArray() : bytes);
+        using (var damaged = await ImportSeparatelyAsync(_host, changed)) HttpAssert.Status(HttpStatusCode.BadRequest, damaged);
+
+        Assert.Equal(before, (await _host.Catalog.ListAsync(TestContext.Current.CancellationToken)).Count);
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_host.DataRoot, "adopted"), ".staging-*"));
+    }
+
+    private static Task<HttpResponseMessage> ImportSeparatelyAsync(RunningHost host, string path) =>
+        host.ControlClient().PostAsync("/__control/apps/import?as=separate", new StringContent(path, Encoding.UTF8));
+
     private Task<HttpResponseMessage> FromPackageAsync(string id, string path) =>
         _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/from-package", new StringContent(path, Encoding.UTF8));
 

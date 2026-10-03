@@ -938,6 +938,15 @@ public sealed partial class AdoptionCatalog
             writer.WriteString("protection", app.Protection);
             if (app.ArchivedAt is not null) WriteTime(writer, "archivedAt", app.ArchivedAt);
             if (app.Title is not null) writer.WriteString("title", app.Title);
+            if (app.ForkedFrom is { } fork)
+            {
+                writer.WriteStartObject("forkedFrom");
+                writer.WriteString("id", fork.Id);
+                writer.WriteString("name", fork.Name);
+                writer.WriteString("version", fork.Version);
+                writer.WriteEndObject();
+            }
+
             if (app.Unsaved)
             {
                 writer.WriteBoolean("unsaved", true);
@@ -1019,6 +1028,10 @@ public sealed partial class AdoptionCatalog
                 Unsaved = unsaved,
                 LeftAt = leftAt,
                 Title = root.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String ? title.GetString() : null,
+                // Absent for every application not taken in separately from a package.
+                ForkedFrom = root.TryGetProperty("forkedFrom", out var fork) && fork.ValueKind == JsonValueKind.Object
+                    ? new AppFork(fork.GetProperty("id").GetString()!, fork.GetProperty("name").GetString()!, fork.GetProperty("version").GetString()!)
+                    : null,
             };
         }
         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
