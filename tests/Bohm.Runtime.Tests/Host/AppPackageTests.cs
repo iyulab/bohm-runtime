@@ -184,6 +184,130 @@ public sealed class AppPackageTests : IAsyncLifetime
         Assert.Empty(Directory.EnumerateDirectories(Path.Combine(_host.DataRoot, "adopted"), ".packing-*"));
     }
 
+    [Fact]
+    public async Task A_package_is_taken_in_on_another_computer_as_the_same_app_with_its_data()
+    {
+        var id = await _host.AdoptAsync("<!doctype html><title>Books</title>");
+        var page = await _host.LoadAsync(id);
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"books","value":"[1,2]"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+        var package = Path.Combine(_out, "Books.bohm");
+        using (var packed = await PackAsync(id, package, "all")) HttpAssert.Status(HttpStatusCode.OK, packed);
+
+        await using var other = await RunningHost.StartAsync();
+        using var imported = await ImportAsync(other, package);
+
+        HttpAssert.Status(HttpStatusCode.Created, imported);
+        Assert.Equal(id, JsonDocument.Parse(await imported.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString());
+        Assert.Contains("[1,2]", (await other.LoadAsync(id)).Items, StringComparison.Ordinal);
+        Assert.True(File.Exists(package), "the package is only read");
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(other.DataRoot, "adopted"), ".unpacking-*"));
+    }
+
+    [Fact]
+    public async Task An_app_already_here_is_not_replaced_and_the_answer_says_whether_its_code_is_here()
+    {
+        var id = await _host.AdoptAsync("<p>one</p>");
+        var package = Path.Combine(_out, "one.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+
+        using (var same = await ImportAsync(_host, package))
+        {
+            HttpAssert.Status(HttpStatusCode.Conflict, same);
+            var answer = JsonDocument.Parse(await same.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal(id, answer.GetProperty("id").GetString());
+            Assert.True(answer.GetProperty("sameCode").GetBoolean());
+            Assert.True(answer.GetProperty("sameCodeInUse").GetBoolean());
+        }
+
+        using (var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>two</p>", Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.Created, revised);
+        using (var older = await ImportAsync(_host, package))
+        {
+            HttpAssert.Status(HttpStatusCode.Conflict, older);
+            var answer = JsonDocument.Parse(await older.Content.ReadAsStringAsync()).RootElement;
+            Assert.True(answer.GetProperty("sameCode").GetBoolean());
+            Assert.False(answer.GetProperty("sameCodeInUse").GetBoolean());
+        }
+
+        Assert.Equal("<p>two</p>", Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id, TestContext.Current.CancellationToken)));
+    }
+
+    [Fact]
+    public async Task A_package_that_did_not_arrive_whole_is_refused_and_nothing_lands()
+    {
+        var id = await _host.AdoptAsync("<p>whole</p>");
+        var package = Path.Combine(_out, "whole.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        await using var other = await RunningHost.StartAsync();
+
+        var changed = Rewrite(package, "changed.bohm", (name, bytes) => name == "app.html" ? Encoding.UTF8.GetBytes("<p>evil</p>") : bytes);
+        var unlisted = Rewrite(package, "unlisted.bohm", (_, bytes) => bytes, ("extra.js", "alert(1)"u8.ToArray()));
+        var outside = Rewrite(package, "outside.bohm", (_, bytes) => bytes, ("../outside.txt", "x"u8.ToArray()));
+        var missing = Rewrite(package, "missing.bohm", (name, bytes) => name == "app.html" ? null : bytes);
+
+        foreach (var bad in new[] { changed, unlisted, outside, missing })
+        {
+            using var refused = await ImportAsync(other, bad);
+            HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+            Assert.Equal("damaged", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        }
+
+        Assert.False(Directory.Exists(Path.Combine(other.DataRoot, "adopted", id)));
+        Assert.False(File.Exists(Path.Combine(other.DataRoot, "outside.txt")));
+        Assert.False(File.Exists(Path.Combine(other.DataRoot, "adopted", "outside.txt")));
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(other.DataRoot, "adopted"), ".unpacking-*"));
+    }
+
+    [Fact]
+    public async Task A_file_that_is_not_a_package_of_a_known_format_is_refused()
+    {
+        var id = await _host.AdoptAsync("<p>x</p>");
+        var package = Path.Combine(_out, "x.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        var text = Path.Combine(_out, "text.bohm");
+        await File.WriteAllTextAsync(text, "not a zip", TestContext.Current.CancellationToken);
+        var future = Rewrite(package, "future.bohm", (name, bytes) => name == "manifest.json"
+            ? Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(bytes).Replace("bohm.package/0", "bohm.package/9", StringComparison.Ordinal))
+            : bytes);
+        await using var other = await RunningHost.StartAsync();
+
+        using (var notZip = await ImportAsync(other, text))
+            Assert.Equal("not-a-package", JsonDocument.Parse(await notZip.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        using (var unknown = await ImportAsync(other, future))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, unknown);
+            Assert.Equal("unknown-format", JsonDocument.Parse(await unknown.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        }
+    }
+
+    /// <summary>A copy of a package with each entry passed through <paramref name="change"/> (null drops it) and <paramref name="extra"/> entries added.</summary>
+    private string Rewrite(string package, string name, Func<string, byte[], byte[]?> change, params (string Name, byte[] Bytes)[] extra)
+    {
+        var target = Path.Combine(_out, name);
+        using var source = ZipFile.OpenRead(package);
+        using var copy = ZipFile.Open(target, ZipArchiveMode.Create);
+        foreach (var entry in source.Entries)
+        {
+            using var input = entry.Open();
+            using var buffer = new MemoryStream();
+            input.CopyTo(buffer);
+            if (change(entry.FullName, buffer.ToArray()) is not { } bytes) continue;
+            using var output = copy.CreateEntry(entry.FullName).Open();
+            output.Write(bytes);
+        }
+
+        foreach (var (entryName, bytes) in extra)
+        {
+            using var output = copy.CreateEntry(entryName).Open();
+            output.Write(bytes);
+        }
+
+        return target;
+    }
+
+    private static Task<HttpResponseMessage> ImportAsync(RunningHost host, string path) =>
+        host.ControlClient().PostAsync("/__control/apps/import", new StringContent(path, Encoding.UTF8));
+
     private async Task<string?> VersionAsync(string id, string name)
     {
         using var response = await PackAsync(id, Path.Combine(_out, name), "none");
