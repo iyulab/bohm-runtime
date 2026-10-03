@@ -441,6 +441,58 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(1, (await _host.Catalog.GetAsync(id))!.Revision);
     }
 
+    [Fact]
+    public async Task A_change_keeps_its_request_and_going_back_to_any_revision_keeps_the_data()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var page = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"}]}""")).Dispose();
+        var change = new ByteArrayContent(Encoding.UTF8.GetBytes("<p>blue</p>"));
+        change.Headers.Add("X-Bohm-Request", Uri.EscapeDataString("  버튼을 파랗게 해 줘 \n"));
+        (await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", change)).Dispose();
+        (await ReviseAsync(id, "<p>wide</p>")).Dispose();
+        var wide = await _host.LoadAsync(id);
+        (await _host.PostStorageAsync(id, wide, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"note","value":"kept"}]}""")).Dispose();
+
+        using var restored = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/1/restore", null);
+        using var inUse = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/4/restore", null);
+        using var unknown = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/99/restore", null);
+
+        HttpAssert.Status(HttpStatusCode.Created, restored);
+        Assert.Equal(4, JsonDocument.Parse(await restored.Content.ReadAsStringAsync()).RootElement.GetProperty("revision").GetInt32());
+        HttpAssert.Status(HttpStatusCode.Conflict, inUse);
+        HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+        Assert.Equal(Encoding.UTF8.GetBytes(Page), await _host.Catalog.ReadHtmlAsync(id));
+        Assert.Equal("""{"loan":"3","note":"kept"}""", (await _host.LoadAsync(id)).Items); // the data is not wound back
+
+        var history = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/revisions")).RootElement.EnumerateArray().ToList();
+        Assert.Equal([null, "버튼을 파랗게 해 줘", null, null], history.Select(r => r.GetProperty("request").GetString()));
+        Assert.Equal([0, 0, 0, 1], history.Select(r => r.GetProperty("restoredFrom").ValueKind == JsonValueKind.Number ? r.GetProperty("restoredFrom").GetInt32() : 0));
+        Assert.Equal("도서대출.html", history[2].GetProperty("file").GetString());
+
+        // «Revert» undoes going back: the code before, and the data as it was at that moment — the same data.
+        using (var reverted = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/revert", null))
+            Assert.Equal(3, JsonDocument.Parse(await reverted.Content.ReadAsStringAsync()).RootElement.GetProperty("revision").GetInt32());
+        Assert.Equal("""{"loan":"3","note":"kept"}""", (await _host.LoadAsync(id)).Items);
+
+        // What the person asked is theirs: a package of the application carries the history, not the words.
+        var package = Path.Combine(Path.GetTempPath(), $"bohm-request-{Guid.NewGuid():n}.bohm");
+        using (var packed = await _host.ControlClient().PostAsync($"/__control/apps/{id}/package?data=none", new StringContent(package, Encoding.UTF8)))
+            HttpAssert.Status(HttpStatusCode.OK, packed);
+        try
+        {
+            using var zip = System.IO.Compression.ZipFile.OpenRead(package);
+            var records = zip.Entries.Where(e => e.FullName.EndsWith("/revision.json", StringComparison.Ordinal)).Select(e => new StreamReader(e.Open()).ReadToEnd()).ToList();
+            Assert.Equal(4, records.Count);
+            Assert.All(records, r => Assert.DoesNotContain("request", r, StringComparison.Ordinal));
+            Assert.Contains(records, r => JsonDocument.Parse(r).RootElement.TryGetProperty("restoredFrom", out var from) && from.GetInt32() == 1);
+        }
+        finally
+        {
+            File.Delete(package);
+        }
+    }
+
     private Task<HttpResponseMessage> ReviseAsync(string id, string html)
     {
         var content = new ByteArrayContent(Encoding.UTF8.GetBytes(html));

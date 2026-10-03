@@ -86,6 +86,12 @@ internal static partial class ControlPlane
     public const string PathPrefix = "/__control";
     public const string OriginalPathHeader = "X-Bohm-Original-Path";
 
+    /// <summary>
+    /// On a new revision made by a change, the person's request for it — percent-encoded like
+    /// <see cref="OriginalPathHeader"/>. It stays on this computer: a package of the application does not carry it.
+    /// </summary>
+    public const string RequestHeader = "X-Bohm-Request";
+
     /// <summary>How long no write may be in progress before the runtime counts as drained.</summary>
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(150);
 
@@ -276,7 +282,7 @@ internal static partial class ControlPlane
                 }
 
                 await ChangeRevisionAsync(context, fromPackageId, StatusCodes.Status201Created,
-                    storage => catalog.ReviseAsync(fromPackageId, packagePage, packageFile, storage, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
+                    storage => catalog.ReviseAsync(fromPackageId, packagePage, packageFile, storage, cancellationToken: cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var revisedId, "revisions"]):
@@ -294,8 +300,23 @@ internal static partial class ControlPlane
                 }
 
                 var revisedPath = OriginalPath(request);
+                var revisedFor = Escaped(request, RequestHeader);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
-                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
+                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, revisedFor, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var restoredId, "revisions", var restoreTo, "restore"]):
+                if (await catalog.GetAsync(restoredId, cancel).ConfigureAwait(false) is null
+                    || !int.TryParse(restoreTo, NumberStyles.None, CultureInfo.InvariantCulture, out var restoreRevision)
+                    || !(await catalog.ListRevisionsAsync(restoredId, cancel).ConfigureAwait(false)).Any(r => r.Revision == restoreRevision))
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // Going back to an earlier revision's code is a new revision: the data stays as it is, «revert» undoes it.
+                await ChangeRevisionAsync(context, restoredId, StatusCodes.Status201Created,
+                    storage => catalog.RestoreAsync(restoredId, restoreRevision, storage, cancel), app => app.Usage.RecordRevision(reverted: true)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["agent", "turns"]):
@@ -583,7 +604,7 @@ internal static partial class ControlPlane
                         UndoneData.Imported => "imported",
                         UndoneData.Diverged => "diverged",
                         _ => null,
-                    }))
+                    }, r.Request, r.RestoredFrom))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -950,8 +971,11 @@ internal static partial class ControlPlane
         return buffer.ToArray();
     }
 
-    private static string? OriginalPath(HttpRequest request) =>
-        request.Headers[OriginalPathHeader].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
+    private static string? OriginalPath(HttpRequest request) => Escaped(request, OriginalPathHeader);
+
+    /// <summary>A header carrying text that may not be ASCII, percent-encoded by the sender; <see langword="null"/> when absent.</summary>
+    private static string? Escaped(HttpRequest request, string header) =>
+        request.Headers[header].ToString() is { Length: > 0 } encoded ? Uri.UnescapeDataString(encoded) : null;
 
     private static async Task<MatchView> ViewMatchAsync(AdoptionCatalog catalog, AdoptionMatch match, int port, CancellationToken cancellationToken) =>
         new(View(match.App, port, await catalog.CanRevertAsync(match.App, cancellationToken).ConfigureAwait(false)), match.Kind switch
@@ -1097,7 +1121,7 @@ internal static partial class ControlPlane
     /// <c>undone</c>, for a revision the application was put back from, is where the data it wrote stands: <c>"importable"</c>,
     /// <c>"imported"</c> or <c>"diverged"</c> (see <see cref="UndoneData"/>).
     /// </summary>
-    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone);
+    internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone, string? Request, int? RestoredFrom);
 
     internal sealed record ExportedView(string Id, string Path);
 

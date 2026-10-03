@@ -133,7 +133,8 @@ public sealed partial class AdoptionCatalog
 
     /// <summary>
     /// Shortens every recorded original path in an exported folder to its file name, and drops the record of the
-    /// registry it was installed from — where this computer's files and registries are is not the receiver's.
+    /// registry it was installed from and the words a person asked a change with — where this computer's files and
+    /// registries are, and what its person said, is not the receiver's.
     /// </summary>
     private static async Task KeepWhatTravelsAsync(string folder, CancellationToken cancellationToken)
     {
@@ -144,7 +145,7 @@ public sealed partial class AdoptionCatalog
         {
             if (!File.Exists(record)) continue;
             var node = JsonNode.Parse(await File.ReadAllBytesAsync(record, cancellationToken).ConfigureAwait(false));
-            var changed = node is JsonObject recordObject && recordObject.Remove("installedFrom");
+            var changed = node is JsonObject recordObject && (recordObject.Remove("installedFrom") | recordObject.Remove("request"));
             if (node?["source"]?["originalPath"] is JsonValue value && value.TryGetValue(out string? path) && path is not null
                 && path[(path.LastIndexOfAny(['/', '\\']) + 1)..] is var name && name != path)
             {
