@@ -346,18 +346,22 @@ public sealed partial class AdoptionCatalog
 
     /// <summary>
     /// Checks package <paramref name="file"/> as <see cref="ImportPackageAsync"/> would, without taking
-    /// anything in or writing anything: what it holds, and whether that application is already here.
+    /// anything in or writing anything: what it holds, whether that application is already here, and
+    /// what in the page it would run will not work as written (see <see cref="PageCompatibility"/>).
     /// </summary>
+    /// <param name="relayedHosts">Hosts of the AI services an application may call (see <see cref="PageCompatibility.Read"/>).</param>
     /// <exception cref="InvalidPackageException">The file is not a package, its format is unknown, it did not arrive whole or it would not fit.</exception>
-    public async Task<PackageInspection> InspectPackageAsync(string file, CancellationToken cancellationToken = default)
+    public async Task<PackageInspection> InspectPackageAsync(string file, IEnumerable<string> relayedHosts, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(file);
+        ArgumentNullException.ThrowIfNull(relayedHosts);
         file = Path.GetFullPath(file);
         if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
         var (manifest, record) = await UnpackAsync(file, Path.Combine(_root, UnpackingPrefix + "check"), write: false, cancellationToken).ConfigureAwait(false);
-        if (!Directory.Exists(AppDirectory(record.Id))) return new PackageInspection(manifest, false, false, false);
+        var compatibility = PageCompatibility.Read(System.Text.Encoding.UTF8.GetString(await ReadPageAsync(file, manifest, record, cancellationToken).ConfigureAwait(false)), relayedHosts);
+        if (!Directory.Exists(AppDirectory(record.Id))) return new PackageInspection(manifest, false, false, false, compatibility);
         var here = await AlreadyHereAsync(record.Id, manifest, cancellationToken).ConfigureAwait(false);
-        return new PackageInspection(manifest, true, here.SameCode, here.SameCodeInUse);
+        return new PackageInspection(manifest, true, here.SameCode, here.SameCodeInUse, compatibility);
     }
 
     /// <summary>
@@ -373,6 +377,12 @@ public sealed partial class AdoptionCatalog
         file = Path.GetFullPath(file);
         if (!File.Exists(file)) throw new InvalidPackageException(PackageProblem.NotAPackage, "There is no such file.");
         var (manifest, record) = await UnpackAsync(file, Path.Combine(_root, UnpackingPrefix + "check"), write: false, cancellationToken).ConfigureAwait(false);
+        return (manifest, await ReadPageAsync(file, manifest, record, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>The page of the revision in use in checked package <paramref name="file"/>, read again and held to the manifest's code hash.</summary>
+    private static async Task<byte[]> ReadPageAsync(string file, PackageManifest manifest, AdoptedApp record, CancellationToken cancellationToken)
+    {
         var name = record.Revision <= 1 ? HtmlFile : $"{RevisionsDirectory}/{record.Revision.ToString(CultureInfo.InvariantCulture)}/{HtmlFile}";
         using var zip = ZipFile.OpenRead(file);
         if (zip.GetEntry(name) is not { } entry || entry.Length > int.MaxValue)
@@ -393,7 +403,7 @@ public sealed partial class AdoptionCatalog
         // The file may have changed since it was checked: the page must still be the code the manifest names.
         if (Convert.ToHexStringLower(SHA256.HashData(page)) != manifest.Provenance.ContentSha256)
             throw new InvalidPackageException(PackageProblem.Damaged, "The page is not the code the manifest names.");
-        return (manifest, page);
+        return page;
     }
 
     private async Task<AppAlreadyHereException> AlreadyHereAsync(string id, PackageManifest manifest, CancellationToken cancellationToken)

@@ -98,7 +98,8 @@ public sealed record PackedApp(AdoptedApp App, PackageManifest Manifest, string 
 /// <param name="AlreadyHere">The application is already here.</param>
 /// <param name="SameCode">It is, and the package's code is one of its revisions.</param>
 /// <param name="SameCodeInUse">It is, and the package's code is the revision in use.</param>
-public sealed record PackageInspection(PackageManifest Manifest, bool AlreadyHere, bool SameCode, bool SameCodeInUse);
+/// <param name="Compatibility">What in the page the package would run will not work as written — <see cref="PageCompatibility"/>'s findings.</param>
+public sealed record PackageInspection(PackageManifest Manifest, bool AlreadyHere, bool SameCode, bool SameCodeInUse, IReadOnlyList<string> Compatibility);
 
 /// <summary>Why a file could not be taken in as a package.</summary>
 public enum PackageProblem
