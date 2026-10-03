@@ -359,6 +359,26 @@ internal static partial class ControlPlane
                 await ProposeAsync(context, proposalFor, cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["apps", var pastedFor, "proposals", "from-html"]):
+                if (await catalog.GetAsync(pastedFor, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // A change made elsewhere — an answer the person pasted back — becomes a proposal like a model's, with no model.
+                var pasted = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                var pastedSource = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(pastedFor, cancel).ConfigureAwait(false));
+                if (Edit.PastedProposals.From(pastedSource, pasted) is not { } fromPasted)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new PackageRefusal("not-a-document"), cancel).ConfigureAwait(false);
+                    break;
+                }
+
+                await WriteAsync(response, new ProposalView(fromPasted.Html, fromPasted.Summary, fromPasted.Edits, Edit.PastedProposals.Model, null, null, null), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["apps", var previewOf, "previews"]):
                 if (await catalog.GetAsync(previewOf, cancel).ConfigureAwait(false) is not { ArchivedAt: null })
                 {
@@ -587,6 +607,18 @@ internal static partial class ControlPlane
 
                 // Read from the file, like the listing: looking at the record does not open the application.
                 await WriteAsync(response, UsageOf(catalog.OpenUsage(usageFor)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["apps", var sourceOf, "source"]):
+                if (await catalog.GetAsync(sourceOf, cancel).ConfigureAwait(false) is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // The code in use, as it was taken in — for handing it to an AI the person uses elsewhere. No data comes with it.
+                response.ContentType = "text/html; charset=utf-8";
+                await response.Body.WriteAsync(await catalog.ReadHtmlAsync(sourceOf, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", var revisionsOf, "revisions"]):
