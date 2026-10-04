@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Bohm.Runtime.TableImports;
 
 namespace Bohm.Runtime.Tests.Host;
 
@@ -137,19 +138,48 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("books", "isbn", "not-utf8", true)]
-    [InlineData("theme", null, "unknown-collection", false)]
-    [InlineData("books", "publisher", "unknown-identity", false)]
-    public async Task A_file_or_choice_that_cannot_be_used_is_refused_with_why(string collection, string? identity, string problem, bool legacyBytes)
+    [InlineData("theme", null, "unknown-collection")]
+    [InlineData("books", "publisher", "unknown-identity")]
+    public async Task A_choice_that_cannot_be_used_is_refused_with_why(string collection, string? identity, string problem)
     {
-        var body = legacyBytes
-            ? Body(null, collection, identity, content: Convert.ToBase64String([0xC1, 0xA6, 0xB8, 0xF1, 0x0A, 0x31]))
-            : Body("title\n파이썬", collection, identity);
-
-        using var refused = await PostAsync("imports/preview", body);
+        using var refused = await PostAsync("imports/preview", Body("title\n파이썬", collection, identity));
 
         HttpAssert.Status(HttpStatusCode.BadRequest, refused);
         Assert.Equal(problem, JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task A_file_that_is_neither_utf8_nor_text_in_this_computers_code_page_is_refused()
+    {
+        // A lead byte followed by a line break: no character in UTF-8, nor in a double-byte code page (the
+        // only kind assumed without the person choosing one).
+        byte[] neither = [0x74, 0x0A, 0xB0, 0x0A, 0x31];
+        using var preview = await PostAsync("imports/preview", Body(null, "books", "isbn", content: Convert.ToBase64String(neither)));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, preview);
+        Assert.Equal("not-utf8", JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task A_file_in_the_code_page_the_person_chose_is_read_in_it_and_says_so()
+    {
+        // «도서» as a Korean bank's CSV comes — CP949 — chosen by the person (the computer may be in any code page).
+        byte[] cp949 = [0xB5, 0xB5, 0xBC, 0xAD, 0x0A, 0x31];
+
+        using var preview = await PostAsync("imports/preview", Body(null, "books", null, content: Convert.ToBase64String(cp949), codePage: 949));
+
+        HttpAssert.Status(HttpStatusCode.OK, preview);
+        var plan = JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("도서", plan.GetProperty("columns")[0].GetProperty("column").GetString());
+        Assert.Equal(949, plan.GetProperty("codePage").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_utf8_file_says_no_code_page()
+    {
+        using var preview = await PostAsync("imports/preview", Body("title\n파이썬", codePage: 949));
+        HttpAssert.Status(HttpStatusCode.OK, preview);
+        Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement.GetProperty("codePage").ValueKind);
     }
 
     [Fact]
@@ -159,10 +189,10 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
         using (var import = await PostAsync("imports/7/undo", null)) HttpAssert.Status(HttpStatusCode.NotFound, import);
     }
 
-    private static string Body(string? csv, string collection = "books", string? identity = null, string? content = null) =>
+    private static string Body(string? csv, string collection = "books", string? identity = null, string? content = null, int? codePage = null) =>
         JsonSerializer.Serialize(new Dictionary<string, object?>
         {
-            ["file"] = new Dictionary<string, string> { ["name"] = "books.csv", ["content"] = content ?? Convert.ToBase64String(Encoding.UTF8.GetBytes(csv!)) },
+            ["file"] = new Dictionary<string, object?> { ["name"] = "books.csv", ["content"] = content ?? Convert.ToBase64String(Encoding.UTF8.GetBytes(csv!)), ["codePage"] = codePage },
             ["collection"] = collection,
             ["identity"] = identity,
         });

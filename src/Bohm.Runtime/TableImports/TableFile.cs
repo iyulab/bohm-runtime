@@ -5,7 +5,7 @@ namespace Bohm.Runtime.TableImports;
 /// <summary>Why a table file could not be read.</summary>
 public static class TableFileProblem
 {
-    /// <summary>The file is not UTF-8 text (a spreadsheet saved in a legacy code page, or not text at all).</summary>
+    /// <summary>The file is not UTF-8 text, nor text in the legacy code page given (another code page, or not text at all).</summary>
     public const string NotUtf8 = "not-utf8";
 
     /// <summary>The file has no header row.</summary>
@@ -31,8 +31,10 @@ public sealed class TableFileException(string problem, string message) : Excepti
 }
 
 /// <summary>
-/// A delimited table file — comma-separated (CSV) or tab-separated (TSV) UTF-8 text whose first row
-/// names the columns. Read the same way every time: the same bytes give the same table.
+/// A delimited table file — comma-separated (CSV) or tab-separated (TSV) text whose first row names
+/// the columns: UTF-8, or else the legacy code page the caller gives — the one a spreadsheet on that
+/// computer saves «CSV» in (a Korean bank's download is CP949). Read the same way every time: the same
+/// bytes and code page give the same table.
 /// </summary>
 /// <remarks>
 /// Cells follow RFC 4180: a cell in double quotes may hold the delimiter, line breaks and doubled
@@ -42,6 +44,9 @@ public sealed class TableFileException(string problem, string message) : Excepti
 /// </remarks>
 public sealed record TableFile(IReadOnlyList<string> Headers, IReadOnlyList<IReadOnlyList<string>> Rows)
 {
+    /// <summary>The legacy code page the file was read in — <see langword="null"/> when it was UTF-8.</summary>
+    public int? CodePage { get; init; }
+
     /// <summary>The largest file read.</summary>
     public const int MaxBytes = 10 * 1024 * 1024;
 
@@ -50,18 +55,51 @@ public sealed record TableFile(IReadOnlyList<string> Headers, IReadOnlyList<IRea
 
     private static readonly UTF8Encoding Strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
+    /// <summary>
+    /// A legacy (single- or double-byte) code page that refuses bytes it has no character for, instead of
+    /// putting a replacement character in — or <see langword="null"/> for a number that is no legacy code
+    /// page (0, UTF-8, unknown).
+    /// </summary>
+    public static Encoding? StrictLegacy(int codePage)
+    {
+        if (codePage <= 0 || codePage == Encoding.UTF8.CodePage) return null;
+        try
+        {
+            return CodePagesEncodingProvider.Instance.GetEncoding(codePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback)
+                ?? Encoding.GetEncoding(codePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Reads <paramref name="bytes"/>; the delimiter is a tab when <paramref name="fileName"/> ends in <c>.tsv</c>, otherwise found from the header row.</summary>
+    /// <param name="legacy">How to read bytes that are not UTF-8 — a strict encoding (<see cref="StrictLegacy"/>) that refuses bytes it has no character for; none refuses them.</param>
     /// <exception cref="TableFileException">The file cannot be read as a table.</exception>
-    public static TableFile Read(ReadOnlySpan<byte> bytes, string? fileName = null)
+    public static TableFile Read(ReadOnlySpan<byte> bytes, string? fileName = null, Encoding? legacy = null)
     {
         if (bytes.Length > MaxBytes) throw new TableFileException(TableFileProblem.TooLarge, $"The file is larger than {MaxBytes / (1024 * 1024)} MB.");
         ReadOnlySpan<byte> byteOrderMark = [0xEF, 0xBB, 0xBF];
         if (bytes.StartsWith(byteOrderMark)) bytes = bytes[3..];
 
         string text;
+        int? codePage = null;
         try
         {
             text = Strict.GetString(bytes);
+        }
+        catch (DecoderFallbackException) when (legacy is not null)
+        {
+            try
+            {
+                text = legacy.GetString(bytes);
+                codePage = legacy.CodePage;
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new TableFileException(TableFileProblem.NotUtf8, $"The file is neither UTF-8 text nor text in code page {legacy.CodePage}.");
+            }
         }
         catch (DecoderFallbackException)
         {
@@ -91,7 +129,7 @@ public sealed record TableFile(IReadOnlyList<string> Headers, IReadOnlyList<IRea
             body.Add(cells);
         }
 
-        return new TableFile(headers, body);
+        return new TableFile(headers, body) { CodePage = codePage };
     }
 
     /// <summary>
