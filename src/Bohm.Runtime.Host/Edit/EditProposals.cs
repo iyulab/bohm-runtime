@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Bohm.Runtime.Host.Llm;
+using IronHive.Abstractions.Exceptions;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
@@ -54,6 +55,9 @@ internal static partial class EditProposals
     /// <summary>Lines of source shown on each side of the element.</summary>
     public const int ContextLines = 40;
 
+    /// <summary>The most tokens of source shown whole to a provider's model whose context window nobody gave.</summary>
+    public const int WholeSourceTokens = 24_000;
+
     /// <summary>How many rounds of tool calls one proposal may take.</summary>
     public const int MaxRounds = 8;
 
@@ -97,7 +101,8 @@ internal static partial class EditProposals
 
     private const string SystemPrompt = """
         You change a small web application's HTML source as the person asks, by exact local
-        replacements. The source around the element the person pointed at is given with line numbers.
+        replacements. The source is given with line numbers: all of it, or the part around the element
+        the person pointed at.
 
         """ + ReplaceRules + """
 
@@ -152,8 +157,21 @@ internal static partial class EditProposals
     public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
     {
         var text = SourceText.Of(source);
-        var proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-            Prompt(text.Lf.Split('\n'), target, instruction), cancellationToken).ConfigureAwait(false);
+        var lines = text.Lf.Split('\n');
+        var whole = ShowsWholeSource(text.Lf, lines.Length, onThisComputer, ModelLimits.Of(model, limits));
+        EditProposal proposal;
+        try
+        {
+            proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
+                Prompt(lines, target, instruction, whole), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ContextOverflowException) when (whole)
+        {
+            // Too much for a model whose window nobody gave: once more with the part around the element.
+            proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
+                Prompt(lines, target, instruction, whole: false), cancellationToken).ConfigureAwait(false);
+        }
+
         StoppedBeforeAnyChange(proposal);
         return proposal with { Html = text.Restore(proposal.Html) };
     }
@@ -480,10 +498,26 @@ internal static partial class EditProposals
             Stopped: ProposalFailedException.StoppedBy(response.StopReason));
     }
 
-    private static string Prompt(string[] lines, EditTarget target, string instruction)
+    /// <summary>
+    /// Whether a proposal starts from the whole source rather than the lines around the element: given only the part, a
+    /// model reads the rest before it changes anything, one round at a time, and runs out of rounds. Not for the model on
+    /// this computer, which takes in a long prompt slowly; for a provider's model, when the source takes no more than half
+    /// its window — or, when nobody gave its window, no more than <see cref="WholeSourceTokens"/> (a refusal as too long
+    /// then falls back to the part around the element).
+    /// </summary>
+    internal static bool ShowsWholeSource(string source, int lineCount, bool onThisComputer, ModelLimits limits)
+    {
+        if (onThisComputer) return false;
+        // Rough and on the high side: a token for every three characters, and the line numbers shown before each line.
+        var tokens = (source.Length + 6L * lineCount) / 3;
+        return tokens <= (limits.ContextWindow is { } window ? window / 2 : WholeSourceTokens);
+    }
+
+    private static string Prompt(string[] lines, EditTarget target, string instruction, bool whole)
     {
         var line = LineOf(lines, target);
-        var (from, to) = line is { } found
+        var (from, to) = whole ? (1, lines.Length)
+            : line is { } found
             ? (Math.Max(1, found - ContextLines), Math.Min(lines.Length, found + ContextLines))
             : (1, Math.Min(lines.Length, 2 * ContextLines));
         var prompt = new StringBuilder();
