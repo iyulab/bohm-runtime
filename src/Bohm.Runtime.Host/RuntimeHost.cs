@@ -51,6 +51,12 @@ public sealed record RuntimeHostOptions
     public Llm.LocalModelOptions? LocalModel { get; init; }
 
     /// <summary>
+    /// Where models the person gets onto this computer come from (see <c>/__control/llm/local-model/download</c>).
+    /// <see langword="null"/> (the default): the model library's catalog and Hugging Face; tests supply a stand-in.
+    /// </summary>
+    public Llm.IModelSource? ModelSource { get; init; }
+
+    /// <summary>
     /// The organization's model servers and their models, listed for this run — typically an
     /// administrator's policy passed on by whoever starts the runtime: the person chooses among them and
     /// cannot set another. <see langword="null"/> (the default): the person sets one, or none, through
@@ -136,6 +142,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<AssetFetcher>();
         builder.Services.AddSingleton<Egress>();
         builder.Services.AddSingleton<Llm.LocalModel>();
+        builder.Services.AddSingleton<Llm.ModelDownloads>();
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Edit.AgentModel>();

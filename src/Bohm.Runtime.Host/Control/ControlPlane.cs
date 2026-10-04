@@ -72,6 +72,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
+/// <item><term><c>GET /__control/llm/local-model/catalog</c></term><description>The models the model library knows by a short name, to get onto this computer: <c>[{ id, name, description, parameters, license, licenseTier, sizeBytes, downloaded }]</c> — read without the network.</description></item>
+/// <item><term><c>POST /__control/llm/local-model/describe</c></term><description>What getting the model named in the body (a catalog id or a Hugging Face repository) would take, before it starts: <c>{ result, model, name, license, licenseTier, sizeBytes, downloaded }</c> — <c>result</c> is <c>ok</c>, <c>not-found</c> or <c>unreachable</c>; the licence when the catalog knows the model. Asks the model host once — counted as sent to it.</description></item>
+/// <item><term><c>POST /__control/llm/local-model/download</c> · <c>DELETE</c></term><description>Starts getting the model named in the body in the background (202 — progress is the <c>download</c> of <c>GET /__control/llm/local-model</c>: <c>{ model, bytes, total, failure }</c>; when it arrives it is the model in use and <c>download</c> is null), or stops the one under way. 409 when one is under way or the model was fixed at start. Counted as sent to the model host.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
 /// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start; the model's limits as they were set, each null when unknown; <c>reportedContextWindow</c> the context window the server's model list reported for the model (vLLM's <c>max_model_len</c>) once it was asked — before the first proposal or question, or by a check — used when <c>contextWindow</c> is not set, null otherwise.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
@@ -915,7 +918,56 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["llm", "local-model"]):
-                await WriteAsync(response, LocalModelViewOf(context.RequestServices.GetRequiredService<LocalModel>()), cancel).ConfigureAwait(false);
+                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["llm", "local-model", "catalog"]):
+                await WriteAsync(response, context.RequestServices.GetRequiredService<ModelDownloads>().Catalog(), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["llm", "local-model", "describe"]):
+                var described = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (described.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                await WriteAsync(response, await context.RequestServices.GetRequiredService<ModelDownloads>().DescribeAsync(described, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST" or "DELETE", ["llm", "local-model", "download"]):
+                var downloads = context.RequestServices.GetRequiredService<ModelDownloads>();
+                if (request.Method == "DELETE")
+                {
+                    downloads.Stop();
+                    await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                    break;
+                }
+
+                var wanted = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (wanted.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                try
+                {
+                    if (!downloads.Start(wanted))
+                    {
+                        response.StatusCode = StatusCodes.Status409Conflict;
+                        break;
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                response.StatusCode = StatusCodes.Status202Accepted;
+                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["llm", "local-model", "load"]):
@@ -927,7 +979,7 @@ internal static partial class ControlPlane
                 }
 
                 response.StatusCode = StatusCodes.Status202Accepted;
-                await WriteAsync(response, LocalModelViewOf(toLoad), cancel).ConfigureAwait(false);
+                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", "local-model"]):
@@ -948,7 +1000,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await WriteAsync(response, LocalModelViewOf(localModel), cancel).ConfigureAwait(false);
+                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", var providerId, "key"]):
@@ -1281,12 +1333,17 @@ internal static partial class ControlPlane
 
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
-    private static LocalModelView LocalModelViewOf(LocalModel local) =>
-        new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure);
+    private static LocalModelView LocalModelViewOf(HttpContext context)
+    {
+        var local = context.RequestServices.GetRequiredService<LocalModel>();
+        return new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure,
+            context.RequestServices.GetRequiredService<ModelDownloads>().Current);
+    }
 
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
     /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
-    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure);
+    /// <param name="Download">The model being got onto this computer, or the last attempt that ended without it; <see langword="null"/> when neither.</param>
+    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure, ModelDownloads.DownloadView? Download);
 
     /// <summary>
     /// A proposal for the application's current source, from the model on this computer. Nothing is
@@ -1596,5 +1653,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.CheckResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.ModelsResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(IReadOnlyList<ModelDownloads.CatalogView>))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ModelDownloads.Description))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;
