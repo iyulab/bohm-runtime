@@ -17,6 +17,9 @@ internal static class AppFacts
           kept from when it was added, but new ones may not load; prefer code written in the file.
         - For AI, it calls the provider's API as written (OpenAI, Anthropic or Gemini) and never holds
           a real key: the runtime supplies it. Never put a key in the source.
+        - AI calls can be answered when this computer has no internet connection — the AI may run on this
+          computer or on the local network. Do not hold them back on navigator.onLine; handle a failed
+          call instead.
         - Elements written in the markup can be pointed at and changed later; prefer them to elements
           built by script.
         """;
