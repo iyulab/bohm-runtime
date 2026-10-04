@@ -58,6 +58,14 @@ internal static partial class AppProposals
     /// <summary>The longest single answer — a whole application in one tool call.</summary>
     public const int MaxOutputTokens = 16000;
 
+    /// <summary>
+    /// The same for an application made from an instruction alone: a tool the person will live with (import, rules,
+    /// charts, a report) is often several times larger than one that shows tables read from a page — a household ledger
+    /// ran out at 16,000 twice. A model known to answer less is asked for its own limit, and one that refuses the size
+    /// is asked again with less (<see cref="ModelFitChatClient"/>).
+    /// </summary>
+    public const int MaxInstructionOutputTokens = 64000;
+
     private const int MaxAnswer = 4000;
     private const int MaxCell = 80;
 
@@ -147,7 +155,7 @@ internal static partial class AppProposals
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
             .ConfigureOptions(options =>
             {
-                options.MaxOutputTokens ??= MaxOutputTokens;
+                options.MaxOutputTokens ??= request.FromInstruction ? MaxInstructionOutputTokens : MaxOutputTokens;
                 if (ModelLimits.Of(model, limits).Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
             })
             .Build();

@@ -210,6 +210,23 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task An_application_from_an_instruction_may_answer_longer_than_one_reading_pages()
+    {
+        var made = new FakeChatModel();
+        made.Script.Enqueue(Propose("c1", Array.Empty<object>(), LogHtml, "Reading log"));
+        var fromPages = new FakeChatModel();
+        fromPages.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+
+        await AppProposals.ProposeAsync(made, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        await AppProposals.ProposeAsync(fromPages, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+
+        // A tool the person lives with (import, rules, charts) ran out at the page-reading limit; a model known to answer less is fitted down.
+        Assert.Equal(AppProposals.MaxInstructionOutputTokens, made.Calls[0].Options?.MaxOutputTokens);
+        Assert.Equal(AppProposals.MaxOutputTokens, fromPages.Calls[0].Options?.MaxOutputTokens);
+        Assert.True(AppProposals.MaxInstructionOutputTokens > AppProposals.MaxOutputTokens);
+    }
+
+    [Fact]
     public async Task An_application_from_an_instruction_may_put_markup_on_the_page_it_wrote_itself()
     {
         const string html = "<!doctype html><div id=\"app\"></div><script>document.getElementById('app').innerHTML = '<h1>Books</h1>';</script>";
