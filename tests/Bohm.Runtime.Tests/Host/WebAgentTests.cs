@@ -52,6 +52,23 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task Asked_to_make_an_app_the_model_is_told_to_answer_and_that_the_answer_can_be_saved_as_one()
+    {
+        // Without this, a model asked to "make an app that watches this table" looks for a way to build one on
+        // the page, never answers, and the person never sees the Save as app offered under an answer.
+        _model.Reply = "Rows gathered from both pages.";
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Make an app that watches the table on tab 1."}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var system = Assert.Single(_model.Calls).Messages[0];
+        Assert.Equal(ChatRole.System, system.Role);
+        Assert.Contains("do not look for a way to\nbuild it on a page", system.Text.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+        Assert.Contains("Save as app", system.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_callers_tool_results_continue_the_turn_as_page_material_and_it_ends_with_the_answer()
     {
         _model.Reply = "The page says **hello**.";
