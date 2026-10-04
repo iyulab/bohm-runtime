@@ -182,11 +182,13 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
     public bool Start(string model)
     {
         if (local.Fixed) throw new InvalidOperationException("The model was set when the runtime was started.");
+        // The catalog's name, so progress reads as the model the person chose, not its id.
+        var name = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase))?.Name;
         Running running;
         lock (_lock)
         {
             if (_running is { Ended: false }) return false;
-            running = _running = new Running(model);
+            running = _running = new Running(model, name);
         }
 
         egress.Sent(_source.Host);
@@ -229,7 +231,7 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
         }
     }
 
-    private sealed class Running(string model) : IProgress<ModelDownloadProgress>
+    private sealed class Running(string model, string? name) : IProgress<ModelDownloadProgress>
     {
         private ModelDownloadProgress _progress = new(0, null);
         private string? _failure;
@@ -244,7 +246,7 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
 
         public void Fail(string failure) => _failure = failure;
 
-        public DownloadView View() => new(model, _progress.Bytes, _progress.Total, _failure);
+        public DownloadView View() => new(model, name, _progress.Bytes, _progress.Total, _failure);
     }
 
     /// <param name="Downloaded">Whether it is on this computer already — getting it again takes no download.</param>
@@ -259,9 +261,10 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
         public const string Unreachable = "unreachable";
     }
 
+    /// <param name="Name">The catalog's name for it, or <see langword="null"/> for a repository the catalog does not know.</param>
     /// <param name="Failure">Why it ended without the model — <see cref="Stopped"/>, <see cref="NotFound"/>, <see cref="Unreachable"/>,
     /// <see cref="Disk"/> or <see cref="Other"/> — or <see langword="null"/> while it is under way.</param>
-    internal sealed record DownloadView(string Model, long Bytes, long? Total, string? Failure)
+    internal sealed record DownloadView(string Model, string? Name, long Bytes, long? Total, string? Failure)
     {
         public const string Stopped = "stopped";
         public const string NotFound = "not-found";

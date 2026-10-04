@@ -55,7 +55,8 @@ public sealed class ModelDownloadsTests : IDisposable
         using (var started = await DownloadAsync(host, "large"))
         {
             HttpAssert.Status(HttpStatusCode.Accepted, started);
-            Assert.Equal("large", JsonDocument.Parse(await started.Content.ReadAsStringAsync()).RootElement.GetProperty("download").GetProperty("model").GetString());
+            var download = JsonDocument.Parse(await started.Content.ReadAsStringAsync()).RootElement.GetProperty("download");
+            Assert.Equal(("large", "Large"), (download.GetProperty("model").GetString(), download.GetProperty("name").GetString())); // progress reads as the catalog's name
         }
 
         await host.Services.GetRequiredService<ModelDownloads>().Settled;
