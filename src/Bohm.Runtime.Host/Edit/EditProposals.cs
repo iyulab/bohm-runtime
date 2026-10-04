@@ -55,8 +55,13 @@ internal static partial class EditProposals
     /// <summary>Lines of source shown on each side of the element.</summary>
     public const int ContextLines = 40;
 
-    /// <summary>The most tokens of source shown whole to a provider's model whose context window nobody gave.</summary>
-    public const int WholeSourceTokens = 24_000;
+    /// <summary>
+    /// The most tokens of source shown whole to a provider's model whose context window nobody gave. Set high on
+    /// purpose: too high costs one quick refusal (a server counts the prompt before it writes) and the part around the
+    /// element is asked for instead; too low costs the proposal itself — given the part, a model reads the rest a round
+    /// at a time and runs out of rounds (an 80 KB application read in five rounds, its change cut short — 24 000 before).
+    /// </summary>
+    public const int WholeSourceTokens = 48_000;
 
     /// <summary>How many rounds of tool calls one proposal may take.</summary>
     public const int MaxRounds = 8;

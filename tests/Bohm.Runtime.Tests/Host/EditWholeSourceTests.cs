@@ -54,6 +54,7 @@ public sealed class EditWholeSourceTests
 
     [Theory]
     [InlineData(false, null, 3_000, true)]    // a provider's model, window unknown, a small source
+    [InlineData(false, null, 90_000, true)]   // window unknown, an 80 KB app — read whole anyway, a round at a time, when given only the part (cycle-586)
     [InlineData(false, null, 200_000, false)] // too large to show whole without knowing the window
     [InlineData(false, 8_192, 30_000, false)] // more than half of a known window
     [InlineData(false, 131_072, 100_000, true)]
