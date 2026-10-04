@@ -41,6 +41,15 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
         Assert.Equal(2, books.GetProperty("records").GetInt32());
         Assert.Equal(["id", "title", "isbn"], books.GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("name").GetString()));
         Assert.Empty(imports.GetProperty("imports").EnumerateArray());
+        Assert.Empty(imports.GetProperty("fileTypes").EnumerateArray()); // the page has no file input of its own
+    }
+
+    [Fact]
+    public async Task The_file_kinds_an_application_takes_in_itself_are_told()
+    {
+        var app = await _host.AdoptAsync("""<!doctype html><title>Ledger</title><input type="file" accept=".csv,.xlsx" hidden><script>localStorage.setItem("tx", "[]");</script>""");
+        var imports = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{app}/imports")).RootElement;
+        Assert.Equal([".csv", ".xlsx"], imports.GetProperty("fileTypes").EnumerateArray().Select(t => t.GetString()));
     }
 
     [Fact]
