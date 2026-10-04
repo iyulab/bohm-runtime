@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Bohm.Runtime.Host;
 using Bohm.Runtime.Host.Edit;
 using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Host.Promotion;
@@ -176,6 +177,76 @@ public sealed class AppProposalTests
         public void Dispose()
         {
         }
+    }
+
+    private static readonly AppRequest Instruction = new("A reading log for the books I borrow", null, "en", null);
+
+    private const string LogHtml = """
+        <!doctype html><title>Reading log</title><ul id="books"></ul>
+        <script>
+        const books = JSON.parse(localStorage.getItem('books') || '[]');
+        for (const b of books) { const li = document.createElement('li'); li.textContent = b.title; document.getElementById('books').append(li); }
+        </script>
+        """;
+
+    [Fact]
+    public async Task What_the_person_asked_alone_becomes_an_application_that_reads_no_source()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(Propose("c1", Array.Empty<object>(), LogHtml, "Reading log"));
+        model.Script.Enqueue(new TextContent("A log of borrowed books, kept on this computer."));
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Reading log", proposal.Title);
+        Assert.Equal(LogHtml, proposal.Html);
+        Assert.Empty(proposal.Sources);
+        Assert.Empty(proposal.Refused);
+        var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
+        Assert.Contains(AppFacts.HowItRuns, system, StringComparison.Ordinal);   // the same facts a change is held to
+        var prompt = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
+        Assert.Contains("A reading log for the books I borrow", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("page-tables", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_application_from_an_instruction_may_put_markup_on_the_page_it_wrote_itself()
+    {
+        const string html = "<!doctype html><div id=\"app\"></div><script>document.getElementById('app').innerHTML = '<h1>Books</h1>';</script>";
+        var model = new FakeChatModel();
+        model.Script.Enqueue(Propose("c1", Array.Empty<object>(), html, "Books"));
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+
+        Assert.Equal(html, proposal.Html);   // no page values reach it — the innerHTML rule is about those
+    }
+
+    [Theory]
+    [InlineData("<script>fetch('/__bohm/sources/books')</script>", "books")]
+    [InlineData("<script src=\"https://cdn.example.com/x.js\"></script>", "cdn.example.com")]
+    public async Task An_application_from_an_instruction_that_reads_a_source_or_loads_code_from_elsewhere_is_sent_back(string html, string reason)
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(Propose("c1", Array.Empty<object>(), html, "Books"));
+        model.Script.Enqueue(Propose("c2", Array.Empty<object>(), LogHtml, "Reading log"));
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+
+        Assert.Equal(LogHtml, proposal.Html);
+        Assert.Contains(reason, Assert.Single(proposal.Refused), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_application_from_an_instruction_that_declares_a_source_is_sent_back()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(Propose("c1", PricesFrom(1, "Item"), LogHtml, "Reading log"));
+        model.Script.Enqueue(Propose("c2", Array.Empty<object>(), LogHtml, "Reading log"));
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+
+        Assert.Empty(proposal.Sources);
+        Assert.Contains("no web pages", Assert.Single(proposal.Refused), StringComparison.Ordinal);
     }
 
     [Fact]

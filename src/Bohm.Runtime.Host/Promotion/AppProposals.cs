@@ -19,8 +19,16 @@ internal sealed record TableCandidate(string Selector, IReadOnlyList<string> Hea
 /// <summary>A page the answer was read from, and the tables on it.</summary>
 internal sealed record PageTables(string Url, string? Title, IReadOnlyList<TableCandidate> Tables);
 
-/// <summary>What to make an application of: the question, the answer the person was given, its language and the tables of the pages behind it.</summary>
-internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables> Pages);
+/// <summary>
+/// What to make an application of: what the person asked, the answer they were given, its language and
+/// the tables of the pages behind it. With no pages, the request is the application itself — what the
+/// person asked for, made from nothing.
+/// </summary>
+internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables>? Pages)
+{
+    /// <summary>Whether the application is made from what the person asked alone, with no page to read again.</summary>
+    public bool FromInstruction => Pages is not { Count: > 0 };
+}
 
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
@@ -29,10 +37,12 @@ internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused);
 
 /// <summary>
-/// Turns an answer into a proposed application that reads the same tables again: the model picks, by
-/// number, a table of a page and the columns to keep, and writes the application's HTML; the runtime
-/// makes the rules and checks the application before accepting it. Reading again later uses the rules
-/// alone — no model (see <see cref="AppSources"/>).
+/// Proposes a new application. From what the person asked alone, the model writes the application the
+/// way every application here runs (<see cref="AppFacts"/>). From an answer and the pages behind it, the
+/// application reads the same tables again: the model picks, by number, a table of a page and the
+/// columns to keep, and writes the application's HTML; the runtime makes the rules and checks the
+/// application before accepting it. Reading again later uses the rules alone — no model (see
+/// <see cref="AppSources"/>).
 /// </summary>
 /// <remarks>
 /// The model picks numbers and header names shown to it, never selectors, so what it picks is only ever
@@ -84,6 +94,28 @@ internal static partial class AppProposals
         follow. Finish with one sentence saying what the application shows.
         """;
 
+    private const string InstructionPrompt = """
+        You write the small web application the person asks for: a tool they will keep using on their
+        own computer, with their own data, long after today.
+
+        Call propose_app once with:
+        - title: a short name for the application, in the person's language.
+        - sources: an empty list — there are no web pages for it to read.
+        - html: the whole application as one HTML file.
+
+        Make it work on its own from the first time it opens: all script and style written in the file,
+        its data kept in localStorage under keys named after what they hold and read back when it opens,
+        so nothing the person entered is lost when it is closed. When there is nothing yet, say what to
+        do first. Put what people type on the page with textContent, not innerHTML. Call an AI only when
+        what they asked for needs one.
+
+        If a proposal is refused, the reason comes back; correct it and call propose_app again. Finish
+        with one sentence saying what the application does.
+
+        How the application runs:
+
+        """ + AppFacts.HowItRuns;
+
     /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
     public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken)
     {
@@ -105,7 +137,7 @@ internal static partial class AppProposals
                 return "Accepted.";
             },
             "propose_app",
-            "Proposes the application: its title, the tables it reads (by page and table number, with the header names of the columns to keep) and its whole HTML.");
+            "Proposes the application: its title, the tables it reads, if any (by page and table number, with the header names of the columns to keep), and its whole HTML.");
 
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
         var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
@@ -119,7 +151,8 @@ internal static partial class AppProposals
             })
             .Build();
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
-        var response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt })
+        var system = request.FromInstruction ? InstructionPrompt : SystemPrompt;
+        var response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system })
             .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
         // is asked. That answer taught it does, so the same request goes once more, asked to think briefly —
@@ -127,7 +160,7 @@ internal static partial class AppProposals
         if (accepted is null && refusals.Count == 0 && response.StopReason == TurnStopReason.OutputLimit
             && !knewItThinks && ModelLimits.Of(model, limits).Reasoning == true)
         {
-            response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = SystemPrompt })
+            response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system })
                 .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
@@ -156,15 +189,20 @@ internal static partial class AppProposals
         var proposed = new List<ProposedSource>();
         if (string.IsNullOrWhiteSpace(title)) problems.Add("The title is empty.");
         if (string.IsNullOrWhiteSpace(html)) problems.Add("The html is empty.");
-        if (choices is not { Length: > 0 }) problems.Add("No source is declared; the application must read at least one table.");
+        var pages = request.Pages ?? [];
+        if (request.FromInstruction)
+        {
+            if (choices is { Length: > 0 }) problems.Add("There are no web pages to read; declare no source.");
+        }
+        else if (choices is not { Length: > 0 }) problems.Add("No source is declared; the application must read at least one table.");
 
-        foreach (var choice in choices ?? [])
+        foreach (var choice in request.FromInstruction ? [] : choices ?? [])
         {
             var name = choice.Name ?? "";
             if (!AppSources.IsValidName(name)) { problems.Add($"'{name}' cannot name a source: use lowercase letters, digits and hyphens."); continue; }
             if (proposed.Any(p => p.Name == name)) { problems.Add($"Source '{name}' is declared twice."); continue; }
-            if (choice.Page < 1 || choice.Page > request.Pages.Count) { problems.Add($"Source '{name}': there is no page {choice.Page}."); continue; }
-            var page = request.Pages[choice.Page - 1];
+            if (choice.Page < 1 || choice.Page > pages.Count) { problems.Add($"Source '{name}': there is no page {choice.Page}."); continue; }
+            var page = pages[choice.Page - 1];
             if (choice.Table < 1 || choice.Table > page.Tables.Count) { problems.Add($"Source '{name}': page {choice.Page} has no table {choice.Table}."); continue; }
             var table = page.Tables[choice.Table - 1];
             var columns = new List<string>();
@@ -183,8 +221,13 @@ internal static partial class AppProposals
 
         if (!string.IsNullOrWhiteSpace(html))
         {
-            foreach (Match unsafeCall in UnsafeMarkup().Matches(html))
-                problems.Add($"The application uses {unsafeCall.Value}; page values must reach the page only as text (textContent or createTextNode).");
+            // Page values reach an application only through its sources; one made from an instruction has none.
+            if (!request.FromInstruction)
+            {
+                foreach (Match unsafeCall in UnsafeMarkup().Matches(html))
+                    problems.Add($"The application uses {unsafeCall.Value}; page values must reach the page only as text (textContent or createTextNode).");
+            }
+
             foreach (var host in OtherHosts().Matches(html).Select(m => m.Groups["host"].Value).Distinct(StringComparer.OrdinalIgnoreCase))
                 problems.Add($"The application loads code from {host}, which cannot be reached; write it in the file.");
             var read = SourceReads().Matches(html).Select(m => m.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
@@ -213,10 +256,12 @@ internal static partial class AppProposals
         prompt.Append("The person asked: ").Append(request.Question).Append("\n\n");
         if (!string.IsNullOrWhiteSpace(request.Answer)) prompt.Append("The answer they were given:\n").Append(Truncate(request.Answer, MaxAnswer)).Append("\n\n");
         if (!string.IsNullOrWhiteSpace(request.Lang)) prompt.Append("Write the application's text in the language with code ").Append(request.Lang).Append(".\n\n");
+        if (request.Pages is not { Count: > 0 } pages) return prompt.ToString().TrimEnd();
+
         prompt.Append("<page-tables>\n");
-        for (var p = 0; p < request.Pages.Count; p++)
+        for (var p = 0; p < pages.Count; p++)
         {
-            var page = request.Pages[p];
+            var page = pages[p];
             prompt.Append(CultureInfo.InvariantCulture, $"Page {p + 1}: {page.Title} — {page.Url}\n");
             if (page.Tables.Count == 0) prompt.Append("  (no tables)\n");
             for (var t = 0; t < page.Tables.Count; t++)

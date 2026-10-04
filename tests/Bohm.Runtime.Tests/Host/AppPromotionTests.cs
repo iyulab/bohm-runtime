@@ -102,11 +102,29 @@ public sealed class AppPromotionTests : IAsyncLifetime
         Assert.Empty(AdoptedFolders());
     }
 
+    [Fact]
+    public async Task What_the_person_asked_alone_is_sent_to_the_model_with_no_page_material()
+    {
+        using (var set = await _host.ControlClient().PutAsync("/__control/llm/company-model", Json($$"""{"endpoint":"{{new Uri(_server.Address, "v1/")}}","model":"m"}""")))
+            HttpAssert.Status(HttpStatusCode.OK, set);
+
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/proposals", Json("""{"question":"A reading log for the books I borrow","lang":"en"}"""));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);   // the fake server answers with text, not a proposal
+        var asked = Assert.Single(_server.Asked).Body;
+        Assert.Contains("A reading log for the books I borrow", asked, StringComparison.Ordinal);
+        Assert.Contains("propose_app", asked, StringComparison.Ordinal);
+        Assert.DoesNotContain("page-tables", asked, StringComparison.Ordinal);
+        Assert.Empty(AdoptedFolders());
+    }
+
     [Theory]
-    [InlineData("""{"question":"q","pages":[]}""")]
+    [InlineData("""{"pages":[]}""")]
+    [InlineData("""{"question":"  "}""")]
+    [InlineData("""{"question":"q","pages":[{"url":"https://a.example/"}]}""")]
     [InlineData("""{"pages":[{"url":"https://a.example/","tables":[]}]}""")]
     [InlineData("not json")]
-    public async Task A_request_without_a_question_or_a_page_is_refused(string body)
+    public async Task A_request_without_a_question_or_with_a_page_missing_its_tables_is_refused(string body)
     {
         using var response = await _host.ControlClient().PostAsync("/__control/apps/proposals", Json(body));
 
@@ -167,11 +185,25 @@ public sealed class AppPromotionTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData("""{"html":"<p>x</p>","sources":[],"readings":{}}""")]
+    [InlineData("""{"html":"<!doctype html><title>Log</title><ul id=\"l\"></ul>","title":"Reading log"}""")]
+    [InlineData("""{"html":"<!doctype html><title>Log</title><ul id=\"l\"></ul>","title":"Reading log","sources":[],"readings":{}}""")]
+    public async Task An_application_made_from_an_instruction_is_taken_in_with_no_source(string body)
+    {
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/promotions", Json(body));
+
+        HttpAssert.Status(HttpStatusCode.Created, response);
+        var id = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+        Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/sources")).RootElement.EnumerateArray());
+        Assert.Contains("\"title\":\"Reading log\"", await _host.ControlClient().GetStringAsync("/__control/apps"), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{"html":"","sources":[],"readings":{}}""")]
+    [InlineData("""{"html":"<p>x</p>","readings":{"stock":{"source":"https://shop.example/items","columns":["Item"],"rows":[]}}}""")]
     [InlineData("""{"sources":[{"name":"prices","rule":{"site":"https://shop.example/items","selector":"#prices","columns":["Item"]}}],"readings":{}}""")]
     [InlineData("""{"html":"<p>x</p>","sources":[{"name":"Bad Name","rule":{"site":"https://shop.example/items","selector":"#prices","columns":["Item"]}}],"readings":{}}""")]
     [InlineData("""{"html":"<p>x</p>","sources":[{"name":"prices","rule":{"site":"https://shop.example/items","selector":"#prices","columns":["Item"]}}],"readings":{"stock":{"source":"https://shop.example/items","columns":["Item"],"rows":[]}}}""")]
-    public async Task A_promotion_without_code_or_sources_or_with_rows_for_no_source_is_refused(string body)
+    public async Task A_promotion_without_code_or_with_a_bad_source_or_rows_for_no_source_is_refused(string body)
     {
         using var response = await _host.ControlClient().PostAsync("/__control/apps/promotions", Json(body));
 

@@ -9,9 +9,10 @@ using Bohm.Runtime.Sources;
 namespace Bohm.Runtime.Host.Promotion;
 
 /// <summary>
-/// Making an application of an answer, for the control API: <c>POST /__control/apps/proposals</c> (a proposal),
-/// <c>POST /__control/previews</c> (a look at it with the rows just read) and <c>POST /__control/apps/promotions</c>
-/// (taking it in). Nothing is kept before the last — taking it in is the person's permission to read its sources.
+/// Making a new application — from what the person asked, or from an answer and the pages behind it — for the
+/// control API: <c>POST /__control/apps/proposals</c> (a proposal), <c>POST /__control/previews</c> (a look at it
+/// with the rows just read) and <c>POST /__control/apps/promotions</c> (taking it in). Nothing is kept before the
+/// last — taking it in is the person's permission to read its sources, if it has any.
 /// </summary>
 internal static class PromotionEndpoints
 {
@@ -23,8 +24,7 @@ internal static class PromotionEndpoints
         var response = context.Response;
         if (await ReadAsync(context.Request, PromotionJson.Default.AppRequest, cancel).ConfigureAwait(false) is not { } request
             || string.IsNullOrWhiteSpace(request.Question)
-            || request.Pages is not { Count: > 0 }
-            || request.Pages.Any(p => p is null || string.IsNullOrWhiteSpace(p.Url) || p.Tables is null || p.Tables.Any(t => t is null || t.Headers is null || t.Preview is null)))
+            || (request.Pages ?? []).Any(p => p is null || string.IsNullOrWhiteSpace(p.Url) || p.Tables is null || p.Tables.Any(t => t is null || t.Headers is null || t.Preview is null)))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -89,11 +89,14 @@ internal static class PromotionEndpoints
     {
         var response = context.Response;
         var request = await ReadAsync(context.Request, PromotionJson.Default.PromotionRequest, cancel).ConfigureAwait(false);
-        if (request is not { Html: { Length: > 0 } html, Sources: { Count: > 0 } sources } || !Valid(request))
+        // An application made from an instruction alone reads no source: its sources are none, not missing.
+        if (request is not { Html: { Length: > 0 } html } || !Valid(request))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return null;
         }
+
+        var sources = request.Sources ?? [];
 
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
         var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes(html), title: string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(), cancellationToken: cancel).ConfigureAwait(false);
@@ -111,7 +114,7 @@ internal static class PromotionEndpoints
     private static bool Valid(PromotionRequest request)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var source in request.Sources!)
+        foreach (var source in request.Sources ?? [])
         {
             if (source is not { Name: { } name, Rule: { } rule } || !AppSources.IsValidName(name) || !names.Add(name)) return false;
             try
@@ -126,7 +129,7 @@ internal static class PromotionEndpoints
 
         foreach (var (name, reading) in request.Readings ?? new Dictionary<string, ReadingInput?>())
         {
-            var rule = request.Sources!.FirstOrDefault(s => s.Name == name)?.Rule;
+            var rule = request.Sources?.FirstOrDefault(s => s.Name == name)?.Rule;
             if (rule is null || reading is not { Source: { } page, Columns: { } columns, Rows: { } rows } || rows.Any(r => r is null)
                 || AppSources.Check(rule, new SourceGrant(rule.Site, default), page, columns, rows) != RecordOutcome.Recorded)
                 return false;
