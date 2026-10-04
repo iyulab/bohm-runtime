@@ -177,6 +177,43 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_model_that_used_all_its_rounds_before_any_change_says_so()
+    {
+        var id = await _host.AdoptAsync(App);
+        for (var i = 0; i < EditProposals.MaxRounds; i++)
+            _model.Script.Enqueue(new FunctionCallContent("r" + i, "read_source", new Dictionary<string, object?> { ["start_line"] = 1, ["end_line"] = 2 }));
+        _model.Reply = "I still need to read more of it.";
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var failure = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("step-limit", failure.GetProperty("stopped").GetString());
+        Assert.Contains("all its rounds", failure.GetProperty("detail").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Changes_made_before_the_model_used_all_its_rounds_are_proposed_and_say_it_stopped()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "Add Task</button>",
+            ["new_text"] = "Save</button>",
+        }));
+        for (var i = 1; i < EditProposals.MaxRounds; i++)
+            _model.Script.Enqueue(new FunctionCallContent("r" + i, "read_source", new Dictionary<string, object?> { ["start_line"] = 1, ["end_line"] = 2 }));
+        _model.Reply = "I changed the button and was looking for more.";
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+        Assert.Equal("step-limit", proposal.GetProperty("stopped").GetString());
+    }
+
+    [Fact]
     public async Task A_finished_proposal_does_not_say_it_stopped()
     {
         var id = await _host.AdoptAsync(App);

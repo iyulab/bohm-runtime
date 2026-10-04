@@ -31,7 +31,7 @@ internal sealed record SourceEdit(string Old, string New);
 /// change the person asked for, which has no such test.
 /// </param>
 /// <param name="Left">For a named fix that did not finish, what is left — so the person, and a measurement, can see why.</param>
-/// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, otherwise <see langword="null"/>.</param>
+/// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, <c>step-limit</c> when it used all its rounds, otherwise <see langword="null"/>.</param>
 internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null);
 
 /// <summary>What a storage move left: lines that still load or call the online database, and names still used whose declaration it removed.</summary>
@@ -194,14 +194,20 @@ internal static partial class EditProposals
     }
 
     /// <summary>
-    /// A proposal with no change because the answer ran out of room is a failure with that reason —
-    /// not «the model suggested nothing», which would send the person to reword a request the model
-    /// never finished answering.
+    /// A proposal with no change because the answer ran out of room, or the model ran out of rounds, is a
+    /// failure with that reason — not «the model suggested nothing», which would send the person to reword
+    /// a request the model never finished answering.
     /// </summary>
     private static void StoppedBeforeAnyChange(EditProposal proposal)
     {
-        if (proposal.Edits.Count == 0 && proposal.Stopped == ProposalFailedException.OutputLimit)
-            throw new ProposalFailedException("The model's answer reached its length limit before it proposed a change.", ProposalFailedException.OutputLimit);
+        if (proposal.Edits.Count > 0) return;
+        switch (proposal.Stopped)
+        {
+            case ProposalFailedException.OutputLimit:
+                throw new ProposalFailedException("The model's answer reached its length limit before it proposed a change.", ProposalFailedException.OutputLimit);
+            case ProposalFailedException.StepLimit:
+                throw new ProposalFailedException("The model used all its rounds before it proposed a change.", ProposalFailedException.StepLimit);
+        }
     }
 
     /// <summary>
@@ -470,7 +476,7 @@ internal static partial class EditProposals
 
         var response = await loop.RunAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
-            Stopped: response.StopReason == TurnStopReason.OutputLimit ? ProposalFailedException.OutputLimit : null);
+            Stopped: ProposalFailedException.StoppedBy(response.StopReason));
     }
 
     private static string Prompt(string[] lines, EditTarget target, string instruction)
