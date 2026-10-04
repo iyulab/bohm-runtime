@@ -117,7 +117,8 @@ internal static partial class AppProposals
         """ + AppFacts.HowItRuns;
 
     /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
-    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken)
+    /// <param name="appAi">For an application made from an instruction, which AI answers its calls here (<see cref="AppAi"/>) — said to the model as one more line of how it runs.</param>
+    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null)
     {
         AppProposal? accepted = null;
         var refusals = new List<string>();
@@ -151,7 +152,7 @@ internal static partial class AppProposals
             })
             .Build();
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
-        var system = request.FromInstruction ? InstructionPrompt : SystemPrompt;
+        var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;
         var response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system })
             .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it

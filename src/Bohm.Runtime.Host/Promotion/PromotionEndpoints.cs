@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Adoption;
 using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Sources;
@@ -54,7 +55,10 @@ internal static class PromotionEndpoints
         AppProposal proposal;
         try
         {
-            proposal = await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false);
+            var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
+            var keyless = context.RequestServices.GetRequiredService<CompanyModel>().Configured || context.RequestServices.GetRequiredService<LocalModel>().Configured;
+            proposal = await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
+                request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen) : null).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
