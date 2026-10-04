@@ -237,7 +237,7 @@ internal static class LlmProxy
 
         try
         {
-            await bridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
+            await bridge.AnswerAsync(context, new JsonModeChatClient(model), parsed).ConfigureAwait(false);
         }
         catch (Exception e) when (!context.RequestAborted.IsCancellationRequested && !context.Response.HasStarted)
         {
@@ -259,7 +259,7 @@ internal static class LlmProxy
         if (await ParseAsync(context, provider, bridge, path).ConfigureAwait(false) is not { } parsed) return;
         try
         {
-            await bridge.AnswerAsync(context, model, parsed).ConfigureAwait(false);
+            await bridge.AnswerAsync(context, new JsonModeChatClient(model), parsed).ConfigureAwait(false);
         }
         catch (Exception e) when (!context.RequestAborted.IsCancellationRequested && !context.Response.HasStarted)
         {
