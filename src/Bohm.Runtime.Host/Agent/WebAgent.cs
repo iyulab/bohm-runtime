@@ -72,6 +72,10 @@ internal static class WebAgent
         click, do not try another way to do the same thing; say what you did not do.
         Refs (e1, e2, ...) and tab ids are for your tool calls only: never write them in your answer;
         name an element by its label or the text on it instead.
+        When the person asks you to make an app, a tool or a tracker from the pages, do not look for a way to
+        build it on a page: answer with what it would show from the pages you read (for example the rows gathered
+        and how changes would be marked). Under your answer the browser offers Save as app, which turns it into
+        an app that reads those pages again.
         """;
 
     /// <summary>
