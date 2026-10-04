@@ -322,6 +322,59 @@ internal sealed class CompanyModel : IDisposable
     }
 
     /// <summary>
+    /// The models a server serves — at <paramref name="endpoint"/>, or the server in use when that is
+    /// <see langword="null"/> — so the person picks a model's name instead of typing it, with the context
+    /// window the server reports for each (vLLM's <c>max_model_len</c>) when it does. Uses <paramref name="key"/>,
+    /// or, asking the server in use, the connected key. Nothing of an application's goes with it; the
+    /// request still leaves this computer, so it is counted as sent to the server's host.
+    /// </summary>
+    /// <returns><see langword="null"/> when no address was given and no server is set.</returns>
+    public async Task<ModelsResult?> ModelsAsync(Uri? endpoint, string? key, CancellationToken cancellationToken)
+    {
+        var server = endpoint ?? Current?.Endpoint;
+        if (server is null) return null;
+        if (key is null && Current is { } current && current.Endpoint == server) key = Key;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(CheckTimeout);
+        _egress.Sent(server.Authority);
+        try
+        {
+            using var finder = new OpenAICompatibleModelFinder(new OpenAICompatibleConfig { BaseUrl = server.AbsoluteUri, Path = "", ApiKey = key });
+            var cards = await finder.ListModelsAsync(timeout.Token).ConfigureAwait(false);
+            var models = cards
+                .Select(card => new ListedModel(card.ModelId, (card as LanguageModelCard)?.ContextWindow))
+                .Where(model => !string.IsNullOrWhiteSpace(model.Id))
+                .DistinctBy(model => model.Id, StringComparer.Ordinal)
+                .OrderBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return new(CheckResult.Answers, null, models);
+        }
+        catch (System.ClientModel.ClientResultException e) when (e.Status > 0 && !cancellationToken.IsCancellationRequested)
+        {
+            // The server answered with a refusal — the OpenAI wire client says so with the status it gave.
+            var status = e.Status;
+            return new(status is 401 or 403 ? CheckResult.KeyRefused : status == 404 ? CheckResult.NotFound : CheckResult.Refused, status, []);
+        }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return new(CheckResult.Unreachable, null, [], UnreachedOf(e));
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or NotSupportedException && !cancellationToken.IsCancellationRequested)
+        {
+            // Answered, but not with a model list it can read: nothing to pick from; the name is typed.
+            return new(CheckResult.Answers, null, []);
+        }
+    }
+
+    /// <summary>One model a server lists.</summary>
+    /// <param name="Id">The name requests use.</param>
+    /// <param name="ContextWindow">The context window the server reports for it, or <see langword="null"/> when it says none.</param>
+    internal sealed record ListedModel(string Id, int? ContextWindow);
+
+    /// <summary>What <see cref="ModelsAsync"/> found — <see cref="CheckResult"/>'s results, with the models when it <see cref="CheckResult.Answers"/>.</summary>
+    internal sealed record ModelsResult(string Result, int? Status, IReadOnlyList<ListedModel> Models, string? Unreached = null);
+
+    /// <summary>
     /// Why a server was not reached, as far as the failure says — the name does not resolve, nothing
     /// accepts the connection, or no answer came in time — so the person is told what to look at; <see langword="null"/>
     /// when it says none of these. Read from the failure's kind, not its message, which the system words in its own language.

@@ -505,6 +505,77 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal($"Bearer {ServerKey}", Assert.Single(_server.Received).Headers["Authorization"]);
     }
 
+    [Fact]
+    public async Task The_models_of_a_server_not_yet_set_are_listed_by_id_with_the_context_each_reports_and_the_key_given()
+    {
+        await using var host = await RunningHost.StartAsync();
+        _server.Models = """{"object":"list","data":[{"id":"zeta","object":"model","max_model_len":8192},{"id":"Alpha","object":"model"},{"id":"zeta","object":"model"}]}""";
+
+        var listed = await ModelsAsync(host, new { endpoint = new Uri(_server.Address, "v1").AbsoluteUri, key = "listing-key" });
+
+        Assert.Equal("answers", listed.GetProperty("result").GetString());
+        var models = listed.GetProperty("models").EnumerateArray().Select(m => (m.GetProperty("id").GetString(), m.GetProperty("contextWindow").ValueKind == JsonValueKind.Null ? (int?)null : m.GetProperty("contextWindow").GetInt32())).ToList();
+        Assert.Equal([("Alpha", (int?)null), ("zeta", 8192)], models);
+        var request = Assert.Single(_server.Received);
+        Assert.Equal(("GET", "/v1/models"), (request.Method, request.PathAndQuery));
+        Assert.Equal("Bearer listing-key", request.Headers["Authorization"]);
+        // Nothing is set by listing, and the request left this computer.
+        Assert.Equal(JsonValueKind.Null, (await GetAsync(host)).GetProperty("endpoint").ValueKind);
+        var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
+    }
+
+    [Fact]
+    public async Task With_no_address_the_server_in_use_is_listed_and_with_none_set_there_is_nothing_to_list()
+    {
+        await using (var empty = await RunningHost.StartAsync())
+        using (var none = await empty.ControlClient().PostAsync("/__control/llm/company-model/models", null))
+            HttpAssert.Status(HttpStatusCode.NotFound, none);
+
+        await using var host = await StartAsync(fixedAtStart: false);
+        _server.Models = """{"object":"list","data":[{"id":"set-model","object":"model"}]}""";
+        _server.Received.Clear();
+        var listed = await ModelsAsync(host, new { });
+        Assert.Equal("set-model", Assert.Single(listed.GetProperty("models").EnumerateArray()).GetProperty("id").GetString());
+        var asked = Assert.Single(_server.Received);
+        // No key connected: none of the vault's — only the wire client's stand-in for «none» (the same as the server's chat requests).
+        Assert.True(!asked.Headers.TryGetValue("Authorization", out var auth) || auth == "Bearer no-credential-required", auth);
+    }
+
+    [Theory]
+    [InlineData(401, "key-refused")]
+    [InlineData(404, "not-found")]
+    [InlineData(500, "refused")]
+    public async Task Listing_tells_a_refused_key_a_wrong_address_and_other_refusals_apart(int status, string result)
+    {
+        await using var host = await RunningHost.StartAsync();
+        _server.Refusal = (status, """{"error":{"message":"no"}}""");
+        var listed = await ModelsAsync(host, new { endpoint = new Uri(_server.Address, "v1").AbsoluteUri });
+        Assert.Equal(result, listed.GetProperty("result").GetString());
+        Assert.Equal(status, listed.GetProperty("status").GetInt32());
+        Assert.Empty(listed.GetProperty("models").EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData("""{"endpoint":"ftp://example.test/v1"}""")]
+    [InlineData("""{"endpoint":"https://user:pw@example.test/v1"}""")]
+    [InlineData("""not json""")]
+    public async Task Listing_refuses_an_address_it_would_not_set(string body)
+    {
+        await using var host = await RunningHost.StartAsync();
+        using var refused = await host.ControlClient().PostAsync("/__control/llm/company-model/models", new StringContent(body, Encoding.UTF8, "application/json"));
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        Assert.Empty(_server.Received);
+    }
+
+    private static async Task<JsonElement> ModelsAsync(RunningHost host, object body)
+    {
+        using var listed = await host.ControlClient().PostAsync("/__control/llm/company-model/models",
+            new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"));
+        HttpAssert.Status(HttpStatusCode.OK, listed);
+        return JsonDocument.Parse(await listed.Content.ReadAsStringAsync()).RootElement.Clone();
+    }
+
     private static CompanyModelList Listed(string json)
     {
         Assert.True(CompanyModelList.TryParse(json, out var list));

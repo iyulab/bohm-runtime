@@ -77,6 +77,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). 404 when no server is set. Counted as sent to the server's host.</description></item>
+/// <item><term><c>POST /__control/llm/company-model/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed — at <c>{ endpoint?, key? }</c>'s address (the same rules as setting one), or the server in use when none is given (with the connected key when no key is given): <c>{ result, status, models: [{ id, contextWindow }], unreached }</c> — <c>result</c> as for <c>check</c>; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. 400 when the address is not usable, 404 when none is given and no server is set. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
 /// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text } ] }</c>, ending with the question or with the results of the calls the last turn asked for. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the page tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>) for the caller to make and send back; the caller runs them, and asks the person before a click that cannot be taken back. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
@@ -852,6 +853,46 @@ internal static partial class ControlPlane
                 await WriteAsync(response, checkedResult, cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["llm", "company-model", "models"]):
+                Uri? listFrom = null;
+                string? listKey = null;
+                try
+                {
+                    var listBody = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                    if (listBody.Length > 0)
+                    {
+                        using var listQuery = JsonDocument.Parse(listBody);
+                        var at = listQuery.RootElement.TryGetProperty("endpoint", out var given) && given.ValueKind == JsonValueKind.String ? given.GetString() : null;
+                        listKey = listQuery.RootElement.TryGetProperty("key", out var givenKey) && givenKey.ValueKind == JsonValueKind.String && givenKey.GetString() is { Length: > 0 } k ? k.Trim() : null;
+                        if (!string.IsNullOrWhiteSpace(at))
+                        {
+                            // The same rules as setting a server; the model's name is not known yet.
+                            if (!CompanyModelOptions.TryCreate(at, "-", out var asked))
+                            {
+                                response.StatusCode = StatusCodes.Status400BadRequest;
+                                break;
+                            }
+
+                            listFrom = asked!.Endpoint;
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var serverModels = await context.RequestServices.GetRequiredService<CompanyModel>().ModelsAsync(listFrom, listKey, cancel).ConfigureAwait(false);
+                if (serverModels is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, serverModels, cancel).ConfigureAwait(false);
+                break;
+
             case ("PUT" or "DELETE", ["llm", "company-model", "key"]):
                 var companyKeys = context.RequestServices.GetRequiredService<ICredentialVault>();
                 if (request.Method == "DELETE")
@@ -1554,5 +1595,6 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.CheckResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.ModelsResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;
