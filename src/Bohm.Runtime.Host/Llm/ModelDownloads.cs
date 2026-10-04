@@ -39,6 +39,10 @@ public interface IModelSource
     /// <exception cref="KeyNotFoundException">The host has no such model.</exception>
     Task<long> DownloadSizeAsync(string model, CancellationToken cancellationToken);
 
+    /// <summary>The path of the model file (<c>.gguf</c>) of <paramref name="model"/>, which is on this computer already. Read without the network.</summary>
+    /// <exception cref="KeyNotFoundException">It is not on this computer.</exception>
+    Task<string> LocalPathAsync(string model, CancellationToken cancellationToken);
+
     /// <summary>Gets <paramref name="model"/> and returns the path of its model file (<c>.gguf</c>) on this computer.</summary>
     /// <exception cref="KeyNotFoundException">The host has no such model.</exception>
     Task<string> DownloadAsync(string model, IProgress<ModelDownloadProgress> progress, CancellationToken cancellationToken);
@@ -84,6 +88,19 @@ internal sealed class LMSupplyModelSource : IModelSource
         try
         {
             return await LocalGenerator.GetDownloadSizeBytesAsync(model, null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception e) when (Translated(e) is { } translated)
+        {
+            throw translated;
+        }
+    }
+
+    // The same resolution as a download, held to the cache: the file a download would have put there, with no request.
+    public async Task<string> LocalPathAsync(string model, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await LocalGenerator.DownloadModelAsync(model, new GeneratorOptions { DisableAutoDownload = true }, null, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception e) when (Translated(e) is { } translated)
         {
@@ -176,18 +193,31 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
         }
     }
 
-    /// <summary>Starts getting <paramref name="model"/> in the background; when it arrives it is the model in use.</summary>
-    /// <returns><see langword="false"/> when another download is under way.</returns>
+    /// <summary>
+    /// Makes <paramref name="model"/> the model in use: at once when it is on this computer already — nothing to get, so
+    /// nothing is sent and there is no download to show — otherwise by getting it in the background.
+    /// </summary>
     /// <exception cref="InvalidOperationException">The model was set when the runtime was started.</exception>
-    public bool Start(string model)
+    public async Task<Started> StartAsync(string model, CancellationToken cancellationToken)
     {
         if (local.Fixed) throw new InvalidOperationException("The model was set when the runtime was started.");
+        lock (_lock)
+            if (_running is { Ended: false }) return Started.Busy;
+
+        if (_source.IsDownloaded(model) && await LocalPathAsync(model, cancellationToken).ConfigureAwait(false) is { } here)
+        {
+            await local.ChooseAsync(here, cancellationToken).ConfigureAwait(false);
+            lock (_lock)
+                if (_running is { Ended: true }) _running = null; // a download that ended without its model is no longer the last word
+            return Started.InUse;
+        }
+
         // The catalog's name, so progress reads as the model the person chose, not its id.
         var name = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase))?.Name;
         Running running;
         lock (_lock)
         {
-            if (_running is { Ended: false }) return false;
+            if (_running is { Ended: false }) return Started.Busy;
             running = _running = new Running(model, name);
         }
 
@@ -212,8 +242,35 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
                     _ => DownloadView.Other,
                 });
             }
-        });
-        return true;
+        }, CancellationToken.None); // it outlives the request that started it; stopping is what ends it
+        return Started.Downloading;
+    }
+
+    /// <summary>What <see cref="StartAsync"/> did.</summary>
+    internal enum Started
+    {
+        /// <summary>Getting it in the background — <see cref="Current"/> follows it.</summary>
+        Downloading,
+
+        /// <summary>It was on this computer already and is the model in use now.</summary>
+        InUse,
+
+        /// <summary>Nothing: another download is under way.</summary>
+        Busy,
+    }
+
+    // What is on this computer, or null when the cache does not hold the file a download would pick after all — then it is
+    // got like any other.
+    private async Task<string?> LocalPathAsync(string model, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _source.LocalPathAsync(model, cancellationToken).ConfigureAwait(false);
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Stops the download under way, if there is one; the model in use stays as it was.</summary>

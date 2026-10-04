@@ -952,13 +952,10 @@ internal static partial class ControlPlane
                     break;
                 }
 
+                ModelDownloads.Started started;
                 try
                 {
-                    if (!downloads.Start(wanted))
-                    {
-                        response.StatusCode = StatusCodes.Status409Conflict;
-                        break;
-                    }
+                    started = await downloads.StartAsync(wanted, cancel).ConfigureAwait(false);
                 }
                 catch (InvalidOperationException)
                 {
@@ -966,7 +963,14 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                response.StatusCode = StatusCodes.Status202Accepted;
+                if (started == ModelDownloads.Started.Busy)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                // In use at once (200) or being got in the background (202).
+                response.StatusCode = started == ModelDownloads.Started.InUse ? StatusCodes.Status200OK : StatusCodes.Status202Accepted;
                 await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
                 break;
 

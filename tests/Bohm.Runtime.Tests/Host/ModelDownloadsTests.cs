@@ -67,6 +67,23 @@ public sealed class ModelDownloadsTests : IDisposable
     }
 
     [Fact]
+    public async Task A_model_already_here_is_in_use_at_once_with_no_download_and_nothing_sent()
+    {
+        var source = new StandIn(_cache);
+        File.WriteAllText(Path.Combine(_cache, "small.gguf"), "gguf");
+        await using var host = await StartAsync(source);
+
+        using var used = await DownloadAsync(host, "small");
+
+        HttpAssert.Status(HttpStatusCode.OK, used); // done when it answers — not accepted to run in the background
+        var state = JsonDocument.Parse(await used.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(Path.Combine(_cache, "small.gguf"), state.GetProperty("modelPath").GetString());
+        Assert.Equal(JsonValueKind.Null, state.GetProperty("download").ValueKind); // no progress line to show, not even for a moment
+        Assert.Equal(0, source.Fetched);
+        Assert.Empty(Sent(await EgressAsync(host)));
+    }
+
+    [Fact]
     public async Task A_download_can_be_watched_and_stopped_and_one_runs_at_a_time()
     {
         var source = new StandIn(_cache) { Hold = new TaskCompletionSource() };
@@ -134,6 +151,8 @@ public sealed class ModelDownloadsTests : IDisposable
     {
         public int Asked;
 
+        public int Fetched;
+
         public TaskCompletionSource? Hold { get; init; }
 
         public TaskCompletionSource Reported { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -154,8 +173,12 @@ public sealed class ModelDownloadsTests : IDisposable
             return model == "missing" ? throw new KeyNotFoundException(model) : Task.FromResult(model == "small" ? 1_000L : 9_000L);
         }
 
+        public Task<string> LocalPathAsync(string model, CancellationToken cancellationToken) =>
+            Task.FromResult(IsDownloaded(model) ? Path.Combine(cache, model + ".gguf") : throw new KeyNotFoundException(model));
+
         public async Task<string> DownloadAsync(string model, IProgress<ModelDownloadProgress> progress, CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref Fetched);
             if (model == "missing") throw new KeyNotFoundException(model);
             progress.Report(new(4_500, 9_000));
             Reported.TrySetResult();
