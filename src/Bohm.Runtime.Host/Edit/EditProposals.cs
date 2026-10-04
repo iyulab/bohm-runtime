@@ -440,13 +440,14 @@ internal static partial class EditProposals
         var replace = AIFunctionFactory.Create(
             (string old_text, string new_text) =>
             {
-                if (string.IsNullOrEmpty(old_text)) return "old_text is empty; copy an exact piece of the source.";
-                var at = draft.IndexOf(old_text, StringComparison.Ordinal);
-                if (at < 0) return "old_text was not found; copy it exactly from the source, without line numbers.";
-                if (draft.IndexOf(old_text, at + 1, StringComparison.Ordinal) >= 0) return "old_text appears more than once; include more of the text around it.";
-                draft = string.Concat(draft.AsSpan(0, at), new_text, draft.AsSpan(at + old_text.Length));
-                edits.Add(new SourceEdit(old_text, new_text));
-                return "replaced";
+                var done = SourcePiece.Replace(draft, old_text, new_text);
+                if (done.Source is { } changed)
+                {
+                    draft = changed;
+                    edits.Add(new SourceEdit(done.Old!, done.New!)); // what the source held and now holds — not the model's copy of it
+                }
+
+                return done.Message;
             },
             "replace",
             "Replaces one exact piece of the application's source, which must appear exactly once, with new text.");
