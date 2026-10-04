@@ -55,7 +55,7 @@ public sealed class WebAgentTests : IDisposable
     public async Task Asked_to_make_an_app_the_model_is_told_to_answer_and_that_the_answer_can_be_saved_as_one()
     {
         // Without this, a model asked to "make an app that watches this table" looks for a way to build one on
-        // the page, never answers, and the person never sees the Save as app offered under an answer.
+        // the page, never answers, and the person never gets the answer that can be saved as an app.
         _model.Reply = "Rows gathered from both pages.";
         await using var host = await StartWithLocalModelAsync();
 
@@ -64,8 +64,9 @@ public sealed class WebAgentTests : IDisposable
         HttpAssert.Status(HttpStatusCode.OK, response);
         var system = Assert.Single(_model.Calls).Messages[0];
         Assert.Equal(ChatRole.System, system.Role);
-        Assert.Contains("do not look for a way to\nbuild it on a page", system.Text.ReplaceLineEndings("\n"), StringComparison.Ordinal);
-        Assert.Contains("Save as app", system.Text, StringComparison.Ordinal);
+        var prompt = system.Text.ReplaceLineEndings(" ");
+        Assert.Contains("do not look for a way to build it on a page", prompt, StringComparison.Ordinal);
+        Assert.Contains("offers to save such an answer as an app", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
