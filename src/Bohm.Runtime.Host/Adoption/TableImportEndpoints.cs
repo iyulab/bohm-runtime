@@ -42,7 +42,7 @@ internal static class TableImportEndpoints
         var items = app.Storage.GetItems();
         if (await ReadRequestAsync(context, appId, items, cancel).ConfigureAwait(false) is not { } request) return;
         var plan = TableImport.Plan(request.Declaration, request.File, items.GetValueOrDefault(request.Declaration.Collection), request.SameRecord, request.Columns);
-        await WriteAsync(context.Response, PlanView.Of(plan), TableImportJson.Default.PlanView, cancel).ConfigureAwait(false);
+        await WriteAsync(context.Response, PlanView.Of(plan, request.File.CodePage), TableImportJson.Default.PlanView, cancel).ConfigureAwait(false);
     }
 
     public static async Task ImportAsync(HttpContext context, string appId, CancellationToken cancel)
@@ -87,7 +87,9 @@ internal static class TableImportEndpoints
             var root = body.RootElement;
             var file = root.GetProperty("file");
             var name = file.GetProperty("name").GetString() ?? "";
-            var table = TableFile.Read(file.GetProperty("content").GetBytesFromBase64(), name);
+            // Bytes that are not UTF-8 are read in the code page the person chose (`codePage`), else this computer's double-byte one.
+            var legacy = file.TryGetProperty("codePage", out var page) && page.ValueKind == JsonValueKind.Number ? TableFile.StrictLegacy(page.GetInt32()) : LegacyText.OfThisComputer();
+            var table = TableFile.Read(file.GetProperty("content").GetBytesFromBase64(), name, legacy);
 
             var collection = root.GetProperty("collection").GetString();
             var identity = root.TryGetProperty("identity", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
@@ -140,10 +142,11 @@ internal static class TableImportEndpoints
 
     internal sealed record ProblemView(string Problem);
 
+    /// <param name="CodePage">The legacy code page the file was read in — <see langword="null"/> for UTF-8.</param>
     internal sealed record PlanView(IReadOnlyList<ColumnMapping> Columns, IReadOnlyList<string> Unfilled, int Added, int Replaced, int Skipped,
-        IReadOnlyList<InvalidRow> Invalid, IReadOnlyList<JsonObject> Sample, string? Generated)
+        IReadOnlyList<InvalidRow> Invalid, IReadOnlyList<JsonObject> Sample, string? Generated, int? CodePage)
     {
-        public static PlanView Of(ImportPlan plan) => new(plan.Columns, plan.Unfilled, plan.Added, plan.Replaced, plan.Skipped, plan.Invalid, plan.Sample, plan.Generated);
+        public static PlanView Of(ImportPlan plan, int? codePage) => new(plan.Columns, plan.Unfilled, plan.Added, plan.Replaced, plan.Skipped, plan.Invalid, plan.Sample, plan.Generated, codePage);
     }
 }
 
