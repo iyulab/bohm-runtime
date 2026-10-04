@@ -32,7 +32,8 @@ internal static class TableImportEndpoints
             .Select(c => new CollectionView(c.Declaration.Collection, c.Records, [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind))], c.Declaration.Identity))
             .ToList();
         var imports = await catalog.TableImportsAsync(appId, cancel).ConfigureAwait(false);
-        await WriteAsync(context.Response, new ImportsView(collections, imports), TableImportJson.Default.ImportsView, cancel).ConfigureAwait(false);
+        var fileTypes = AppFileInputs.Accepts(System.Text.Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false)));
+        await WriteAsync(context.Response, new ImportsView(collections, imports, fileTypes), TableImportJson.Default.ImportsView, cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, string appId, CancellationToken cancel)
@@ -134,7 +135,8 @@ internal static class TableImportEndpoints
     /// <param name="Identity">The field earlier imports told the same record apart by, or <see langword="null"/>.</param>
     internal sealed record CollectionView(string Collection, int Records, IReadOnlyList<FieldView> Fields, string? Identity);
 
-    internal sealed record ImportsView(IReadOnlyList<CollectionView> Collections, IReadOnlyList<TableImportRecord> Imports);
+    /// <param name="FileTypes">The file extensions the application's own file inputs take (<see cref="AppFileInputs"/>) — a table file of one of them is better taken in by the application itself.</param>
+    internal sealed record ImportsView(IReadOnlyList<CollectionView> Collections, IReadOnlyList<TableImportRecord> Imports, IReadOnlyList<string> FileTypes);
 
     internal sealed record ProblemView(string Problem);
 
