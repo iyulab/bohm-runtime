@@ -276,4 +276,45 @@ public sealed class AppProposalTests
 
         Assert.Contains("I cannot do that.", failure.Message, StringComparison.Ordinal);
     }
+
+    private const string BrokenLog = """
+        <!doctype html><title>Reading log</title><ul id="books"></ul>
+        <script>
+        const books = JSON.parse(localStorage.getItem('books') || '[]');
+        books.forEch(b => { const li = document.createElement('li'); li.textContent = b.title; document.getElementById('books').append(li); });
+        </script>
+        """;
+
+    [Fact]
+    public async Task A_made_application_that_failed_when_opened_is_fixed_from_itself_and_kept_to_the_same_checks()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?> { ["old_text"] = "books.forEch(", ["new_text"] = "books.forEach(" }));
+        model.Script.Enqueue(new TextContent("Fixed the misspelled forEach."));
+        var broken = Instruction with { Broken = new BrokenVersion(BrokenLog, ["Uncaught TypeError: books.forEch is not a function (line 5)"]) };
+
+        var proposal = await AppProposals.FixAsync(model, ModelLimits.Unknown, broken, TestContext.Current.CancellationToken);
+
+        Assert.Equal(BrokenLog.Replace("books.forEch(", "books.forEach(", StringComparison.Ordinal), proposal.Html);
+        Assert.Equal("Reading log", proposal.Title);
+        Assert.Empty(proposal.Sources);
+        Assert.Equal("Fixed the misspelled forEach.", proposal.Summary);
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("books.forEch is not a function (line 5)", asked, StringComparison.Ordinal);
+        Assert.Contains("A reading log for the books I borrow", asked, StringComparison.Ordinal);
+        Assert.Contains("around line 5", asked, StringComparison.Ordinal);   // shown where the error is
+    }
+
+    [Fact]
+    public async Task A_fix_that_would_load_code_from_elsewhere_is_not_kept()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?> { ["old_text"] = "<script>", ["new_text"] = "<script src=\"https://cdn.example.com/fix.js\"></script><script>" }));
+        model.Script.Enqueue(new TextContent("Loaded a helper."));
+        var broken = Instruction with { Broken = new BrokenVersion(BrokenLog, ["Uncaught TypeError: books.forEch is not a function (line 5)"]) };
+
+        var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.FixAsync(model, ModelLimits.Unknown, broken, TestContext.Current.CancellationToken));
+
+        Assert.Contains("cdn.example.com", failure.Message, StringComparison.Ordinal);
+    }
 }

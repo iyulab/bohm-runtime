@@ -517,6 +517,18 @@ public sealed class EditProposalTests : IAsyncLifetime
         Assert.Empty(_model.Calls);
     }
 
+    [Theory]
+    [InlineData("""{"question": "A log", "broken": {"html": "<p>x</p>", "problems": []}}""")]
+    [InlineData("""{"question": "A log", "broken": {"html": " ", "problems": ["e"]}}""")]
+    [InlineData("""{"question": "Prices", "pages": [{"url": "https://shop.example/", "tables": [{"selector": "#t", "headers": ["A"], "rows": 1, "preview": [["1"]]}]}], "broken": {"html": "<p>x</p>", "problems": ["e"]}}""")]
+    public async Task A_new_application_is_fixed_only_when_made_from_what_was_asked_and_with_its_html_and_a_problem(string body)
+    {
+        using var response = await _host.ControlClient().PostAsync("/__control/apps/proposals", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+        Assert.Empty(_model.Calls);
+    }
+
     private Task<HttpResponseMessage> ProposeAsync(string id, string html, string? text, string instruction) =>
         _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(
             JsonSerializer.Serialize(new Dictionary<string, object?> { ["instruction"] = instruction, ["target"] = new Dictionary<string, string?> { ["html"] = html, ["text"] = text } }),

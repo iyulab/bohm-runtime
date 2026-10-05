@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -24,11 +25,17 @@ internal sealed record PageTables(string Url, string? Title, IReadOnlyList<Table
 /// the tables of the pages behind it. With no pages, the request is the application itself — what the
 /// person asked for, made from nothing.
 /// </summary>
-internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables>? Pages)
+internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables>? Pages, BrokenVersion? Broken = null)
 {
     /// <summary>Whether the application is made from what the person asked alone, with no page to read again.</summary>
     public bool FromInstruction => Pages is not { Count: > 0 };
 }
+
+/// <summary>
+/// The earlier proposal for a request, which failed when the shell opened it: its HTML, and what went wrong
+/// (errors with lines as in that HTML).
+/// </summary>
+internal sealed record BrokenVersion(string Html, IReadOnlyList<string> Problems);
 
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
@@ -192,6 +199,27 @@ internal static partial class AppProposals
         [property: JsonPropertyName("table")] int Table,
         [property: JsonPropertyName("columns")] string[]? Columns);
 
+    /// <summary>
+    /// An application made from what the person asked, whose proposal failed when the shell opened it
+    /// (<see cref="AppRequest.Broken"/>): fixed from that version with exact replacements, as a change to an
+    /// application is, the model shown the part around the first error and told the errors — rather than
+    /// written again. The fixed version is held to the same checks as a made one.
+    /// </summary>
+    public static async Task<AppProposal> FixAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken)
+    {
+        var broken = request.Broken ?? throw new ArgumentException("No broken version to fix.", nameof(request));
+        var lines = broken.Html.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var at = broken.Problems.Select(p => ErrorLine().Match(p)).Where(m => m.Success)
+            .Select(m => int.Parse(m.Groups["line"].Value, CultureInfo.InvariantCulture)).FirstOrDefault(n => n >= 1 && n <= lines.Length);
+        var near = at > 0 && lines[at - 1].Trim() is { Length: > 0 } line ? line : "<body>";
+        var fixedVersion = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, broken.Html, new Edit.EditTarget(near, null),
+            request.Question, broken.Problems, cancellationToken).ConfigureAwait(false);
+        var title = TitleOf().Match(fixedVersion.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
+        var (problems, _) = Check(request with { Broken = null }, title, null, fixedVersion.Html);
+        if (problems.Count > 0) throw new Edit.ProposalFailedException("The fixed version cannot be kept: " + string.Join(" ", problems));
+        return new AppProposal(title, fixedVersion.Html, [], fixedVersion.Summary, []);
+    }
+
     private static (List<string> Problems, List<ProposedSource> Proposed) Check(AppRequest request, string? title, SourceChoice[]? choices, string? html)
     {
         var problems = new List<string>();
@@ -295,4 +323,11 @@ internal static partial class AppProposals
 
     [GeneratedRegex(@"/__bohm/sources/(?<name>[a-z0-9][a-z0-9-]{0,39})", RegexOptions.CultureInvariant)]
     private static partial Regex SourceReads();
+
+    /// <summary>The line an error names, as the shell writes it: <c>… (line 12)</c>.</summary>
+    [GeneratedRegex(@"\(line (?<line>\d{1,6})\)", RegexOptions.CultureInvariant)]
+    private static partial Regex ErrorLine();
+
+    [GeneratedRegex(@"<title[^>]*>(?<title>[^<]*)</title>", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex TitleOf();
 }

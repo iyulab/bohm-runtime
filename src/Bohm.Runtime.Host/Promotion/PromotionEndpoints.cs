@@ -25,11 +25,18 @@ internal static class PromotionEndpoints
         var response = context.Response;
         if (await ReadAsync(context.Request, PromotionJson.Default.AppRequest, cancel).ConfigureAwait(false) is not { } request
             || string.IsNullOrWhiteSpace(request.Question)
-            || (request.Pages ?? []).Any(p => p is null || string.IsNullOrWhiteSpace(p.Url) || p.Tables is null || p.Tables.Any(t => t is null || t.Headers is null || t.Preview is null)))
+            || (request.Pages ?? []).Any(p => p is null || string.IsNullOrWhiteSpace(p.Url) || p.Tables is null || p.Tables.Any(t => t is null || t.Headers is null || t.Preview is null))
+            // A failed proposal is fixed only for an application made from what was asked — one reading pages is made again.
+            || request.Broken is { } broken && (!request.FromInstruction || string.IsNullOrWhiteSpace(broken.Html) || broken.Problems is null
+                || !broken.Problems.Any(p => !string.IsNullOrWhiteSpace(p))))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
+
+        // The first problems, each cut short — the rest usually follow from them.
+        if (request.Broken is { } told)
+            request = request with { Broken = told with { Problems = [.. told.Problems.Where(p => !string.IsNullOrWhiteSpace(p)).Take(10).Select(p => p.Trim() is { Length: > 500 } t ? t[..500] : p.Trim())] } };
 
         var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
         Edit.ChosenEditModel? model;
@@ -57,8 +64,10 @@ internal static class PromotionEndpoints
         {
             var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
             var keyless = context.RequestServices.GetRequiredService<CompanyModel>().Configured || context.RequestServices.GetRequiredService<LocalModel>().Configured;
-            proposal = await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
-                request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen) : null).ConfigureAwait(false);
+            proposal = request.Broken is not null
+                ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false)
+                : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
+                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen) : null).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
