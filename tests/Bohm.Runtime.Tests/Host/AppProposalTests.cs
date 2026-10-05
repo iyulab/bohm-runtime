@@ -204,6 +204,7 @@ public sealed class AppProposalTests
         Assert.Empty(proposal.Refused);
         var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
         Assert.Contains(AppFacts.HowItRuns, system, StringComparison.Ordinal);   // the same facts a change is held to
+        Assert.Contains("[hidden] { display: none !important; }", system, StringComparison.Ordinal);   // a dialog's display must not show a hidden layer
         var prompt = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
         Assert.Contains("A reading log for the books I borrow", prompt, StringComparison.Ordinal);
         Assert.DoesNotContain("page-tables", prompt, StringComparison.Ordinal);

@@ -22,5 +22,8 @@ internal static class AppFacts
           call instead.
         - Elements written in the markup can be pointed at and changed later; prefer them to elements
           built by script.
+        - An element with the hidden attribute must stay hidden: a style rule that gives it a display
+          (a dialog's display: flex) shows it anyway, and a full-window layer then takes every click.
+          Keep [hidden] { display: none !important; } in the stylesheet.
         """;
 }
