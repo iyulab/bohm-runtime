@@ -205,6 +205,7 @@ public sealed class AppProposalTests
         var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
         Assert.Contains(AppFacts.HowItRuns, system, StringComparison.Ordinal);   // the same facts a change is held to
         Assert.Contains("[hidden] { display: none !important; }", system, StringComparison.Ordinal);   // a dialog's display must not show a hidden layer
+        Assert.Contains("fetch('/__bohm/pages/' + id)", system, StringComparison.Ordinal);   // it can receive the page the person is reading
         var prompt = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
         Assert.Contains("A reading log for the books I borrow", prompt, StringComparison.Ordinal);
         Assert.DoesNotContain("page-tables", prompt, StringComparison.Ordinal);
@@ -275,6 +276,18 @@ public sealed class AppProposalTests
         var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Contains("I cannot do that.", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_share_target_the_facts_show_a_model_is_one_the_runtime_reads()
+    {
+        var link = System.Text.RegularExpressions.Regex.Match(AppFacts.HowItRuns, "<link rel=\"manifest\"[^>]*>").Value;
+
+        var target = Bohm.Runtime.Pages.ShareTarget.Find("<!doctype html><head>" + link + "</head><title>Cards</title>");
+
+        Assert.NotNull(target);   // what the model is told to write is what makes an application receive pages
+        Assert.Equal("title", target.Title);
+        Assert.Equal("url", target.Url);
     }
 
     private const string BrokenLog = """
