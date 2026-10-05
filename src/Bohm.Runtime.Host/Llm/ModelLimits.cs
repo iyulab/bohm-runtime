@@ -52,13 +52,14 @@ public sealed record ModelLimits(int? ContextWindow = null, int? MaxOutputTokens
 /// refuses as too long for its context is tried once more with a smaller answer when that is what
 /// did not fit. The window learned from a refusal is kept for later requests; a window the server
 /// reported (<see cref="Reported"/>) stands until a refusal says otherwise. Thinking in an answer marks
-/// a model nobody described as one that thinks.
+/// a model nobody described as one that thinks, and <paramref name="thinkingLearned"/> is told so once —
+/// for the owner to remember it past this client's life.
 /// </summary>
 /// <remarks>
 /// The refusal arrives as <see cref="ContextOverflowException"/> — the provider turns each server's
 /// own wording into it — so nothing here reads error text.
 /// </remarks>
-internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) : DelegatingChatClient(inner)
+internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, Action? thinkingLearned = null) : DelegatingChatClient(inner)
 {
     /// <summary>An answer smaller than this is not worth a second request.</summary>
     public const int SmallestUsefulAnswer = 256;
@@ -117,7 +118,9 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits) 
     /// </summary>
     private void Saw(IList<AIContent> contents)
     {
-        if (!_seenThinking && contents.Any(c => c is TextReasoningContent { Text.Length: > 0 })) _seenThinking = true;
+        if (_seenThinking || !contents.Any(c => c is TextReasoningContent { Text.Length: > 0 })) return;
+        _seenThinking = true;
+        if (limits.Reasoning is null) thinkingLearned?.Invoke();
     }
 
     public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,

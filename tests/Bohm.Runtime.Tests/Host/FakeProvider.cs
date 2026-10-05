@@ -40,8 +40,16 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>The OpenAI-compatible answer's <c>finish_reason</c> — <c>length</c> as a server ends an answer at its length limit; <see langword="null"/> leaves it out.</summary>
     public string? FinishReason { get; set; }
 
-    /// <summary>The requests received other than for the model list — what was asked of a model.</summary>
-    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)))];
+    /// <summary>The requests received other than for the model list and the question whether the model thinks — what a task asked of a model.</summary>
+    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)) && !IsThinkingQuestion(r))];
+
+    /// <summary>The questions whether the model thinks (<see cref="Bohm.Runtime.Host.Llm.CompanyModel.ThinkingQuestion"/>) received.</summary>
+    public IReadOnlyList<ReceivedRequest> ThinkingQuestions => [.. Received.Where(IsThinkingQuestion)];
+
+    private static bool IsThinkingQuestion(ReceivedRequest r) => r.Body.Contains(Bohm.Runtime.Host.Llm.CompanyModel.ThinkingQuestion, StringComparison.Ordinal);
+
+    /// <summary>Whether the OpenAI-compatible answers carry the model's thinking (<c>reasoning_content</c>), as a model that thinks unasked does.</summary>
+    public bool Thinks { get; set; }
 
     public sealed record ReceivedRequest(string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string Body);
 
@@ -175,7 +183,8 @@ public sealed class FakeProvider : IAsyncDisposable
             context.Response.ContentType = "application/json";
             context.Response.Headers["x-provider-request-id"] = "req-1";
             var finish = self.FinishReason is { } reason ? $",\"finish_reason\":\"{reason}\"" : "";
-            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{Reply}\"}}{finish}}}]}}");
+            var thought = self.Thinks ? ",\"reasoning_content\":\"The person wants one word.\"" : "";
+            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{Reply}\"{thought}}}{finish}}}]}}");
         });
         await app.StartAsync();
         var address = new Uri(app.Urls.First() + "/");
