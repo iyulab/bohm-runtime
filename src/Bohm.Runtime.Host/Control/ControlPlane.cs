@@ -711,7 +711,7 @@ internal static partial class ControlPlane
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count, onlineOnly), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.RecentErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count, onlineOnly), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var assetsFor, "assets"]):
@@ -1242,7 +1242,7 @@ internal static partial class ControlPlane
     /// database the application keeps its data in when it has no local storage of its own — what it
     /// writes there is not kept (<see cref="OnlineStorage"/>).
     /// </summary>
-    internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors,
+    internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors, IReadOnlyList<string> RecentErrors,
         IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, IReadOnlyList<MissingApi> MissingApis, int CachedAssets,
         string? OnlineOnlyStorage);
 

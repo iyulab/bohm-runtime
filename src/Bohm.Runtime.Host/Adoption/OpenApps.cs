@@ -23,11 +23,12 @@ internal sealed record BlockedResource(string Category, string Host);
 /// <param name="Path">The path asked for.</param>
 internal sealed record MissingApi(string Method, string Path);
 
-/// <summary>An adopted application while the host is running: its storage, its usage record, its sources, the pages sent to it and recent load failures.</summary>
+/// <summary>An adopted application while the host is running: its storage, its usage record, its sources, the pages sent to it and recent errors.</summary>
 internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache assets, AppSources sources, AppPages pages)
 {
     private const int KeptLoadErrors = 5;
     private readonly Queue<string> _loadErrors = new();
+    private readonly Queue<string> _errors = new();
     private readonly Lock _lock = new();
     private readonly HashSet<string> _neededKeys = new(StringComparer.Ordinal);
     private readonly List<BlockedResource> _blocked = [];
@@ -47,7 +48,7 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
     public SemaphoreSlim RevisionChange { get; } = new(1, 1);
 
     /// <summary>
-    /// Forgets what was observed about the code that was running — load failures, blocked resources,
+    /// Forgets what was observed about the code that was running — load failures, later errors, blocked resources,
     /// missing files, keys needed — once another revision takes its place. The usage record stays:
     /// it belongs to the application, not to a revision.
     /// </summary>
@@ -56,6 +57,7 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
         lock (_lock)
         {
             _loadErrors.Clear();
+            _errors.Clear();
             _neededKeys.Clear();
             _blocked.Clear();
             _missingFiles.Clear();
@@ -70,6 +72,16 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
     public IReadOnlyList<string> RecentLoadErrors
     {
         get { lock (_lock) return _loadErrors.ToList(); }
+    }
+
+    /// <summary>
+    /// The most recent errors after the application started — thrown by its code (say on a click) or reported by
+    /// it with console.error. Memory only, like <see cref="RecentLoadErrors"/>: a message can quote its data.
+    /// Not counted in the usage record — the application ran; one thing it does went wrong.
+    /// </summary>
+    public IReadOnlyList<string> RecentErrors
+    {
+        get { lock (_lock) return _errors.ToList(); }
     }
 
     /// <summary>Providers this application tried to use while no key was connected.</summary>
@@ -144,6 +156,16 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
         {
             _loadErrors.Enqueue(message.Length > 500 ? message[..500] : message);
             while (_loadErrors.Count > KeptLoadErrors) _loadErrors.Dequeue();
+        }
+    }
+
+    public void AddError(string message)
+    {
+        lock (_lock)
+        {
+            if (_errors.Contains(message)) return;
+            _errors.Enqueue(message.Length > 500 ? message[..500] : message);
+            while (_errors.Count > KeptLoadErrors) _errors.Dequeue();
         }
     }
 }
