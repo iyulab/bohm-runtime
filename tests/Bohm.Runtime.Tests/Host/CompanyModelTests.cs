@@ -126,6 +126,51 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(1024, AnswerBound(proposed.RootElement));
     }
 
+    [Fact]
+    public async Task A_model_that_thinks_unasked_is_found_out_by_one_short_question_before_the_first_long_task_and_remembered_across_launches()
+    {
+        // An administrator's listed server: its limits come from the list, so what is learned is kept apart from the choice.
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-thinks-").FullName;
+        var endpoint = new Uri(_server.Address, "v1/");
+        Func<Bohm.Runtime.Host.RuntimeHostOptions, Bohm.Runtime.Host.RuntimeHostOptions> listed = o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(endpoint, "fixed-model")) };
+        _server.Thinks = true;
+        const string Edit = """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""";
+
+        var first = await RunningHost.StartAsync(dataRoot, configure: listed);
+        var app = await first.AdoptAsync(App);
+        using (var response = await first.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(Edit, Encoding.UTF8, "application/json")))
+            HttpAssert.Status(HttpStatusCode.OK, response);
+        var question = Assert.Single(_server.ThinkingQuestions);
+        Assert.True(AnswerBound(JsonDocument.Parse(question.Body).RootElement) is > 0 and <= 64);
+        Assert.DoesNotContain("Add Task", question.Body, StringComparison.Ordinal); // nothing of the application's goes with it
+        // The question came first, so the task itself already asks the model not to think.
+        Assert.Equal("none", JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.True(File.Exists(Path.Combine(dataRoot, "company-model-learned.json")));
+        await first.StopKeepingDataAsync();
+
+        _server.Received.Clear();
+        await using var second = await RunningHost.StartAsync(dataRoot, configure: listed);
+        using (var response = await second.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(Edit, Encoding.UTF8, "application/json")))
+            HttpAssert.Status(HttpStatusCode.OK, response);
+        Assert.Empty(_server.ThinkingQuestions); // known from the last launch
+        Assert.Equal("none", JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("reasoning_effort").GetString());
+    }
+
+    [Fact]
+    public async Task A_model_whose_short_answer_carries_no_thinking_is_asked_once_and_tasks_go_as_they_are()
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        var app = await host.AdoptAsync(App);
+        for (var i = 0; i < 2; i++)
+            using (var response = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
+                """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+                Encoding.UTF8, "application/json")))
+                HttpAssert.Status(HttpStatusCode.OK, response);
+
+        Assert.Single(_server.ThinkingQuestions); // once per server, model and key — not before every task
+        Assert.All(_server.Asked, request => Assert.False(JsonDocument.Parse(request.Body).RootElement.TryGetProperty("reasoning_effort", out _)));
+    }
+
     /// <summary>The answer bound a Chat Completions request asks for, by either of its names.</summary>
     private static int AnswerBound(JsonElement request) =>
         (request.TryGetProperty("max_completion_tokens", out var bound) || request.TryGetProperty("max_tokens", out bound)) ? bound.GetInt32() : -1;
@@ -312,7 +357,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task By_default_proposals_are_made_by_the_server_ahead_of_the_model_on_this_computer_which_is_first_asked_once_for_the_models_context_window()
+    public async Task By_default_proposals_are_made_by_the_server_ahead_of_the_model_on_this_computer_which_is_first_asked_once_for_the_models_context_window_and_whether_it_thinks()
     {
         await using var host = await StartAsync(fixedAtStart: true, withLocalModel: true);
         _server.Models = """{"object":"list","data":[{"id":"fixed-model","object":"model","max_model_len":8192}]}""";
@@ -326,7 +371,8 @@ public sealed class CompanyModelTests : IAsyncLifetime
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         Assert.Equal("company/fixed-model", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
-        Assert.Equal([("GET", "/v1/models"), ("POST", "/v1/chat/completions")], _server.Received.Select(r => (r.Method, r.PathAndQuery)));
+        Assert.Equal([("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions")], _server.Received.Select(r => (r.Method, r.PathAndQuery)));
+        Assert.Single(_server.ThinkingQuestions);
         Assert.Equal(8192, (await GetAsync(host)).GetProperty("reportedContextWindow").GetInt32());
         Assert.Empty(_local.Calls);
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
