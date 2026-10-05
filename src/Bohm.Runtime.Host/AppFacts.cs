@@ -36,5 +36,9 @@ internal static class AppFacts
         - An element with the hidden attribute must stay hidden: a style rule that gives it a display
           (a dialog's display: flex) shows it anyway, and a full-window layer then takes every click.
           Keep [hidden] { display: none !important; } in the stylesheet.
+        - Its address is an internal one (a long id and a port that changes). When it is printed, the browser
+          writes that address, the date and the title in the page margins unless the stylesheet sets
+          @page { margin: 0 }; anything meant to be printed should set it and give the printed content its
+          own margins.
         """;
 }
