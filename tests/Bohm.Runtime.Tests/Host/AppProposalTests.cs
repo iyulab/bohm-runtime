@@ -279,6 +279,23 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task The_summary_is_the_one_given_with_the_proposal_not_the_closing_that_tells_how_it_got_there()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(Propose("c1", PricesFrom(1, "Item"), LogHtml, "Reading log"));   // refused: no pages to read
+        var call = Propose("c2", Array.Empty<object>(), LogHtml, "Reading log");
+        call.Arguments!["summary"] = "빌린 책을 적어 두는 기록장입니다.";
+        model.Script.Enqueue(call);
+        model.Script.Enqueue(new TextContent("The second proposal was accepted, so I keep it as it is."));
+
+        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+
+        Assert.Equal("빌린 책을 적어 두는 기록장입니다.", proposal.Summary);
+        var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
+        Assert.Contains("Give\npropose_app a summary", system.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_share_target_the_facts_show_a_model_is_one_the_runtime_reads()
     {
         var link = System.Text.RegularExpressions.Regex.Match(AppFacts.HowItRuns, "<link rel=\"manifest\"[^>]*>").Value;
