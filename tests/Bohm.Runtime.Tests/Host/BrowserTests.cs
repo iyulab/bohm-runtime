@@ -337,6 +337,35 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_error_after_the_application_started_is_reported_apart_from_a_failure_to_load()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync("""
+            <!doctype html><title>Clicks</title>
+            <button id="broken">Broken</button><button id="logged">Logged</button>
+            <script>
+            document.getElementById("broken").onclick = () => { missing.total += 1; };
+            document.getElementById("logged").onclick = () => { console.error("Could not save:", new Error("quota")); };
+            </script>
+            """);
+
+        var page = await OpenAsync(id);
+        // Problem reporting counts the first second after load as starting up; a person clicks later than that.
+        await page.WaitForTimeoutAsync(1500);
+        await page.ClickAsync("#broken");
+        await page.ClickAsync("#logged");
+
+        var status = await StatusWhenAsync(id, s => s.GetProperty("recentErrors").GetArrayLength() == 2);
+        var errors = status.GetProperty("recentErrors").EnumerateArray().Select(e => e.GetString()!).ToList();
+        Assert.Contains("missing", errors[0], StringComparison.Ordinal);
+        Assert.EndsWith("(line 4)", errors[0], StringComparison.Ordinal); // as numbered in the adopted file
+        Assert.Equal("Could not save: Error: quota", errors[1]);
+        // It started: nothing is counted or shown as a failure to load.
+        Assert.Equal(0, status.GetProperty("loadErrors").GetInt32());
+        Assert.Equal(0, status.GetProperty("recentLoadErrors").GetArrayLength());
+    }
+
+    [Fact]
     public async Task A_preview_shows_the_error_a_proposed_revision_would_load_with_and_leaves_the_application_alone()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

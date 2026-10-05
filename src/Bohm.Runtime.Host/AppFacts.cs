@@ -28,6 +28,9 @@ internal static class AppFacts
           fetch('/__bohm/pages/' + id), which answers { url, title, text, html, lang, byline } (html is the
           article body, already cleaned), and every page it has received with fetch('/__bohm/pages'). The
           pages are kept for it; keep in localStorage only what it adds, keyed by the page id.
+        - Its errors are collected and shown to the person, who can ask for them to be fixed: an uncaught
+          error, a rejected promise, and anything passed to console.error. Report a failure with
+          console.error instead of swallowing it silently or keeping a log of its own.
         - Elements written in the markup can be pointed at and changed later; prefer them to elements
           built by script.
         - An element with the hidden attribute must stay hidden: a style rule that gives it a display

@@ -207,7 +207,7 @@ internal static class AdoptedAppServing
     }
 
     /// <summary>
-    /// A problem the page reported (an error while loading, or something the policy refused), kept on the
+    /// A problem the page reported (an error while loading or after it, or something the policy refused), kept on the
     /// application to tell the person, when it comes from a page of this application.
     /// </summary>
     private static async Task ReceiveProblemAsync(HttpContext context, string appId)
@@ -223,6 +223,9 @@ internal static class AdoptedAppServing
                 break;
             case PageLoadError error:
                 app.AddLoadError(error.Message);
+                break;
+            case PageError error:
+                app.AddError(error.Message);
                 break;
         }
     }
