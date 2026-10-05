@@ -237,7 +237,7 @@ public sealed class EditProposalTests : IAsyncLifetime
         var model = new ModelFitChatClient(thinking, ModelLimits.Unknown); // nobody said whether it thinks
 
         var proposal = await EditProposals.ProposeAsync(model, onThisComputer: false, ModelLimits.Unknown, App,
-            new EditTarget("""<button onclick="addTask()">Add Task</button>""", "Add Task"), "Change this text to Save", TestContext.Current.CancellationToken);
+            new EditTarget("""<button onclick="addTask()">Add Task</button>""", "Add Task"), "Change this text to Save", null, TestContext.Current.CancellationToken);
 
         Assert.Single(proposal.Edits);
         Assert.Equal([null, ReasoningEffort.None], thinking.Efforts); // the first round as the server likes; after its thinking, none
@@ -469,6 +469,52 @@ public sealed class EditProposalTests : IAsyncLifetime
         Assert.NotEmpty(proposal.GetProperty("edits").EnumerateArray());
         Assert.Contains(">Save</button>", proposal.GetProperty("html").GetString(), StringComparison.Ordinal);
         Assert.Contains("localStorage.setItem('n', '1')", proposal.GetProperty("html").GetString(), StringComparison.Ordinal); // the rest is kept
+    }
+
+    [Fact]
+    public async Task A_proposal_that_failed_when_opened_is_fixed_from_itself_with_the_errors_told_and_the_application_untouched()
+    {
+        var id = await _host.AdoptAsync(App);
+        // The earlier proposal for this request: it added a trip field and broke the script.
+        var broken = App.Replace("<ul id=\"list\"></ul>", "<ul id=\"list\"></ul>\n<input id=\"trip\">", StringComparison.Ordinal)
+            .Replace("function addTask() {", "function addTask() { trip.vaule.trim();", StringComparison.Ordinal);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "trip.vaule.trim();",
+            ["new_text"] = "trip.value.trim();",
+        }));
+        _model.Script.Enqueue(new TextContent("Fixed the misspelled value."));
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["instruction"] = "Add a trip field",
+            ["target"] = new Dictionary<string, string?> { ["html"] = "<ul id=\"list\"></ul>", ["text"] = "" },
+            ["broken"] = new Dictionary<string, object?> { ["html"] = broken, ["problems"] = new List<string> { "TypeError: Cannot read properties of undefined (reading 'trim') (line 5)" } },
+        }), Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(broken.Replace("trip.vaule.trim();", "trip.value.trim();", StringComparison.Ordinal), proposal.GetProperty("html").GetString());
+        var asked = _model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("trip.vaule.trim();", asked, StringComparison.Ordinal);                         // shown the broken version, not the saved one
+        Assert.Contains("Cannot read properties of undefined (reading 'trim') (line 5)", asked, StringComparison.Ordinal);
+        Assert.Contains("Add a trip field", asked, StringComparison.Ordinal);
+        Assert.Equal(App, Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id)));             // nothing applied
+    }
+
+    [Theory]
+    [InlineData("""{"html": "<p>x</p>", "problems": []}""")]
+    [InlineData("""{"html": "", "problems": ["e"]}""")]
+    [InlineData("""{"problems": ["e"]}""")]
+    public async Task A_broken_version_without_its_html_or_without_a_problem_is_refused(string broken)
+    {
+        var id = await _host.AdoptAsync(App);
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(
+            $$"""{"instruction": "Add a trip field", "target": {"html": "<ul id=\"list\"></ul>"}, "broken": {{broken}}}""", Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+        Assert.Empty(_model.Calls);
     }
 
     private Task<HttpResponseMessage> ProposeAsync(string id, string html, string? text, string instruction) =>

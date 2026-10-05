@@ -63,7 +63,7 @@ public sealed class EditWholeSourceTests
         Assert.Equal(whole, EditProposals.ShowsWholeSource(new string('x', characters), characters / 40, onThisComputer, new ModelLimits(window)));
 
     private static Task<EditProposal> ProposeAsync(FakeChatModel model, bool onThisComputer, ModelLimits limits) =>
-        EditProposals.ProposeAsync(model, onThisComputer, limits, Source, new EditTarget("""<button id="go">Go</button>""", "Go"), "Make it bigger", CancellationToken.None);
+        EditProposals.ProposeAsync(model, onThisComputer, limits, Source, new EditTarget("""<button id="go">Go</button>""", "Go"), "Make it bigger", null, CancellationToken.None);
 
     private static string Asked(FakeChatModel model, int call) => model.Calls[call].Messages.Last(m => m.Role == ChatRole.User).Text;
 }

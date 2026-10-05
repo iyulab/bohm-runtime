@@ -146,7 +146,12 @@ internal static partial class EditProposals
     /// way and refuse the ones they do not know, and they answer fast enough for the round limit alone.
     /// </param>
     /// <param name="limits">What is known of the model: one known to think is asked not to, wherever it runs.</param>
-    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, CancellationToken cancellationToken)
+    /// <param name="problems">
+    /// When <paramref name="source"/> is the earlier proposal for this request rather than the saved application: what went
+    /// wrong when it was opened with a copy of the data (errors with lines as in that source) — the model fixes those, keeping
+    /// the change asked for.
+    /// </param>
+    public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, IReadOnlyList<string>? problems, CancellationToken cancellationToken)
     {
         var text = SourceText.Of(source);
         var lines = text.Lf.Split('\n');
@@ -155,13 +160,13 @@ internal static partial class EditProposals
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole), cancellationToken).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false), cancellationToken).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -505,7 +510,7 @@ internal static partial class EditProposals
         return tokens <= (limits.ContextWindow is { } window ? window / 2 : WholeSourceTokens);
     }
 
-    private static string Prompt(string[] lines, EditTarget target, string instruction, bool whole)
+    private static string Prompt(string[] lines, EditTarget target, string instruction, bool whole, IReadOnlyList<string>? problems = null)
     {
         var line = LineOf(lines, target);
         var (from, to) = whole ? (1, lines.Length)
@@ -518,6 +523,13 @@ internal static partial class EditProposals
         prompt.Append(":\n<element>\n").Append(Truncate(target.Html, 2000)).Append("\n</element>\n\n");
         prompt.Append(CultureInfo.InvariantCulture, $"Source lines {from}–{to} of {lines.Length}:\n<app-source>\n").Append(Numbered(lines, from, to)).Append("\n</app-source>\n\n");
         prompt.Append("The person asks: ").Append(instruction);
+        if (problems is { Count: > 0 })
+        {
+            prompt.Append("\n\nThis source already holds your earlier change for that request. Opened once with a copy of the data, it failed:\n");
+            foreach (var problem in problems) prompt.Append("- ").Append(problem).Append('\n');
+            prompt.Append("Find what causes these errors and fix it, keeping the change the person asked for. Change nothing else.");
+        }
+
         return prompt.ToString();
     }
 

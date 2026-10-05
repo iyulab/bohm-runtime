@@ -42,7 +42,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/packages/inspect</c></term><description>Checks the package (<c>.bohm</c>) at the full path in the body exactly as taking it in would — and takes nothing in: <c>{ manifest, alreadyHere, sameCode, sameCodeInUse, compatibility }</c>, so the person can see what the application asks to do before it lands. <c>compatibility</c> lists what in its page will not work as written: <c>online-database</c>, <c>indexeddb</c>, <c>session-storage</c>, <c>cookies</c> (data kept where it does not stay) or <c>outside-data</c> (requests to an outside server other than an AI service). 400 for a path that is not full, or <c>{ reason }</c> as for taking it in.</description></item>
 /// <item><term><c>POST /__control/apps/import</c></term><description>Takes in the exported application folder whose full path is the body, as it is — same identity, data, revisions and usage record — or the package (<c>.bohm</c>) at that path, after checking every file against its manifest. With <c>?as=separate</c> (a package only) the package's application is taken in separately — under a new identity, named as the package names it (numbered when another application has that name), with <c>forkedFrom</c> — so an application already here stays and both are kept. 400 when it is not an application folder, or for a package <c>{ reason }</c> — <c>not-a-package</c>, <c>unknown-format</c>, <c>damaged</c> or <c>too-large</c> (it unpacks to more than the drive has room for); 409 when the application is already here (nothing is replaced) — for a package <c>{ id, sameCode, sameCodeInUse }</c>: whether its code is one of the revisions here, and the one in use.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
-/// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. Answers <c>{ html, summary, edits: [{ old, new }], model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the model's answer reached its length limit after these edits, or <c>step-limit</c> when it used all its rounds of reading and replacing, so they may not be all it meant to make; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit before any change, or <c>step-limit</c> when the model used all its rounds before one.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. With <c>broken: { html, problems: [text, …] }</c> the change starts from that version instead — the earlier proposal for this request, which failed when the shell opened it with a copy of the data — and the model is told the problems (the first ten) to fix them while keeping the change; 400 when it has no HTML or no problem. Answers <c>{ html, summary, edits: [{ old, new }], model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the model's answer reached its length limit after these edits, or <c>step-limit</c> when it used all its rounds of reading and replacing, so they may not be all it meant to make; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit before any change, or <c>step-limit</c> when the model used all its rounds before one.</description></item>
 /// <item><term><c>POST /__control/apps/proposals</c></term><description>Proposes a new application — from what the person asked alone, or from an answer and the tables on the pages behind it: the body is <c>{ question, answer?, lang?, pages?: [{ url, title?, tables: [{ selector, headers, rows, preview }] }] }</c> — the tables as the shell found them; with no pages the application is what the person asked for, reading no source. Answers <c>{ title, html, sources: [{ name, page, rule: { site, selector, columns } }], summary, model, refused: [reason, …] }</c> — <c>refused</c> holds what was sent back to the model before the proposal was kept; nothing is kept. The rules are made from the tables and columns the model chose among those given, and the application is refused unless it reads exactly the sources it declares and puts their values on the page only as text. Made with the model chosen for proposals, but never the one on this computer — 409 <c>{ needs: "largerModel" }</c> — or 409 with what is missing, 503 with why when the model cannot run, stops or proposes nothing usable — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit first.</description></item>
 /// <item><term><c>POST /__control/previews</c></term><description>Holds a proposed new application for a look, from <c>{ html, readings: { name: { source, columns, rows } } }</c>: answers <c>{ token, origin }</c>, served there with no data and each source answering the rows given, for two minutes. Nothing is kept. <c>GET /__control/previews/{token}</c> and <c>DELETE</c> as for an application's previews.</description></item>
 /// <item><term><c>POST /__control/apps/promotions</c></term><description>Takes in a proposed application — <c>{ html, title?, sources?: [{ name, rule }], readings?: { name: { source, columns, rows } } }</c> — with its sources, if any, allowed (taking it in is the person's permission) and the rows read for them kept as the first readings. 201 with the application. Everything is checked first: a bad rule, rows for no source, or rows its source would refuse leave nothing behind (400).</description></item>
@@ -1441,6 +1441,9 @@ internal static partial class ControlPlane
     /// <summary>A piece of the answer's text, as the model wrote it.</summary>
     internal sealed record TurnText(string Text);
 
+    /// <summary>How many of a failed proposal's problems the model is told — the first ones; the rest usually follow from them.</summary>
+    private const int MaxProblemsTold = 10;
+
     /// <summary>A streamed turn the model could not finish — the fields of <see cref="ProposalFailure"/>, with the status a turn line has.</summary>
     internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider);
 
@@ -1458,6 +1461,7 @@ internal static partial class ControlPlane
         // words itself: `{"fix": "local-storage"}` moves an application that keeps its data only online.
         string instruction = "";
         Edit.EditTarget? target = null;
+        List<string>? problems = null;
         var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
         try
         {
@@ -1482,6 +1486,22 @@ internal static partial class ControlPlane
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     return;
+                }
+
+                // The earlier proposal for this request failed when the shell opened it with a copy of the data:
+                // fixed from that version, with what went wrong told, rather than made again from the saved one.
+                if (root.TryGetProperty("broken", out var broken))
+                {
+                    var html = broken.GetProperty("html").GetString();
+                    problems = broken.GetProperty("problems").EnumerateArray().Select(p => p.GetString()?.Trim() ?? "").Where(p => p.Length > 0)
+                        .Take(MaxProblemsTold).Select(p => p.Length > 500 ? p[..500] : p).ToList();
+                    if (string.IsNullOrWhiteSpace(html) || problems.Count == 0)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        return;
+                    }
+
+                    source = html;
                 }
             }
         }
@@ -1516,7 +1536,7 @@ internal static partial class ControlPlane
         {
             proposal = await (target is null
                 ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
-                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, cancel)).ConfigureAwait(false);
+                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel)).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
