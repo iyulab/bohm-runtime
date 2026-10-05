@@ -184,7 +184,9 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             };
             try
             {
-                _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions).ConfigureAwait(false);
+                // The loaded model serves every request after this one: a request that gives up while it
+                // loads does not throw away a load the next request would only have to start again.
+                _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
