@@ -20,6 +20,14 @@ internal static class AppFacts
         - AI calls can be answered when this computer has no internet connection — the AI may run on this
           computer or on the local network. Do not hold them back on navigator.onLine; handle a failed
           call instead.
+        - The person can send the web page they are reading in the browser to an application that declares
+          a share target, with the send button at the end of the address bar (there is no share menu), so one
+          that works on web pages should not ask them to copy and paste. Declare it in
+          the head: <link rel="manifest" href='data:application/manifest+json,{"name":"Name","share_target":{"action":"/","params":{"title":"title","url":"url"}}}'>.
+          A sent page opens the application with bohm_page=<id> in its address: read it with
+          fetch('/__bohm/pages/' + id), which answers { url, title, text, html, lang, byline } (html is the
+          article body, already cleaned), and every page it has received with fetch('/__bohm/pages'). The
+          pages are kept for it; keep in localStorage only what it adds, keyed by the page id.
         - Elements written in the markup can be pointed at and changed later; prefer them to elements
           built by script.
         - An element with the hidden attribute must stay hidden: a style rule that gives it a display
