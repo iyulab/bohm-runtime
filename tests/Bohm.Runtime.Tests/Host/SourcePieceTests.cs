@@ -90,6 +90,32 @@ public sealed class SourcePieceTests
         Assert.Contains("line 3", done.Message, StringComparison.Ordinal);
     }
 
+    private const string Expenses = "<script>\n  var all = totalsFor(\"\");\n  var trA = makeRow([\"전체\", fmt(all.food), fmt(all.total]), \"all\");\n  els.monthBody.appendChild(trA);\n</script>";
+
+    [Theory]
+    [InlineData("var trA = makeRow([\"전체\", fmt(all.food), fmt(all.total)), \"all\");")]   // the whole line, its bracket «paired»
+    [InlineData("fmt(all.total)), \"all\");")]                                                // a stretch of it
+    public void A_piece_copied_nearly_is_refused_with_the_nearest_line_as_it_is_and_where_they_differ(string piece)
+    {
+        var done = SourcePiece.Replace(Expenses, piece, "x");
+
+        Assert.Null(done.Source);
+        Assert.Contains("The nearest line is line 3", done.Message, StringComparison.Ordinal);
+        Assert.Contains("the source has «ll.total]), \"all\"» and old_text has «ll.total)), \"all\"»", done.Message, StringComparison.Ordinal);
+        Assert.EndsWith("\n3:   var trA = makeRow([\"전체\", fmt(all.food), fmt(all.total]), \"all\");", done.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_piece_equally_near_two_lines_names_neither()
+    {
+        const string source = "<p>first total line A</p>\n<p>first total line B</p>";
+
+        var done = SourcePiece.Replace(source, "<p>first total line C</p>", "x");
+
+        Assert.Null(done.Source);
+        Assert.DoesNotContain("nearest line", done.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("<i>nope</i>")]

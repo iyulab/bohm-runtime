@@ -209,7 +209,7 @@ internal static partial class AppProposals
     {
         var broken = request.Broken ?? throw new ArgumentException("No broken version to fix.", nameof(request));
         var lines = broken.Html.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        var at = broken.Problems.Select(p => ErrorLine().Match(p)).Where(m => m.Success)
+        var at = broken.Problems.Select(p => Edit.EditProposals.ErrorLine().Match(p)).Where(m => m.Success)
             .Select(m => int.Parse(m.Groups["line"].Value, CultureInfo.InvariantCulture)).FirstOrDefault(n => n >= 1 && n <= lines.Length);
         var near = at > 0 && lines[at - 1].Trim() is { Length: > 0 } line ? line : "<body>";
         var fixedVersion = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, broken.Html, new Edit.EditTarget(near, null),
@@ -323,11 +323,6 @@ internal static partial class AppProposals
 
     [GeneratedRegex(@"/__bohm/sources/(?<name>[a-z0-9][a-z0-9-]{0,39})", RegexOptions.CultureInvariant)]
     private static partial Regex SourceReads();
-
-    /// <summary>The line an error names, as the shell writes it: <c>… (line 12)</c>.</summary>
-    [GeneratedRegex(@"\(line (?<line>\d{1,6})\)", RegexOptions.CultureInvariant)]
-    private static partial Regex ErrorLine();
-
     [GeneratedRegex(@"<title[^>]*>(?<title>[^<]*)</title>", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex TitleOf();
 }

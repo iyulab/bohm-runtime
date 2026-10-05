@@ -63,6 +63,9 @@ internal static partial class EditProposals
     /// </summary>
     public const int WholeSourceTokens = 48_000;
 
+    /// <summary>How many of the lines that errors name are shown as they are now.</summary>
+    public const int MaxNamedLines = 5;
+
     /// <summary>How many rounds of tool calls one proposal may take.</summary>
     public const int MaxRounds = 8;
 
@@ -527,6 +530,14 @@ internal static partial class EditProposals
         {
             prompt.Append("\n\nThis source already holds your earlier change for that request. Opened once with a copy of the data, it failed:\n");
             foreach (var problem in problems) prompt.Append("- ").Append(problem).Append('\n');
+            var named = problems.Select(p => ErrorLine().Match(p)).Where(m => m.Success)
+                .Select(m => int.Parse(m.Groups["line"].Value, CultureInfo.InvariantCulture)).Where(n => n >= 1 && n <= lines.Length).Distinct().Order().Take(MaxNamedLines).ToList();
+            if (named.Count > 0)
+            {
+                prompt.Append("The lines these errors name, as they are now:\n");
+                foreach (var n in named) prompt.Append(Numbered(lines, n, n)).Append('\n');
+            }
+
             prompt.Append("Find what causes these errors and fix it, keeping the change the person asked for. Change nothing else.");
         }
 
@@ -569,6 +580,10 @@ internal static partial class EditProposals
         prompt.Append("\nMove its data to localStorage, so what the person enters is kept on this computer.");
         return prompt.ToString();
     }
+
+    /// <summary>The line an error names, as the shell writes it: <c>… (line 12)</c>.</summary>
+    [GeneratedRegex(@"\(line (?<line>\d{1,6})\)", RegexOptions.CultureInvariant)]
+    internal static partial Regex ErrorLine();
 
     [GeneratedRegex(@"firebase|[Ff]irestore|__firebase_config|__initial_auth_token|\b(?:collection|doc|getDocs?|setDoc|addDoc|updateDoc|deleteDoc|onSnapshot|query|where|orderBy|writeBatch|runTransaction|signIn\w*|onAuthStateChanged|getAuth)\s*\(")]
     private static partial Regex UsesOnlineDatabase();

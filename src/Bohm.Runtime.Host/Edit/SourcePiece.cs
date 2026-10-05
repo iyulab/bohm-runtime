@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Bohm.Runtime.Host.Edit;
 
 /// <summary>
@@ -143,7 +145,72 @@ internal static class SourcePiece
         if (first is null) return message;
         var lines = source.Split('\n');
         var at = Array.FindIndex(lines, l => l.Trim() == first);
-        return at < 0 ? message
-            : message + $" Its first line is line {at + 1} of the source; read the lines from there and copy them as they are.";
+        if (at >= 0) return message + $" Its first line is line {at + 1} of the source; read the lines from there and copy them as they are.";
+        // A model copying a line back often writes what it expects rather than what is there — a bracket made to pair, a
+        // name spelled right. Read again, it copies the same: so the one line that is nearly its first, and where they part.
+        return Closest(lines, first) is { } near
+            ? message + string.Create(CultureInfo.InvariantCulture,
+                $" The nearest line is line {near.Line}, which differs from old_text where the source has «{near.Source}» and old_text has «{near.Piece}». That line as it is:\n{near.Line}: {lines[near.Line - 1].TrimEnd('\r')}")
+            : message;
+    }
+
+    /// <summary>Characters shown on each side of where a line and the piece part.</summary>
+    private const int DifferenceContext = 8;
+
+    /// <summary>The shortest first line looked for nearly — a shorter one is near too much of any source.</summary>
+    private const int MinNearLength = 12;
+
+    // The one place in the source — a whole line or a stretch of one — within a few characters of the piece's first line
+    // (by edit distance: a twentieth of its length, and at least two), and the stretch where the two differ, with a little
+    // of what they share around it. Null when no place is that near, or when two lines are equally near.
+    private static (int Line, string Source, string Piece)? Closest(string[] lines, string first)
+    {
+        if (first.Length < MinNearLength) return null;
+        var allowed = Math.Max(2, first.Length / 20);
+        (int Line, int Distance, int End)? best = null;
+        var tied = false;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Length < first.Length - allowed) continue;
+            var (distance, end) = NearestIn(lines[i], first, allowed);
+            if (distance > allowed) continue;
+            if (best is null || distance < best.Value.Distance) (best, tied) = ((i + 1, distance, end), false);
+            else if (distance == best.Value.Distance) tied = true;
+        }
+
+        if (best is not { } found || tied) return null;
+        var line = lines[found.Line - 1];
+        var stretch = line[Math.Max(0, found.End - first.Length)..found.End];
+        var prefix = 0;
+        while (prefix < stretch.Length && prefix < first.Length && stretch[prefix] == first[prefix]) prefix++;
+        var suffix = 0;
+        while (suffix < stretch.Length - prefix && suffix < first.Length - prefix && stretch[^(suffix + 1)] == first[^(suffix + 1)]) suffix++;
+        string Around(string text) => text[Math.Max(0, prefix - DifferenceContext)..Math.Min(text.Length, text.Length - suffix + DifferenceContext)];
+        return (found.Line, Around(stretch), Around(first));
+    }
+
+    // The fewest edits that turn `piece` into some stretch of `text`, and where that stretch ends (approximate matching —
+    // Sellers: the stretch may start anywhere). Given up (over `limit`) once every way through has gone past it.
+    private static (int Distance, int End) NearestIn(string text, string piece, int limit)
+    {
+        var previous = new int[text.Length + 1];   // a row per character of the piece; a column per place in the text
+        var current = new int[text.Length + 1];
+        for (var i = 1; i <= piece.Length; i++)
+        {
+            current[0] = i;
+            var lowest = i;
+            for (var j = 1; j <= text.Length; j++)
+            {
+                current[j] = Math.Min(Math.Min(current[j - 1], previous[j]) + 1, previous[j - 1] + (piece[i - 1] == text[j - 1] ? 0 : 1));
+                lowest = Math.Min(lowest, current[j]);
+            }
+
+            if (lowest > limit) return (limit + 1, 0);
+            (previous, current) = (current, previous);
+        }
+
+        var end = 0;
+        for (var j = 1; j <= text.Length; j++) if (previous[j] < previous[end]) end = j;
+        return (previous[end], end);
     }
 }

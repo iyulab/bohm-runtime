@@ -306,6 +306,21 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task The_line_an_error_names_is_shown_as_it_is_now_beside_the_error()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?> { ["old_text"] = "books.forEch(", ["new_text"] = "books.forEach(" }));
+        model.Script.Enqueue(new TextContent("Fixed the misspelled forEach."));
+        var broken = Instruction with { Broken = new BrokenVersion(BrokenLog, ["Uncaught TypeError: books.forEch is not a function (line 4)"]) };
+
+        await AppProposals.FixAsync(model, ModelLimits.Unknown, broken, TestContext.Current.CancellationToken);
+
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("Source lines 1–", asked, StringComparison.Ordinal);
+        Assert.Contains("as they are now:\n4: books.forEch(", asked, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_fix_that_would_load_code_from_elsewhere_is_not_kept()
     {
         var model = new FakeChatModel();
