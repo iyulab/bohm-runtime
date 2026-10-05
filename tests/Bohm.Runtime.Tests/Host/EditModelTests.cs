@@ -290,6 +290,22 @@ public sealed class EditModelTests : IAsyncLifetime
         else Assert.Equal(message, provider.GetProperty("message").GetString());
     }
 
+    [Fact]
+    public async Task A_rate_limited_providers_hint_of_when_to_ask_again_reaches_the_person()
+    {
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("openai", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        _provider.Refusal = (429, """{"error":{"message":"Rate limit reached.","type":"requests"}}""");
+        _provider.RetryAfter = "1";
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(429, provider.GetProperty("status").GetInt32());
+        Assert.Equal(1, provider.GetProperty("retryAfter").GetInt32());
+    }
+
     private async Task<JsonElement> GetModelAsync() => JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement;
 
     private Task<HttpResponseMessage> ChooseAsync(string provider, string model) =>

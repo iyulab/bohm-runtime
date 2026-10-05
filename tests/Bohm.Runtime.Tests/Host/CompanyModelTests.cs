@@ -355,6 +355,27 @@ public sealed class CompanyModelTests : IAsyncLifetime
         var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
         Assert.Equal(404, provider.GetProperty("status").GetInt32());
         Assert.Equal("The model fixed-model does not exist.", provider.GetProperty("message").GetString());
+        Assert.Equal(JsonValueKind.Null, provider.GetProperty("retryAfter").ValueKind);
+    }
+
+    [Theory]
+    // A busy server (503) and a rate limit (429), each with the hint of when to ask again.
+    [InlineData(503)]
+    [InlineData(429)]
+    public async Task When_a_busy_server_says_when_to_ask_again_the_person_gets_that_wait(int status)
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        _server.Refusal = (status, """{"error":{"message":"busy"}}""");
+        _server.RetryAfter = "7";
+
+        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(status, provider.GetProperty("status").GetInt32());
+        Assert.Equal(7, provider.GetProperty("retryAfter").GetInt32());
     }
 
     [Theory]

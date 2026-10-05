@@ -1,4 +1,6 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Bohm.Runtime.Host.Edit;
@@ -10,7 +12,11 @@ namespace Bohm.Runtime.Host.Edit;
 /// </summary>
 /// <param name="Status">The provider's HTTP status.</param>
 /// <param name="Message">The provider's own message, when its answer carried one; bounded.</param>
-internal sealed record ProviderRefusal(int Status, string? Message)
+/// <param name="RetryAfter">
+/// The seconds a busy or rate-limited provider asked the caller to wait before asking again, when it said
+/// (<c>Retry-After</c>) — so the person hears «in a few seconds» instead of guessing; rounded up.
+/// </param>
+internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAfter = null)
 {
     private const int MaxMessage = 500;
 
@@ -19,7 +25,7 @@ internal sealed record ProviderRefusal(int Status, string? Message)
         for (var e = exception; e is not null; e = e.InnerException)
         {
             if (e is ClientResultException { Status: > 0 } refused)
-                return new ProviderRefusal(refused.Status, MessageOf(refused.GetRawResponse()?.Content?.ToString()));
+                return new ProviderRefusal(refused.Status, MessageOf(refused.GetRawResponse()?.Content?.ToString()), RetryAfterOf(refused.GetRawResponse()));
             // Anthropic through its own API: one exception type per status, all carrying the raw body.
             if (e is Anthropic.Exceptions.AnthropicApiException { StatusCode: > 0 } anthropic)
                 return new ProviderRefusal((int)anthropic.StatusCode, MessageOf(anthropic.ResponseBody));
@@ -29,15 +35,30 @@ internal sealed record ProviderRefusal(int Status, string? Message)
             if (e is Google.GenAI.ServerError { StatusCode: > 0 } server)
                 return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
-            if (e is IronHive.Abstractions.Exceptions.RateLimitException)
-                return new ProviderRefusal(429, Bounded(e.Message));
+            if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
+                return new ProviderRefusal(429, Bounded(e.Message), Seconds(limited.RetryAfter));
             // Any other refusal: its status, and its own message already read out of the body.
             if (e is HttpRequestException { StatusCode: { } status })
-                return new ProviderRefusal((int)status, Bounded(e.Message));
+                return new ProviderRefusal((int)status, Bounded(e.Message),
+                    Seconds((e as IronHive.Abstractions.Exceptions.ProviderHttpException)?.RetryAfter));
         }
 
         return null;
     }
+
+    /// <summary><c>retry-after-ms</c> or <c>Retry-After</c> (seconds or an HTTP date) of a raw response.</summary>
+    internal static int? RetryAfterOf(PipelineResponse? response)
+    {
+        if (response is null) return null;
+        if (response.Headers.TryGetValue("retry-after-ms", out var ms) && double.TryParse(ms, NumberStyles.Float, CultureInfo.InvariantCulture, out var milliseconds))
+            return Seconds(TimeSpan.FromMilliseconds(milliseconds));
+        if (!response.Headers.TryGetValue("Retry-After", out var value) || string.IsNullOrWhiteSpace(value)) return null;
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)) return Seconds(TimeSpan.FromSeconds(seconds));
+        return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? Seconds(at - DateTimeOffset.UtcNow) : null;
+    }
+
+    private static int? Seconds(TimeSpan? wait) =>
+        wait is { } w && w >= TimeSpan.Zero ? (int)Math.Ceiling(Math.Min(w.TotalSeconds, int.MaxValue)) : null;
 
     /// <summary>
     /// <c>error.message</c> of an object (OpenAI, Anthropic, most compatible bases) or of the first

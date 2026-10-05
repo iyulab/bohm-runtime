@@ -28,6 +28,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>The <c>Retry-After</c> a <see cref="Refusal"/> carries — a busy server's hint of when to ask again.</summary>
+    public string? RetryAfter { get; set; }
+
     /// <summary>
     /// What <c>GET …/models</c> answers when there is no <see cref="Refusal"/> — and then <c>GET …/models/{id}</c>
     /// is not found, as on vLLM, which serves only the list; <see langword="null"/> answers both like any other request.
@@ -59,6 +62,7 @@ public sealed class FakeProvider : IAsyncDisposable
             if (self.Refusal is { } refusal)
             {
                 context.Response.StatusCode = refusal.Status;
+                if (self.RetryAfter is { } retryAfter) context.Response.Headers.RetryAfter = retryAfter;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(refusal.Body);
                 return;
