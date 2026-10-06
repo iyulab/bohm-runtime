@@ -320,7 +320,9 @@ public sealed class BrowserTests : IAsyncLifetime
 
         await OpenAsync(id);
 
-        var status = await StatusWhenAsync(id, s => s.GetProperty("blocked").GetArrayLength() > 0 && s.GetProperty("recentLoadErrors").GetArrayLength() > 0);
+        // Both reports, which arrive one after the other: the blocked load and the error it causes.
+        var status = await StatusWhenAsync(id, s => s.GetProperty("blocked").GetArrayLength() > 0 && s.GetProperty("recentLoadErrors").GetArrayLength() > 0
+            && s.GetProperty("loadErrors").GetInt32() >= 2);
         var blocked = Assert.Single(status.GetProperty("blocked").EnumerateArray());
         Assert.Equal("library", blocked.GetProperty("category").GetString());
         Assert.Equal("cdn.example.com", blocked.GetProperty("host").GetString());
