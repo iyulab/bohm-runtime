@@ -42,6 +42,22 @@ public sealed class AppAiTests
     }
 
     [Fact]
+    public void Speech_to_text_is_offered_where_it_answers_and_said_to_be_missing_where_it_does_not()
+    {
+        var bridged = AppAi.Line(Keys(), keyless: true, chosen: null, keylessTranscribes: true);
+        Assert.Contains("https://api.openai.com/v1/audio/transcriptions with any model name", bridged, StringComparison.Ordinal);
+
+        var openai = AppAi.Line(Keys("openai"), keyless: false, new EditModelChoice("openai", "gpt-x"));
+        Assert.Contains("audio/transcriptions with the model \"whisper-1\"", openai, StringComparison.Ordinal);
+
+        foreach (var none in new[] { AppAi.Line(Keys(), keyless: true, chosen: null), AppAi.Line(Keys("anthropic"), keyless: false, chosen: null) })
+        {
+            Assert.Contains("Nothing here turns speech into text", none, StringComparison.Ordinal);
+            Assert.DoesNotContain("audio/transcriptions", none, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void A_Gemini_model_is_named_in_the_address()
     {
         var line = AppAi.Line(Keys("google"), keyless: false, new EditModelChoice("google", "gemini-x"));

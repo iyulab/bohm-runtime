@@ -63,11 +63,15 @@ internal static class PromotionEndpoints
         try
         {
             var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
-            var keyless = context.RequestServices.GetRequiredService<CompanyModel>().Configured || context.RequestServices.GetRequiredService<LocalModel>().Configured;
+            var company = context.RequestServices.GetRequiredService<CompanyModel>();
+            var keyless = company.Configured || context.RequestServices.GetRequiredService<LocalModel>().Configured;
+            // Whether the organization's server turns speech into text — asked only for an application made from an instruction.
+            var keylessTranscribes = request.Broken is null && request.FromInstruction && company.Configured
+                && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null;
             proposal = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
-                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen) : null).ConfigureAwait(false);
+                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, keylessTranscribes) : null).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {

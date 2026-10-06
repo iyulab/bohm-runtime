@@ -20,6 +20,9 @@ internal static class AppFacts
         - AI calls can be answered when this computer has no internet connection — the AI may run on this
           computer or on the local network. Do not hold them back on navigator.onLine; handle a failed
           call instead.
+        - Speech recognition in the page (SpeechRecognition, webkitSpeechRecognition) does not work here: it
+          fails with a network error. To take speech, record it with getUserMedia and MediaRecorder; the
+          person is asked before the microphone opens.
         - The person can send the web page they are reading in the browser to an application that declares
           a share target, with the send button at the end of the address bar (there is no share menu), so one
           that works on web pages should not ask them to copy and paste. Declare it in
