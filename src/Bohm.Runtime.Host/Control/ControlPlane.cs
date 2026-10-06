@@ -1482,16 +1482,20 @@ internal static partial class ControlPlane
         }
     }
 
-    private const string NdJson = "application/x-ndjson";
+    internal const string NdJson = "application/x-ndjson";
 
     private static readonly byte[] NewLine = [(byte)'\n'];
 
-    private static bool AcceptsLines(HttpRequest request) =>
+    internal static bool AcceptsLines(HttpRequest request) =>
         request.GetTypedHeaders().Accept.Any(accept => string.Equals(accept.MediaType.Value, NdJson, StringComparison.OrdinalIgnoreCase));
 
-    private static async Task WriteLineAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken)
+    private static Task WriteLineAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
+        WriteLineAsync(response, value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken);
+
+    /// <summary>One line of an answer sent as it is made (<see cref="NdJson"/>): the value, a line end, flushed.</summary>
+    internal static async Task WriteLineAsync<T>(HttpResponse response, T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> type, CancellationToken cancellationToken)
     {
-        var line = JsonSerializer.SerializeToUtf8Bytes(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!);
+        var line = JsonSerializer.SerializeToUtf8Bytes(value, type);
         await response.Body.WriteAsync(line, cancellationToken).ConfigureAwait(false);
         await response.Body.WriteAsync(NewLine, cancellationToken).ConfigureAwait(false);
         await response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);

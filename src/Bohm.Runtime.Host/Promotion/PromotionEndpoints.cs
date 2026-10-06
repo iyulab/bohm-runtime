@@ -59,6 +59,19 @@ internal static class PromotionEndpoints
             return;
         }
 
+        // Asked for lines: one JSON object per line as the model works — { writing, start } for the application's HTML (or a fix's
+        // new text) as it is written, { refused } for a proposal sent back to it — then { status: "done", … } with the proposal as
+        // the plain answer has it, or, since the status went out before the model was asked, { status: "failed", … } with what a
+        // 503 would carry.
+        var lines = Control.ControlPlane.AcceptsLines(context.Request);
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null;
+        if (lines)
+        {
+            response.ContentType = Control.ControlPlane.NdJson;
+            await response.StartAsync(cancel).ConfigureAwait(false);
+            onProgress = (progress, token) => Control.ControlPlane.WriteLineAsync(response, progress, PromotionJson.Default.ProposalProgress, token);
+        }
+
         AppProposal proposal;
         try
         {
@@ -72,18 +85,30 @@ internal static class PromotionEndpoints
                 && ((keyless && speech.Supported) || await speech.DownloadedAsync(cancel).ConfigureAwait(false)
                     || (company.Configured && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null));
             proposal = request.Broken is not null
-                ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false)
+                ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
-                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null).ConfigureAwait(false);
+                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
+                    onProgress).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
+            var (detail, provider, stopped) = (e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped);
+            if (lines)
+            {
+                await Control.ControlPlane.WriteLineAsync(response, new ProposalFailedLine("failed", null, detail, provider, stopped), PromotionJson.Default.ProposalFailedLine, cancel).ConfigureAwait(false);
+                return;
+            }
+
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(null, detail, provider, stopped), cancel).ConfigureAwait(false);
             return;
         }
 
-        await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), cancel).ConfigureAwait(false);
+        if (lines)
+            await Control.ControlPlane.WriteLineAsync(response,
+                new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
+        else
+            await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, int port, CancellationToken cancel)
@@ -194,6 +219,12 @@ internal static class PromotionEndpoints
     /// <param name="Model">Which model proposed it.</param>
     internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
 
+    /// <summary>The last line of a proposal made as it goes: <see cref="AppProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
+    internal sealed record AppProposalLine(string Status, string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
+
+    /// <summary>The last line of a proposal the model could not make: the fields of the 503's body, with the status <c>failed</c>.</summary>
+    internal sealed record ProposalFailedLine(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped);
+
     /// <summary>What was read for one source: the page, the columns and the rows, one cell per column.</summary>
     internal sealed record ReadingInput(string? Source, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<string>>? Rows);
 
@@ -207,6 +238,9 @@ internal static class PromotionEndpoints
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(AppRequest))]
 [JsonSerializable(typeof(PromotionEndpoints.AppProposalView))]
+[JsonSerializable(typeof(PromotionEndpoints.AppProposalLine))]
+[JsonSerializable(typeof(PromotionEndpoints.ProposalFailedLine))]
+[JsonSerializable(typeof(Edit.ProposalProgress))]
 [JsonSerializable(typeof(PromotionEndpoints.PreviewRequest))]
 [JsonSerializable(typeof(PromotionEndpoints.PromotionRequest))]
 [JsonSerializable(typeof(Control.ControlPlane.ProposalFailure))]

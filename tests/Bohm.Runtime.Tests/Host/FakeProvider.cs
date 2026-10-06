@@ -51,6 +51,15 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>Whether the OpenAI-compatible answers carry the model's thinking (<c>reasoning_content</c>), as a model that thinks unasked does.</summary>
     public bool Thinks { get; set; }
 
+    /// <summary>
+    /// Tool calls to answer streamed OpenAI-compatible requests with, one per request, before the usual reply: each streamed as a
+    /// server sends a call while the model writes it — the id and name first, then its arguments in small pieces.
+    /// </summary>
+    public ConcurrentQueue<(string Name, string Arguments)> StreamedCalls { get; } = new();
+
+    /// <summary>How many characters of a streamed call's arguments go in one piece.</summary>
+    public const int ArgumentPiece = 9;
+
     public sealed record ReceivedRequest(string Method, string PathAndQuery, IReadOnlyDictionary<string, string> Headers, string Body);
 
     public static async Task<FakeProvider> StartAsync()
@@ -161,6 +170,27 @@ public sealed class FakeProvider : IAsyncDisposable
             {
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync($$$"""{"id":"msg_1","type":"message","role":"assistant","model":"model-x","content":[{"type":"text","text":"{{{Reply}}}"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}""");
+                return;
+            }
+
+            if (body.Contains("\"stream\":true", StringComparison.Ordinal) && !IsThinkingQuestion(self.Received.Last()) && self.StreamedCalls.TryDequeue(out var call))
+            {
+                context.Response.ContentType = "text/event-stream";
+                var callNumber = self.Received.Count;
+                string[] pieces =
+                [
+                    $$$"""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-{{{callNumber}}}","type":"function","function":{"name":"{{{call.Name}}}","arguments":""}}]}}]}""",
+                    .. call.Arguments.Chunk(ArgumentPiece).Select(piece =>
+                        $$$"""{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":{{{JsonSerializer.Serialize(new string(piece))}}}}}]}}]}"""),
+                    """{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}""",
+                ];
+                foreach (var piece in pieces)
+                {
+                    await context.Response.WriteAsync($"data: {piece}\n\n");
+                    await context.Response.Body.FlushAsync();
+                }
+
+                await context.Response.WriteAsync("data: [DONE]\n\n");
                 return;
             }
 

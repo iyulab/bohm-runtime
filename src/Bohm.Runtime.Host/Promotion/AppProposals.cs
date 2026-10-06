@@ -62,6 +62,9 @@ internal static partial class AppProposals
     /// <summary>How many rounds of tool calls one proposal may take — a proposal and a few corrections.</summary>
     public const int MaxRounds = 4;
 
+    /// <summary>What a proposal writes while it is shown: the application's HTML.</summary>
+    private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["propose_app"] = "html" };
+
     /// <summary>The longest single answer — a whole application in one tool call.</summary>
     public const int MaxOutputTokens = 16000;
 
@@ -135,7 +138,9 @@ internal static partial class AppProposals
 
     /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
     /// <param name="appAi">For an application made from an instruction, which AI answers its calls here (<see cref="AppAi"/>) — said to the model as one more line of how it runs.</param>
-    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null)
+    /// <param name="onProgress">Told the application's HTML as the model writes it, and each refused proposal — when the provider sends a call while it is written.</param>
+    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null,
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
     {
         AppProposal? accepted = null;
         var refusals = new List<string>();
@@ -170,16 +175,17 @@ internal static partial class AppProposals
             .Build();
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
         var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;
-        var response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system })
-            .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
+        Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
+            new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
+            Prompt(request), WrittenFields, refusals, onProgress, cancellationToken);
+        var response = await RunAsync().ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
         // is asked. That answer taught it does, so the same request goes once more, asked to think briefly —
         // before the person is told it failed.
         if (accepted is null && refusals.Count == 0 && response.StopReason == TurnStopReason.OutputLimit
             && !knewItThinks && ModelLimits.Of(model, limits).Reasoning == true)
         {
-            response = await new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system })
-                .RunAsync(Prompt(request), cancellationToken: cancellationToken).ConfigureAwait(false);
+            response = await RunAsync().ConfigureAwait(false);
         }
 
         var closing = response.Content?.Trim() ?? "";
@@ -209,7 +215,8 @@ internal static partial class AppProposals
     /// application is, the model shown the part around the first error and told the errors — rather than
     /// written again. The fixed version is held to the same checks as a made one.
     /// </summary>
-    public static async Task<AppProposal> FixAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken)
+    public static async Task<AppProposal> FixAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
     {
         var broken = request.Broken ?? throw new ArgumentException("No broken version to fix.", nameof(request));
         var lines = broken.Html.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
@@ -217,7 +224,7 @@ internal static partial class AppProposals
             .Select(m => int.Parse(m.Groups["line"].Value, CultureInfo.InvariantCulture)).FirstOrDefault(n => n >= 1 && n <= lines.Length);
         var near = at > 0 && lines[at - 1].Trim() is { Length: > 0 } line ? line : "<body>";
         var fixedVersion = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, broken.Html, new Edit.EditTarget(near, null),
-            request.Question, broken.Problems, cancellationToken).ConfigureAwait(false);
+            request.Question, broken.Problems, cancellationToken, onProgress).ConfigureAwait(false);
         var title = TitleOf().Match(fixedVersion.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Broken = null }, title, null, fixedVersion.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The fixed version cannot be kept: " + string.Join(" ", problems));
