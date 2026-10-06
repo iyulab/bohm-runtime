@@ -60,7 +60,7 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 /// being the one the organization provides. Requests leave this computer, so each is counted as sent to
 /// the server's host.
 /// </remarks>
-internal sealed class CompanyModel : IDisposable
+internal sealed partial class CompanyModel : IDisposable
 {
     /// <summary>Format identifier written into <c>company-model.json</c>.</summary>
     public const string Format = "bohm.company-model/0";
@@ -469,6 +469,34 @@ internal sealed class CompanyModel : IDisposable
             return new(CheckResult.Answers, null, []);
         }
     }
+
+    /// <summary>
+    /// The model the server in use turns speech into text with, picked from its list by name (Whisper and the
+    /// other speech-to-text families a server lists under their own names — the list says nothing else of a
+    /// model's kind), or <see langword="null"/> when it lists none or no server is set. What an answered list
+    /// showed is kept while the server and key stay the same; a list that could not be read is asked again.
+    /// </summary>
+    public async Task<string?> TranscriptionModelAsync(CancellationToken cancellationToken)
+    {
+        if (Current is not { } server) return null;
+        var asked = (server.Endpoint.AbsoluteUri, Key);
+        lock (_clientLock)
+            if (_transcription is { } known && known.For == asked) return known.Model;
+        var listed = await ModelsAsync(null, null, cancellationToken).ConfigureAwait(false);
+        if (listed?.Result != CheckResult.Answers) return null;
+        var model = listed.Models.Select(m => m.Id).FirstOrDefault(IsTranscriptionModel);
+        lock (_clientLock)
+            _transcription = (asked, model);
+        return model;
+    }
+
+    /// <summary>Whether a listed model's name is one of a speech-to-text family.</summary>
+    internal static bool IsTranscriptionModel(string id) => TranscriptionNames().IsMatch(id);
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"whisper|transcri|speech-to-text|sensevoice|paraformer|parakeet|canary|(^|[-_/.])(stt|asr)([-_/.]|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex TranscriptionNames();
+
+    private ((string Endpoint, string? Key) For, string? Model)? _transcription;
 
     /// <summary>One model a server lists.</summary>
     /// <param name="Id">The name requests use.</param>

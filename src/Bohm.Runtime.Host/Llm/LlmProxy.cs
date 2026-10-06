@@ -90,6 +90,12 @@ internal static class LlmProxy
         var local = context.RequestServices.GetRequiredService<LocalModel>();
         if (string.IsNullOrEmpty(key) && (company.Configured || local.Configured))
         {
+            if (company.Current is { } transcribing && IsTranscription(provider, request.Method, providerPath))
+            {
+                await TranscribeByCompanyModelAsync(context, provider, company, transcribing).ConfigureAwait(false);
+                return;
+            }
+
             if (ChatBridges.For(provider, request.Method, providerPath) is { } bridge)
             {
                 if (company.Client() is { } organizations)
@@ -126,8 +132,9 @@ internal static class LlmProxy
     /// <paramref name="key"/> presented the provider's way (nothing when <see langword="null"/>), and
     /// streams the answer back. Counted as sent, whether or not it is answered.
     /// </summary>
+    /// <param name="content">The body to send in place of the application's own, when the request was rebuilt.</param>
     private static async Task RelayAsync(HttpContext context, LlmProvider provider, Uri upstreamBase, string path,
-        Dictionary<string, Microsoft.Extensions.Primitives.StringValues> query, string? key)
+        Dictionary<string, Microsoft.Extensions.Primitives.StringValues> query, string? key, HttpContent? content = null)
     {
         var request = context.Request;
         var response = context.Response;
@@ -154,7 +161,11 @@ internal static class LlmProxy
         }
 
         using var upstream = new HttpRequestMessage(new HttpMethod(request.Method), target);
-        if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
+        if (content is not null)
+        {
+            upstream.Content = content;
+        }
+        else if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
         {
             upstream.Content = new StreamContent(request.Body);
             if (request.ContentType is { } contentType) upstream.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
@@ -208,6 +219,52 @@ internal static class LlmProxy
                 await response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>Whether the request asks OpenAI's API to turn a recording into text.</summary>
+    private static bool IsTranscription(LlmProvider provider, string method, string path) =>
+        provider.Id == "openai" && HttpMethods.IsPost(method) && path.Trim('/') == "v1/audio/transcriptions";
+
+    /// <summary>
+    /// No OpenAI key is connected, and the organization's model server is set: a recording sent to OpenAI's
+    /// transcription API is turned into text by the server's speech-to-text model
+    /// (<see cref="CompanyModel.TranscriptionModelAsync"/>) — the same form, with that model named, so the
+    /// answer comes back in OpenAI's shape. A server that lists no such model says so.
+    /// </summary>
+    private static async Task TranscribeByCompanyModelAsync(HttpContext context, LlmProvider provider, CompanyModel company, CompanyModelOptions server)
+    {
+        var request = context.Request;
+        if (await company.TranscriptionModelAsync(context.RequestAborted).ConfigureAwait(false) is not { } model)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.NotImplemented, "company_model_unsupported",
+                "The organization's AI model server has no model that turns speech into text.").ConfigureAwait(false);
+            return;
+        }
+
+        if (!request.HasFormContentType)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request",
+                "Send the recording as multipart form data, with the fields file and model.").ConfigureAwait(false);
+            return;
+        }
+
+        var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        using var content = new MultipartFormDataContent();
+        foreach (var (name, values) in form)
+        {
+            if (name.Equals("model", StringComparison.Ordinal)) continue;
+            foreach (var value in values) content.Add(new StringContent(value ?? ""), name);
+        }
+
+        content.Add(new StringContent(model), "model");
+        foreach (var file in form.Files)
+        {
+            var part = new StreamContent(file.OpenReadStream());
+            if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(file.ContentType, out var type)) part.Headers.ContentType = type;
+            content.Add(part, file.Name, string.IsNullOrEmpty(file.FileName) ? "recording" : file.FileName);
+        }
+
+        await RelayAsync(context, CompanyModelShape(server), server.Endpoint, "audio/transcriptions", [], company.Key, content).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -314,6 +314,59 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Without_an_OpenAI_key_a_recording_sent_for_transcription_is_turned_into_text_by_the_servers_speech_model()
+    {
+        _server.Models = """{"object":"list","data":[{"id":"set-model","object":"model"},{"id":"whisper-large-v3-turbo","object":"model"}]}""";
+        await using var host = await StartAsync(fixedAtStart: false);
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(ServerKey))) HttpAssert.Status(HttpStatusCode.OK, key);
+        var app = await host.AdoptAsync(App);
+        var recording = new byte[] { 0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x01, 0x02 };
+
+        using var response = await PostFormFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/audio/transcriptions", recording, ("model", "whisper-1"), ("language", "ko"));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var asked = Assert.Single(_server.Asked);
+        Assert.Equal(("POST", "/v1/audio/transcriptions"), (asked.Method, asked.PathAndQuery));
+        Assert.StartsWith("multipart/form-data", asked.Headers["Content-Type"], StringComparison.Ordinal);
+        Assert.Contains("whisper-large-v3-turbo", asked.Body, StringComparison.Ordinal); // the server's speech model, not the one the app named
+        Assert.DoesNotContain("whisper-1", asked.Body, StringComparison.Ordinal);
+        Assert.Contains("name=language", asked.Body, StringComparison.Ordinal);
+        Assert.Contains("filename=recording.webm", asked.Body, StringComparison.Ordinal);
+        Assert.Equal($"Bearer {ServerKey}", asked.Headers["Authorization"]);
+
+        var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
+    }
+
+    [Fact]
+    public async Task A_server_that_lists_no_speech_model_says_so_instead_of_being_sent_the_recording()
+    {
+        _server.Models = """{"object":"list","data":[{"id":"set-model","object":"model"}]}""";
+        await using var host = await StartAsync(fixedAtStart: false);
+        var app = await host.AdoptAsync(App);
+
+        using var response = await PostFormFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/audio/transcriptions", [1, 2, 3], ("model", "whisper-1"));
+
+        HttpAssert.Status(HttpStatusCode.NotImplemented, response);
+        Assert.Equal("company_model_unsupported", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Empty(_server.Asked); // only the list was asked
+    }
+
+    [Theory]
+    [InlineData("whisper-large-v3-turbo", true)]
+    [InlineData("Systran/faster-whisper-small", true)]
+    [InlineData("gpt-4o-mini-transcribe", true)]
+    [InlineData("SenseVoiceSmall", true)]
+    [InlineData("nvidia/parakeet-tdt-0.6b-v2", true)]
+    [InlineData("ko-stt-base", true)]
+    [InlineData("qwen3.8-27b", false)]
+    [InlineData("qwen3-embedding-0.6b", false)]
+    [InlineData("fastest-model", false)]
+    [InlineData("lasr-7b", false)]
+    public void A_speech_model_is_known_by_its_family_name(string id, bool speech) =>
+        Assert.Equal(speech, CompanyModel.IsTranscriptionModel(id));
+
+    [Fact]
     public async Task An_Anthropic_shaped_request_is_answered_by_the_server_in_the_Anthropic_shape()
     {
         await using var host = await StartAsync(fixedAtStart: true);
@@ -677,6 +730,21 @@ public sealed class CompanyModelTests : IAsyncLifetime
 
     private static Task<HttpResponseMessage> SetAsync(RunningHost host, string body) =>
         host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(body, Encoding.UTF8, "application/json"));
+
+    private static async Task<HttpResponseMessage> PostFormFromAppAsync(RunningHost host, string app, string path, byte[] recording, params (string Name, string Value)[] fields)
+    {
+        using var load = await host.ClientForApp(app).GetAsync("/");
+        var setCookie = Assert.Single(load.Headers.GetValues("Set-Cookie"));
+        var form = new MultipartFormDataContent();
+        var file = new ByteArrayContent(recording);
+        file.Headers.ContentType = new("audio/webm");
+        form.Add(file, "file", "recording.webm");
+        foreach (var (name, value) in fields) form.Add(new StringContent(value), name);
+        var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = form };
+        request.Headers.Add("Cookie", setCookie[..setCookie.IndexOf(';', StringComparison.Ordinal)]);
+        request.Headers.Authorization = new("Bearer", $"bohm-key-{app}");
+        return await host.ClientForApp(app).SendAsync(request);
+    }
 
     private static async Task<HttpResponseMessage> PostFromAppAsync(RunningHost host, string app, string path, string body)
     {
