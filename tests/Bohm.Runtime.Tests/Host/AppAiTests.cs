@@ -44,7 +44,7 @@ public sealed class AppAiTests
     [Fact]
     public void Speech_to_text_is_offered_where_it_answers_and_said_to_be_missing_where_it_does_not()
     {
-        var bridged = AppAi.Line(Keys(), keyless: true, chosen: null, keylessTranscribes: true);
+        var bridged = AppAi.Line(Keys(), keyless: true, chosen: null, speechWithoutKey: true);
         Assert.Contains("https://api.openai.com/v1/audio/transcriptions with any model name", bridged, StringComparison.Ordinal);
 
         var openai = AppAi.Line(Keys("openai"), keyless: false, new EditModelChoice("openai", "gpt-x"));

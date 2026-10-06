@@ -69,6 +69,11 @@ if (companyModelsJson is not null && !Bohm.Runtime.Host.Llm.CompanyModelList.Try
 var shipped = Path.Combine(AppContext.BaseDirectory, "llama-server", OperatingSystem.IsWindows() ? "llama-server.exe" : "llama-server");
 llamaServer ??= File.Exists(shipped) ? shipped : null;
 
+// The native ONNX Runtime the speech model runs on ships next to the runtime (kept out of the single file so it can be
+// loaded from a directory); a build without it runs no speech model.
+var speechRuntime = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native") }
+    .FirstOrDefault(d => File.Exists(Path.Combine(d, OperatingSystem.IsWindows() ? "onnxruntime.dll" : "libonnxruntime.so")));
+
 // Standard output carries only the protocol line below; every log line goes to standard error.
 // Per-request lines from ASP.NET Core are kept at Warning (its usual production level): the caller
 // polls the control API every few seconds, so at Information an idle runtime grows its log for as long
@@ -79,6 +84,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     Port = port,
     ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
+    SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)

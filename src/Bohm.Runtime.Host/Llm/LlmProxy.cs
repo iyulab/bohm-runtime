@@ -88,14 +88,12 @@ internal static class LlmProxy
 
         var key = context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName);
         var local = context.RequestServices.GetRequiredService<LocalModel>();
+        if (string.IsNullOrEmpty(key) && IsTranscription(provider, request.Method, providerPath)
+            && await TranscribeKeylessAsync(context, app, provider, company, local.Configured).ConfigureAwait(false))
+            return;
+
         if (string.IsNullOrEmpty(key) && (company.Configured || local.Configured))
         {
-            if (company.Current is { } transcribing && IsTranscription(provider, request.Method, providerPath))
-            {
-                await TranscribeByCompanyModelAsync(context, provider, company, transcribing).ConfigureAwait(false);
-                return;
-            }
-
             if (ChatBridges.For(provider, request.Method, providerPath) is { } bridge)
             {
                 if (company.Client() is { } organizations)
@@ -226,29 +224,92 @@ internal static class LlmProxy
         provider.Id == "openai" && HttpMethods.IsPost(method) && path.Trim('/') == "v1/audio/transcriptions";
 
     /// <summary>
-    /// No OpenAI key is connected, and the organization's model server is set: a recording sent to OpenAI's
-    /// transcription API is turned into text by the server's speech-to-text model
-    /// (<see cref="CompanyModel.TranscriptionModelAsync"/>) — the same form, with that model named, so the
-    /// answer comes back in OpenAI's shape. A server that lists no such model says so.
+    /// No OpenAI key is connected and a recording is sent to OpenAI's transcription API: the organization's server
+    /// turns it into text when it lists a speech model, otherwise the speech model on this computer when it is here.
+    /// Without either, while some AI answers without a key, the application is told none is here yet — and the shell
+    /// learns it, to offer getting the model on this computer.
     /// </summary>
-    private static async Task TranscribeByCompanyModelAsync(HttpContext context, LlmProvider provider, CompanyModel company, CompanyModelOptions server)
+    /// <returns>Whether the request was answered; <see langword="false"/> leaves it to the key check, as with no AI at all.</returns>
+    private static async Task<bool> TranscribeKeylessAsync(HttpContext context, OpenApp app, LlmProvider provider, CompanyModel company, bool localChat)
     {
         var request = context.Request;
-        if (await company.TranscriptionModelAsync(context.RequestAborted).ConfigureAwait(false) is not { } model)
+        var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
+        if (company.Current is { } server && await company.TranscriptionModelAsync(context.RequestAborted).ConfigureAwait(false) is { } model)
         {
-            await WriteErrorAsync(context.Response, provider, HttpStatusCode.NotImplemented, "company_model_unsupported",
-                "The organization's AI model server has no model that turns speech into text.").ConfigureAwait(false);
-            return;
+            if (await ReadRecordingFormAsync(context, provider).ConfigureAwait(false) is { } form)
+                await TranscribeByCompanyModelAsync(context, company, server, model, form).ConfigureAwait(false);
+            return true;
         }
 
-        if (!request.HasFormContentType)
+        if (await speech.DownloadedAsync(context.RequestAborted).ConfigureAwait(false))
+        {
+            if (await ReadRecordingFormAsync(context, provider).ConfigureAwait(false) is { } form)
+                await TranscribeLocallyAsync(context, provider, speech, form).ConfigureAwait(false);
+            return true;
+        }
+
+        if (!company.Configured && !localChat) return false;
+        if (speech.Supported) app.NeedsSpeechModel();
+        await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "local_model_unavailable",
+            "No model here turns speech into text yet. Keep the recording and try again later.").ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>The recording's form, or <see langword="null"/> after answering that it is not one.</summary>
+    private static async Task<IFormCollection?> ReadRecordingFormAsync(HttpContext context, LlmProvider provider)
+    {
+        if (context.Request.HasFormContentType && await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false) is { Files.Count: > 0 } form)
+            return form;
+
+        await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request",
+            "Send the recording as multipart form data, with the fields file and model.").ConfigureAwait(false);
+        return null;
+    }
+
+    /// <summary>
+    /// The speech model on this computer turns the recording into text, answered in OpenAI's shape (<c>{"text": …}</c>,
+    /// or the bare text for <c>response_format=text</c>). Nothing leaves the computer.
+    /// </summary>
+    private static async Task TranscribeLocallyAsync(HttpContext context, LlmProvider provider, LocalSpeech speech, IFormCollection form)
+    {
+        var file = form.Files.GetFile("file") ?? form.Files[0];
+        using var audio = new MemoryStream();
+        await file.CopyToAsync(audio, context.RequestAborted).ConfigureAwait(false);
+        var language = form["language"].ToString() is { Length: > 0 } named ? named : null;
+        string text;
+        try
+        {
+            text = await speech.TranscribeAsync(audio.ToArray(), language, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "local_model_unavailable", e.Message).ConfigureAwait(false);
+            return;
+        }
+        catch (Exception e) when (e is NotSupportedException or InvalidDataException or FormatException && !context.RequestAborted.IsCancellationRequested)
         {
             await WriteErrorAsync(context.Response, provider, HttpStatusCode.BadRequest, "invalid_request",
-                "Send the recording as multipart form data, with the fields file and model.").ConfigureAwait(false);
+                $"The recording could not be read: {e.Message}").ConfigureAwait(false);
             return;
         }
 
-        var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        if (form["response_format"].ToString() == "text")
+        {
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync(text, context.RequestAborted).ConfigureAwait(false);
+            return;
+        }
+
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(JsonSerializer.Serialize(new { text }), context.RequestAborted).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The organization's server turns the recording into text with its speech model — the same form, with that
+    /// model named, so the answer comes back in OpenAI's shape.
+    /// </summary>
+    private static async Task TranscribeByCompanyModelAsync(HttpContext context, CompanyModel company, CompanyModelOptions server, string model, IFormCollection form)
+    {
         using var content = new MultipartFormDataContent();
         foreach (var (name, values) in form)
         {

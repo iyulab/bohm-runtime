@@ -31,6 +31,7 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
     private readonly Queue<string> _errors = new();
     private readonly Lock _lock = new();
     private readonly HashSet<string> _neededKeys = new(StringComparer.Ordinal);
+    private bool _neededSpeechModel;
     private readonly List<BlockedResource> _blocked = [];
     private readonly List<string> _missingFiles = [];
     private readonly List<MissingApi> _missingApis = [];
@@ -59,6 +60,7 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
             _loadErrors.Clear();
             _errors.Clear();
             _neededKeys.Clear();
+            _neededSpeechModel = false;
             _blocked.Clear();
             _missingFiles.Clear();
             _missingApis.Clear();
@@ -93,6 +95,17 @@ internal sealed class OpenApp(KeyValueStore storage, UsageLog usage, AssetCache 
     public void NeedsKey(string providerId)
     {
         lock (_lock) _neededKeys.Add(providerId);
+    }
+
+    /// <summary>Whether this application sent a recording to be turned into text while no model here could.</summary>
+    public bool NeededSpeechModel
+    {
+        get { lock (_lock) return _neededSpeechModel; }
+    }
+
+    public void NeedsSpeechModel()
+    {
+        lock (_lock) _neededSpeechModel = true;
     }
 
     /// <summary>

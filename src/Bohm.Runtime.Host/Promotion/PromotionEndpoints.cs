@@ -65,13 +65,16 @@ internal static class PromotionEndpoints
             var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
             var company = context.RequestServices.GetRequiredService<CompanyModel>();
             var keyless = company.Configured || context.RequestServices.GetRequiredService<LocalModel>().Configured;
-            // Whether the organization's server turns speech into text — asked only for an application made from an instruction.
-            var keylessTranscribes = request.Broken is null && request.FromInstruction && company.Configured
-                && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null;
+            // Whether a recording is turned into text without a key — asked only for an application made from an instruction:
+            // the speech model on this computer (here, or to be got while some AI answers without a key), or the organization's server's.
+            var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
+            var speechWithoutKey = request.Broken is null && request.FromInstruction
+                && ((keyless && speech.Supported) || await speech.DownloadedAsync(cancel).ConfigureAwait(false)
+                    || (company.Configured && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null));
             proposal = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
-                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, keylessTranscribes) : null).ConfigureAwait(false);
+                    request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
