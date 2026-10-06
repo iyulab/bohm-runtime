@@ -1416,10 +1416,13 @@ internal static partial class ControlPlane
     {
         var response = context.Response;
         List<Microsoft.Extensions.AI.ChatMessage> conversation;
+        bool last;
         try
         {
             using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
             conversation = Agent.WebAgent.ParseConversation(body.RootElement);
+            // The caller's last round for this question: answer from what was read, with no more tool calls.
+            last = body.RootElement.TryGetProperty("last", out var l) && l.ValueKind == JsonValueKind.True;
         }
         catch (Exception e) when (e is JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
         {
@@ -1452,7 +1455,7 @@ internal static partial class ControlPlane
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, null, cancel).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, null, cancel, last).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -1473,7 +1476,7 @@ internal static partial class ControlPlane
         try
         {
             var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation,
-                (text, token) => WriteLineAsync(response, new TurnText(text), token), cancel).ConfigureAwait(false);
+                (text, token) => WriteLineAsync(response, new TurnText(text), token), cancel, last).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)

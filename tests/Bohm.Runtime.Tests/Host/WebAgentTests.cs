@@ -116,6 +116,30 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task On_the_callers_last_round_the_model_is_asked_to_answer_from_what_it_read_with_no_tool_to_call()
+    {
+        _model.Reply = "The wiki has no page about parking.";
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """
+            {"last":true,"messages":[
+              {"role":"user","text":"How do I register my car for parking?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Title: Search\nNo results for parking."}
+            ]}
+            """);
+
+        var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("done", turn.GetProperty("status").GetString());
+        Assert.Equal("The wiki has no page about parking.", turn.GetProperty("text").GetString());
+        var (messages, options) = Assert.Single(_model.Calls);
+        Assert.Equal(ChatToolMode.None, options?.ToolMode);
+        Assert.NotEmpty(options!.Tools!);   // still declared: the conversation has a tool call
+        Assert.Equal(ChatRole.User, messages[^1].Role);
+        Assert.Contains("Call no tool", messages[^1].Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_page_too_long_for_the_models_context_is_cut_and_the_turn_asked_once_more()
     {
         // The model takes 4,096 tokens; the request was 8,192 — about half of the page fits.
