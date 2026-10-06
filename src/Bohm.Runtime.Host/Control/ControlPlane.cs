@@ -978,6 +978,17 @@ internal static partial class ControlPlane
                 await WriteAsync(response, await SpeechModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["llm", "speech-model", "describe"]):
+                var sized = context.RequestServices.GetRequiredService<LocalSpeech>();
+                if (!sized.Supported)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                await WriteAsync(response, new SpeechModelSize(await sized.DownloadSizeAsync(cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST" or "DELETE", ["llm", "speech-model", "download"]):
                 var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
                 if (request.Method == "DELETE")
@@ -1380,15 +1391,17 @@ internal static partial class ControlPlane
     private static async Task<SpeechModelView> SpeechModelViewOfAsync(HttpContext context, CancellationToken cancel)
     {
         var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
-        return new(speech.Supported, await speech.DownloadedAsync(cancel).ConfigureAwait(false), speech.Loaded, speech.SizeBytes, speech.LastFailure, speech.Download);
+        return new(speech.Supported, await speech.DownloadedAsync(cancel).ConfigureAwait(false), speech.Loaded, speech.LastFailure, speech.Download);
     }
 
     /// <param name="Supported">Whether this copy can run a speech model at all.</param>
     /// <param name="Downloaded">Whether the model is on this computer — recordings are then turned into text without the network.</param>
-    /// <param name="SizeBytes">About how much getting it takes, when known.</param>
     /// <param name="Failure">The model library's message from the last load that failed, shown as is, or <see langword="null"/>.</param>
     /// <param name="Download">The model being got, or the last attempt that ended without it; <see langword="null"/> when neither.</param>
-    internal sealed record SpeechModelView(bool Supported, bool Downloaded, bool Loaded, long? SizeBytes, string? Failure, ModelDownloads.DownloadView? Download);
+    internal sealed record SpeechModelView(bool Supported, bool Downloaded, bool Loaded, string? Failure, ModelDownloads.DownloadView? Download);
+
+    /// <param name="SizeBytes">What getting the model takes, as its host lists it, or <see langword="null"/> when the host could not be asked.</param>
+    internal sealed record SpeechModelSize(long? SizeBytes);
 
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
     /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
@@ -1706,6 +1719,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]

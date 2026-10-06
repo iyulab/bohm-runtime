@@ -82,7 +82,8 @@ public sealed class LocalSpeechTests
         var before = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/speech-model")).RootElement;
         Assert.True(before.GetProperty("supported").GetBoolean());
         Assert.False(before.GetProperty("downloaded").GetBoolean());
-        Assert.Equal(970, before.GetProperty("sizeBytes").GetInt64());
+        using (var described = await host.ControlClient().PostAsync("/__control/llm/speech-model/describe", null))
+            Assert.Equal(253, JsonDocument.Parse(await described.Content.ReadAsStringAsync()).RootElement.GetProperty("sizeBytes").GetInt64());
 
         using (var started = await host.ControlClient().PostAsync("/__control/llm/speech-model/download", null))
             HttpAssert.Status(HttpStatusCode.Accepted, started);
@@ -200,7 +201,7 @@ public sealed class LocalSpeechTests
 
         public string Host => "speech.example";
 
-        public long? SizeBytes => 970;
+        public Task<long> DownloadSizeAsync(CancellationToken cancellationToken) => Task.FromResult(253L);
 
         public Task<bool> IsDownloadedAsync(CancellationToken cancellationToken) => Task.FromResult(Downloaded);
 
@@ -209,7 +210,7 @@ public sealed class LocalSpeechTests
             lock (LoadedWithDownload) LoadedWithDownload.Add(download);
             if (!Downloaded && !download) throw new InvalidOperationException("not here");
             if (download && FailDownload is { } failure) throw failure;
-            progress?.Report(new(970, 970));
+            progress?.Report(new(253, 253));
             Downloaded = true;
             Interlocked.Increment(ref Loads);
             return Task.FromResult<ISpeechToText>(new Heard());
