@@ -18,6 +18,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- A browser recording (WebM/Opus from MediaRecorder) of synthetic speech, for the speech model on this computer. -->
+  <ItemGroup>
+    <None Include="Host\Speech\*.webm" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Bohm.Runtime\Bohm.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Bohm.Runtime.Host\Bohm.Runtime.Host.csproj" />

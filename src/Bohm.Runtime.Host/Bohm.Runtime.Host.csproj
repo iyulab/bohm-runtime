@@ -37,6 +37,28 @@
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
   </ItemGroup>
 
+  <!--
+    A speech model on this computer turning applications' recordings into text (Whisper ONNX), on the native ONNX
+    Runtime shipped with the runtime: referenced directly so its native library comes along (the model library takes
+    only the managed part and would otherwise fetch the native one at first use), and kept out of the single file so it
+    loads from the runtime's directory.
+  -->
+  <ItemGroup>
+    <PackageReference Include="LMSupply.Transcriber" Version="0.108.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+  </ItemGroup>
+
+  <Target Name="KeepOnnxRuntimeBesideTheExecutable" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
+        Condition="'%(Extension)' == '.dll' And $([System.String]::Copy('%(Filename)').StartsWith('onnxruntime'))"
+        ExcludeFromSingleFile="true" />
+      <!-- The import libraries are for linking against it, not for running. -->
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'%(Extension)' == '.lib' And $([System.String]::Copy('%(Filename)').StartsWith('onnxruntime'))" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Bohm.Runtime.Tests" />
   </ItemGroup>

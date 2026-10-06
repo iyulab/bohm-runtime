@@ -339,7 +339,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_server_that_lists_no_speech_model_says_so_instead_of_being_sent_the_recording()
+    public async Task A_server_that_lists_no_speech_model_is_not_sent_the_recording()
     {
         _server.Models = """{"object":"list","data":[{"id":"set-model","object":"model"}]}""";
         await using var host = await StartAsync(fixedAtStart: false);
@@ -347,8 +347,8 @@ public sealed class CompanyModelTests : IAsyncLifetime
 
         using var response = await PostFormFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/audio/transcriptions", [1, 2, 3], ("model", "whisper-1"));
 
-        HttpAssert.Status(HttpStatusCode.NotImplemented, response);
-        Assert.Equal("company_model_unsupported", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("code").GetString());
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        Assert.Equal("local_model_unavailable", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.Empty(_server.Asked); // only the list was asked
     }
 

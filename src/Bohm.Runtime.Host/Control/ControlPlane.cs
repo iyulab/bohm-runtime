@@ -711,7 +711,7 @@ internal static partial class ControlPlane
                 await WriteAsync(response, new AppStatus(
                     today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
                     signals.Contains(UsageSignal.Opened), signals.Contains(UsageSignal.Input), signals.Contains(UsageSignal.Wrote),
-                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.RecentErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count, onlineOnly), cancel).ConfigureAwait(false);
+                    app.Usage.LoadErrorsOn(today), app.RecentLoadErrors, app.RecentErrors, app.NeededKeys, app.Blocked, app.MissingFiles, app.MissingApis, app.Assets.Assets.Count, onlineOnly, app.NeededSpeechModel), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var assetsFor, "assets"]):
@@ -972,6 +972,38 @@ internal static partial class ControlPlane
                 // In use at once (200) or being got in the background (202).
                 response.StatusCode = started == ModelDownloads.Started.InUse ? StatusCodes.Status200OK : StatusCodes.Status202Accepted;
                 await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["llm", "speech-model"]):
+                await WriteAsync(response, await SpeechModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST" or "DELETE", ["llm", "speech-model", "download"]):
+                var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
+                if (request.Method == "DELETE")
+                {
+                    speech.StopDownload();
+                }
+                else
+                {
+                    if (!speech.Supported)
+                    {
+                        response.StatusCode = StatusCodes.Status409Conflict;
+                        break;
+                    }
+
+                    var gotten = await speech.StartDownloadAsync(cancel).ConfigureAwait(false);
+                    if (gotten == ModelDownloads.Started.Busy)
+                    {
+                        response.StatusCode = StatusCodes.Status409Conflict;
+                        break;
+                    }
+
+                    // Here already (200) or being got in the background (202).
+                    response.StatusCode = gotten == ModelDownloads.Started.InUse ? StatusCodes.Status200OK : StatusCodes.Status202Accepted;
+                }
+
+                await WriteAsync(response, await SpeechModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["llm", "local-model", "load"]):
@@ -1240,11 +1272,12 @@ internal static partial class ControlPlane
     /// Today's facts about one application. Structured only — turning them into sentences for a
     /// person is the caller's job, in the person's language. <c>OnlineOnlyStorage</c> names the online
     /// database the application keeps its data in when it has no local storage of its own — what it
-    /// writes there is not kept (<see cref="OnlineStorage"/>).
+    /// writes there is not kept (<see cref="OnlineStorage"/>). <c>NeedsSpeechModel</c>: it sent a recording to be
+    /// turned into text while no model here could — getting the speech model on this computer would answer it.
     /// </summary>
     internal sealed record AppStatus(string Date, bool Opened, bool Input, bool Wrote, int LoadErrors, IReadOnlyList<string> RecentLoadErrors, IReadOnlyList<string> RecentErrors,
         IReadOnlyList<string> NeedsKey, IReadOnlyList<BlockedResource> Blocked, IReadOnlyList<string> MissingFiles, IReadOnlyList<MissingApi> MissingApis, int CachedAssets,
-        string? OnlineOnlyStorage);
+        string? OnlineOnlyStorage, bool NeedsSpeechModel);
 
     /// <summary>
     /// An application's usage record. <c>FirstUsed</c> is day 0 of the retention rule (<c>null</c> until
@@ -1343,6 +1376,19 @@ internal static partial class ControlPlane
         return new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure,
             context.RequestServices.GetRequiredService<ModelDownloads>().Current);
     }
+
+    private static async Task<SpeechModelView> SpeechModelViewOfAsync(HttpContext context, CancellationToken cancel)
+    {
+        var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
+        return new(speech.Supported, await speech.DownloadedAsync(cancel).ConfigureAwait(false), speech.Loaded, speech.SizeBytes, speech.LastFailure, speech.Download);
+    }
+
+    /// <param name="Supported">Whether this copy can run a speech model at all.</param>
+    /// <param name="Downloaded">Whether the model is on this computer — recordings are then turned into text without the network.</param>
+    /// <param name="SizeBytes">About how much getting it takes, when known.</param>
+    /// <param name="Failure">The model library's message from the last load that failed, shown as is, or <see langword="null"/>.</param>
+    /// <param name="Download">The model being got, or the last attempt that ended without it; <see langword="null"/> when neither.</param>
+    internal sealed record SpeechModelView(bool Supported, bool Downloaded, bool Loaded, long? SizeBytes, string? Failure, ModelDownloads.DownloadView? Download);
 
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
     /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
@@ -1659,6 +1705,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]

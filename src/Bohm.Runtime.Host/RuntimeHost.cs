@@ -57,6 +57,20 @@ public sealed record RuntimeHostOptions
     public Llm.IModelSource? ModelSource { get; init; }
 
     /// <summary>
+    /// The directory holding the native ONNX Runtime the speech model runs on (shipped with the runtime). Nothing is
+    /// looked up or downloaded for it; <see langword="null"/> (the default): no speech model runs on this computer,
+    /// unless <see cref="SpeechModelSource"/> supplies one.
+    /// </summary>
+    public string? SpeechRuntimeDirectory { get; init; }
+
+    /// <summary>
+    /// Where the speech model on this computer comes from (see <c>/__control/llm/speech-model</c>).
+    /// <see langword="null"/> (the default): LMSupply's Whisper model from Hugging Face, when
+    /// <see cref="SpeechRuntimeDirectory"/> is set; tests supply a stand-in.
+    /// </summary>
+    public Llm.ISpeechModelSource? SpeechModelSource { get; init; }
+
+    /// <summary>
     /// The organization's model servers and their models, listed for this run — typically an
     /// administrator's policy passed on by whoever starts the runtime: the person chooses among them and
     /// cannot set another. <see langword="null"/> (the default): the person sets one, or none, through
@@ -143,6 +157,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Egress>();
         builder.Services.AddSingleton<Llm.LocalModel>();
         builder.Services.AddSingleton<Llm.ModelDownloads>();
+        builder.Services.AddSingleton<Llm.LocalSpeech>();
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Edit.AgentModel>();
