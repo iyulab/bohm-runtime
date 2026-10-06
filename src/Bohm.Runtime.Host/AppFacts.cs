@@ -24,8 +24,10 @@ internal static class AppFacts
           fails with a network error. To take speech, record it with getUserMedia and MediaRecorder; the
           person is asked before the microphone opens.
         - The person can send the web page they are reading in the browser to an application that declares
-          a share target, with the send button at the end of the address bar (there is no share menu), so one
-          that works on web pages should not ask them to copy and paste. Declare it in
+          a share target, with the send button at the end of the address bar (there is no share menu). Whatever
+          the person reads in the browser is a web page: an article, a mail open in their webmail, a post, a product
+          or an order page. So one that works on such text should take it this way rather than ask them to copy and
+          paste (pasting can stay as a second way). Declare it in
           the head: <link rel="manifest" href='data:application/manifest+json,{"name":"Name","share_target":{"action":"/","params":{"title":"title","url":"url"}}}'>.
           A sent page opens the application with bohm_page=<id> in its address: read it with
           fetch('/__bohm/pages/' + id), which answers { url, title, text, html, lang, byline } (html is the
