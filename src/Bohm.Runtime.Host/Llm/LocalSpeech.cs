@@ -21,8 +21,8 @@ public interface ISpeechModelSource
     /// <summary>The host downloads come from — what is counted as sent to.</summary>
     string Host { get; }
 
-    /// <summary>About how much getting the model takes, when known — read without the network.</summary>
-    long? SizeBytes { get; }
+    /// <summary>How many bytes getting the model takes. Asks the host once.</summary>
+    Task<long> DownloadSizeAsync(CancellationToken cancellationToken);
 
     /// <summary>Whether the model is on this computer, complete. Read without the network.</summary>
     Task<bool> IsDownloadedAsync(CancellationToken cancellationToken);
@@ -71,7 +71,10 @@ internal sealed class LMSupplySpeechModelSource : ISpeechModelSource
 
     public string Host => "huggingface.co";
 
-    public long? SizeBytes => LocalTranscriber.GetAllModels().FirstOrDefault(m => m.AliasName == Model)?.SizeBytes;
+    // The files a load would fetch, as the host lists them — the catalog's own figure is an estimate that can be far off
+    // (it said 970 MB for a download of about 250 MB).
+    public Task<long> DownloadSizeAsync(CancellationToken cancellationToken) =>
+        LocalTranscriber.GetDownloadSizeBytesAsync(Model, Options(download: true), cancellationToken);
 
     public Task<bool> IsDownloadedAsync(CancellationToken cancellationToken) =>
         LocalTranscriber.IsModelDownloadedAsync(Model, Options(download: false), cancellationToken);
@@ -126,8 +129,24 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
     /// <summary>Whether the model is loaded now.</summary>
     public bool Loaded => _model is not null;
 
-    /// <summary>About how much getting the model takes, when known.</summary>
-    public long? SizeBytes => _source?.SizeBytes;
+    /// <summary>
+    /// How many bytes getting the model takes — asks its host once, counted as sent there; <see langword="null"/> when the
+    /// host could not be asked.
+    /// </summary>
+    /// <exception cref="NotSupportedException">This copy cannot run a speech model.</exception>
+    public async Task<long?> DownloadSizeAsync(CancellationToken cancellationToken)
+    {
+        var source = _source ?? throw new NotSupportedException("This copy cannot run a speech model.");
+        egress.Sent(source.Host);
+        try
+        {
+            return await source.DownloadSizeAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
 
     /// <summary>Why the last load of a downloaded model failed — the model library's own message — or <see langword="null"/>.</summary>
     public string? LastFailure { get; private set; }
