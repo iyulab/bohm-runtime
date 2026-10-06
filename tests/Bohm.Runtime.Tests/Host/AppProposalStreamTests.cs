@@ -102,6 +102,28 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_change_to_a_saved_application_asked_for_lines_writes_its_new_text_as_it_is_written()
+    {
+        var id = await _host.AdoptAsync("""<!doctype html><title>Log</title><h1 id="t">Reading log</h1>""");
+        _server.StreamedCalls.Enqueue(("replace", JsonSerializer.Serialize(new { old_text = "Reading log", new_text = "My reading log" })));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/__control/apps/{id}/proposals")
+        {
+            Content = new StringContent("""{"instruction":"Call it my reading log","target":{"html":"<h1 id=\"t\">Reading log</h1>","text":"Reading log"}}""", Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        using var response = await _host.ControlClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var lines = await LinesAsync(response);
+        Assert.Equal("My reading log", string.Concat(lines.SkipLast(1).Select(l => l.GetProperty("writing").GetString())));
+        var done = lines[^1];
+        Assert.Equal("done", done.GetProperty("status").GetString());
+        Assert.Contains("My reading log", done.GetProperty("html").GetString(), StringComparison.Ordinal);
+        Assert.Single(done.GetProperty("edits").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Asked_for_lines_a_server_that_refuses_ends_them_with_a_failed_line_that_says_why()
     {
         _server.Refusal = (429, """{"error":{"message":"Slow down.","type":"rate_limit"}}""");

@@ -1597,23 +1597,44 @@ internal static partial class ControlPlane
             return;
         }
 
+        // Asked for lines: as for a new application (`apps/proposals`) — { writing, start } for each replacement's new text as the
+        // model writes it, then { status: "done", … } with the proposal or { status: "failed", … } with what a 503 would carry.
+        var lines = AcceptsLines(context.Request);
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null;
+        if (lines)
+        {
+            response.ContentType = NdJson;
+            await response.StartAsync(cancel).ConfigureAwait(false);
+            onProgress = (progress, token) => WriteLineAsync(response, progress, Promotion.PromotionJson.Default.ProposalProgress, token);
+        }
+
         Edit.EditProposal proposal;
         try
         {
             proposal = await (target is null
                 ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
-                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel)).ConfigureAwait(false);
+                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel, onProgress)).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
             // The model stopped without finishing — the local server's request limit, or a provider's refusal,
             // which carries the provider's own status and message so the person can see why.
+            var (detail, provider, stopped) = (e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped);
+            if (lines)
+            {
+                await WriteLineAsync(response, new Promotion.PromotionEndpoints.ProposalFailedLine("failed", null, detail, provider, stopped), Promotion.PromotionJson.Default.ProposalFailedLine, cancel).ConfigureAwait(false);
+                return;
+            }
+
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new ProposalFailure(null, detail, provider, stopped), cancel).ConfigureAwait(false);
             return;
         }
 
-        await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped), cancel).ConfigureAwait(false);
+        if (lines)
+            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped), cancel).ConfigureAwait(false);
+        else
+            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped), cancel).ConfigureAwait(false);
     }
 
     /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
@@ -1624,6 +1645,9 @@ internal static partial class ControlPlane
     /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
     /// <param name="Stopped"><c>output-limit</c> when the model's answer reached its length limit after making these edits, <c>step-limit</c> when it used all its rounds — they may not be all it meant to make; otherwise <see langword="null"/>.</param>
     internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped);
+
+    /// <summary>The last line of a change proposed as it goes: <see cref="ProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
+    internal sealed record ProposalLine(string Status, string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
@@ -1719,6 +1743,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalLine))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalFailure))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.EditModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Edit.EditModelMissing))]
