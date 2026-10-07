@@ -32,13 +32,13 @@ internal static class PagesServing
         await ServeAsync(context, app.Pages).ConfigureAwait(false);
     }
 
-    /// <summary>Serves a read to a preview of the application: its pages as they are, the same way.</summary>
-    public static Task ServeToPreviewAsync(HttpContext context, OpenApp app) => ServeAsync(context, app.Pages);
+    /// <summary>
+    /// Serves a read to a preview, the same way: of an application, its pages as they are; of a proposed new one,
+    /// the pages sent to the preview; none when there are none.
+    /// </summary>
+    public static Task ServeToPreviewAsync(HttpContext context, ReceivedPages? pages) => ServeAsync(context, pages);
 
-    /// <summary>Serves a read to a preview of a proposed new application, which has received no page.</summary>
-    public static Task ServeEmptyAsync(HttpContext context) => ServeAsync(context, null);
-
-    private static async Task ServeAsync(HttpContext context, AppPages? pages)
+    private static async Task ServeAsync(HttpContext context, ReceivedPages? pages)
     {
         var request = context.Request;
         var response = context.Response;
@@ -68,11 +68,12 @@ internal static class PagesServing
     }
 
     /// <summary>
-    /// The control API's <c>POST /apps/{id}/pages</c>, once the application is known and open: keeps a page
-    /// the person sent — <c>{ url, title, text, html, lang, byline }</c> — and answers <c>{ page, withoutHtml }</c>
+    /// The control API's <c>POST /apps/{id}/pages</c>, once the application is known and open — and
+    /// <c>POST /previews/{token}/pages</c>, once the preview is: keeps a page the person sent —
+    /// <c>{ url, title, text, html, lang, byline }</c> — and answers <c>{ page, withoutHtml }</c>
     /// with the page's summary. A missing address or text is 400; text larger than a page may be is 413.
     /// </summary>
-    public static async Task HandleControlAsync(HttpContext context, OpenApp app, string[] rest)
+    public static async Task HandleControlAsync(HttpContext context, ReceivedPages pages, string[] rest)
     {
         var request = context.Request;
         var response = context.Response;
@@ -99,11 +100,11 @@ internal static class PagesServing
             return;
         }
 
-        var (outcome, page) = await app.Pages.ReceiveAsync(url, sent.Title, text, sent.Html, sent.Lang, sent.Byline, cancel).ConfigureAwait(false);
+        var (outcome, page) = await pages.ReceiveAsync(url, sent.Title, text, sent.Html, sent.Lang, sent.Byline, cancel).ConfigureAwait(false);
         switch (outcome)
         {
             case ReceiveOutcome.Received or ReceiveOutcome.ReceivedWithoutHtml:
-                await response.WriteAsJsonAsync(new PageReceived(AppPages.SummaryOf(page!), outcome == ReceiveOutcome.ReceivedWithoutHtml), PagesHttpJson.Default.PageReceived, cancellationToken: cancel).ConfigureAwait(false);
+                await response.WriteAsJsonAsync(new PageReceived(ReceivedPages.SummaryOf(page!), outcome == ReceiveOutcome.ReceivedWithoutHtml), PagesHttpJson.Default.PageReceived, cancellationToken: cancel).ConfigureAwait(false);
                 return;
             case ReceiveOutcome.TooLarge:
                 response.StatusCode = StatusCodes.Status413PayloadTooLarge;

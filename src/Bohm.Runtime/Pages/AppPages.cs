@@ -42,40 +42,28 @@ public enum ReceiveOutcome
 }
 
 /// <summary>
-/// The pages people sent to one application, in its folder: <c>pages/&lt;id&gt;.json</c>, one file per
-/// page, and <c>pages/index.ndjson</c>, one summary line per page, oldest first.
+/// The pages people sent to one receiver: what a page must be to be kept, how it is named and summarized.
+/// Where the pages are kept is the subclass's — <see cref="AppPages"/> in an application's folder,
+/// <see cref="HeldPages"/> in memory for a preview. Calls are serialized: a subclass keeps, lists and gets
+/// one at a time.
 /// </summary>
 /// <remarks>
 /// A page is a fact about what the person chose to keep at that moment, so pages are only added: the
-/// application reads them and keeps in its own storage whatever it makes of them. The page file is
-/// written before its index line, so a crash between the two leaves an unlisted file, never a listed
-/// page that cannot be read.
+/// application reads them and keeps in its own storage whatever it makes of them.
 /// </remarks>
-public sealed partial class AppPages : IDisposable
+public abstract partial class ReceivedPages : IDisposable
 {
-    /// <summary>The folder holding the pages, in the application's folder.</summary>
-    public const string Directory = "pages";
-
     /// <summary>The most a page may weigh, its text and HTML together, in UTF-8 bytes. The HTML is the first to go.</summary>
     public const int MaxPageBytes = 2 * 1024 * 1024;
 
-    private const string IndexFile = "index.ndjson";
     private const int ExcerptLength = 200;
 
-    private readonly string _folder;
     private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private long _lastStamp;
     private int _lastSequence;
 
-    private AppPages(string appFolder, TimeProvider clock)
-    {
-        _folder = Path.Combine(appFolder, Directory);
-        _clock = clock;
-    }
-
-    /// <summary>Opens the pages of the application whose folder is <paramref name="appFolder"/>. Nothing is created until a page arrives.</summary>
-    public static AppPages Open(string appFolder, TimeProvider? clock = null) => new(appFolder, clock ?? TimeProvider.System);
+    private protected ReceivedPages(TimeProvider clock) => _clock = clock;
 
     /// <summary>Whether <paramref name="id"/> can name a received page.</summary>
     public static bool IsValidId(string? id) => id is not null && IdPattern().IsMatch(id);
@@ -84,7 +72,7 @@ public sealed partial class AppPages : IDisposable
     private static partial Regex IdPattern();
 
     /// <summary>
-    /// Keeps a page sent to the application: a web address (<c>http</c> or <c>https</c>) and non-blank
+    /// Keeps a page sent to the receiver: a web address (<c>http</c> or <c>https</c>) and non-blank
     /// text are required; a blank title becomes the address. When text and HTML together are larger
     /// than <see cref="MaxPageBytes"/> the HTML is left out; when the text alone is, nothing is kept.
     /// </summary>
@@ -104,9 +92,7 @@ public sealed partial class AppPages : IDisposable
             var receivedAt = _clock.GetUtcNow();
             var page = new ReceivedPage(NewId(receivedAt), receivedAt, url, string.IsNullOrWhiteSpace(title) ? url : title.Trim(), text, html,
                 Blank(lang), Blank(byline));
-            System.IO.Directory.CreateDirectory(_folder);
-            await DurableFile.WriteAtomicallyAsync(PagePath(page.Id), JsonSerializer.SerializeToUtf8Bytes(page, PagesJson.Default.ReceivedPage), cancellationToken).ConfigureAwait(false);
-            await AppendSummaryAsync(SummaryOf(page), cancellationToken).ConfigureAwait(false);
+            await KeepAsync(page, cancellationToken).ConfigureAwait(false);
             return (withoutHtml ? ReceiveOutcome.ReceivedWithoutHtml : ReceiveOutcome.Received, page);
         }
         finally
@@ -121,23 +107,7 @@ public sealed partial class AppPages : IDisposable
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var index = Path.Combine(_folder, IndexFile);
-            if (!File.Exists(index)) return [];
-            var pages = new List<ReceivedPageSummary>();
-            foreach (var line in Encoding.UTF8.GetString(await DurableFile.ReadAsync(index, cancellationToken).ConfigureAwait(false)).Split('\n'))
-            {
-                if (line.Length == 0) continue;
-                try
-                {
-                    if (JsonSerializer.Deserialize(line, PagesJson.Default.ReceivedPageSummary) is { } summary) pages.Add(summary);
-                }
-                catch (JsonException)
-                {
-                    // An incomplete line — the end of an append a crash interrupted — is not a page.
-                }
-            }
-
-            return pages;
+            return await ListKeptAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -152,15 +122,22 @@ public sealed partial class AppPages : IDisposable
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var path = PagePath(id);
-            if (!File.Exists(path)) return null;
-            return JsonSerializer.Deserialize(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false), PagesJson.Default.ReceivedPage);
+            return await GetKeptAsync(id, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _lock.Release();
         }
     }
+
+    /// <summary>Keeps <paramref name="page"/>, valid and newly named. Called one at a time.</summary>
+    private protected abstract Task KeepAsync(ReceivedPage page, CancellationToken cancellationToken);
+
+    /// <summary>The kept pages' summaries, oldest first. Called one at a time.</summary>
+    private protected abstract Task<IReadOnlyList<ReceivedPageSummary>> ListKeptAsync(CancellationToken cancellationToken);
+
+    /// <summary>Kept page <paramref name="id"/> — a valid id — if there is one. Called one at a time.</summary>
+    private protected abstract Task<ReceivedPage?> GetKeptAsync(string id, CancellationToken cancellationToken);
 
     /// <summary>
     /// A new id: the milliseconds since 1970 in twelve hex digits, then four more — random for the first
@@ -202,6 +179,70 @@ public sealed partial class AppPages : IDisposable
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    public void Dispose()
+    {
+        _lock.Dispose();
+        GC.SuppressFinalize(this);
+    }
+}
+
+/// <summary>
+/// The pages people sent to one application, in its folder: <c>pages/&lt;id&gt;.json</c>, one file per
+/// page, and <c>pages/index.ndjson</c>, one summary line per page, oldest first.
+/// </summary>
+/// <remarks>
+/// The page file is written before its index line, so a crash between the two leaves an unlisted file,
+/// never a listed page that cannot be read.
+/// </remarks>
+public sealed class AppPages : ReceivedPages
+{
+    /// <summary>The folder holding the pages, in the application's folder.</summary>
+    public const string Directory = "pages";
+
+    private const string IndexFile = "index.ndjson";
+
+    private readonly string _folder;
+
+    private AppPages(string appFolder, TimeProvider clock) : base(clock) => _folder = Path.Combine(appFolder, Directory);
+
+    /// <summary>Opens the pages of the application whose folder is <paramref name="appFolder"/>. Nothing is created until a page arrives.</summary>
+    public static AppPages Open(string appFolder, TimeProvider? clock = null) => new(appFolder, clock ?? TimeProvider.System);
+
+    private protected override async Task KeepAsync(ReceivedPage page, CancellationToken cancellationToken)
+    {
+        System.IO.Directory.CreateDirectory(_folder);
+        await DurableFile.WriteAtomicallyAsync(PagePath(page.Id), JsonSerializer.SerializeToUtf8Bytes(page, PagesJson.Default.ReceivedPage), cancellationToken).ConfigureAwait(false);
+        await AppendSummaryAsync(SummaryOf(page), cancellationToken).ConfigureAwait(false);
+    }
+
+    private protected override async Task<IReadOnlyList<ReceivedPageSummary>> ListKeptAsync(CancellationToken cancellationToken)
+    {
+        var index = Path.Combine(_folder, IndexFile);
+        if (!File.Exists(index)) return [];
+        var pages = new List<ReceivedPageSummary>();
+        foreach (var line in Encoding.UTF8.GetString(await DurableFile.ReadAsync(index, cancellationToken).ConfigureAwait(false)).Split('\n'))
+        {
+            if (line.Length == 0) continue;
+            try
+            {
+                if (JsonSerializer.Deserialize(line, PagesJson.Default.ReceivedPageSummary) is { } summary) pages.Add(summary);
+            }
+            catch (JsonException)
+            {
+                // An incomplete line — the end of an append a crash interrupted — is not a page.
+            }
+        }
+
+        return pages;
+    }
+
+    private protected override async Task<ReceivedPage?> GetKeptAsync(string id, CancellationToken cancellationToken)
+    {
+        var path = PagePath(id);
+        if (!File.Exists(path)) return null;
+        return JsonSerializer.Deserialize(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false), PagesJson.Default.ReceivedPage);
+    }
+
     private string PagePath(string id) => Path.Combine(_folder, id + ".json");
 
     private async Task AppendSummaryAsync(ReceivedPageSummary summary, CancellationToken cancellationToken)
@@ -222,8 +263,32 @@ public sealed partial class AppPages : IDisposable
         stream.WriteByte((byte)'\n');
         stream.Flush(flushToDisk: true);
     }
+}
 
-    public void Dispose() => _lock.Dispose();
+/// <summary>
+/// Pages sent to something that keeps nothing — a preview of a proposed application, tried before it is
+/// taken in: held in memory, gone with it.
+/// </summary>
+public sealed class HeldPages(TimeProvider? clock = null) : ReceivedPages(clock ?? TimeProvider.System)
+{
+    private readonly List<ReceivedPage> _pages = [];
+    private int _count;
+
+    /// <summary>Whether a page has been sent here.</summary>
+    public bool Any => Volatile.Read(ref _count) > 0;
+
+    private protected override Task KeepAsync(ReceivedPage page, CancellationToken cancellationToken)
+    {
+        _pages.Add(page);
+        Volatile.Write(ref _count, _pages.Count);
+        return Task.CompletedTask;
+    }
+
+    private protected override Task<IReadOnlyList<ReceivedPageSummary>> ListKeptAsync(CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ReceivedPageSummary>>([.. _pages.Select(SummaryOf)]);
+
+    private protected override Task<ReceivedPage?> GetKeptAsync(string id, CancellationToken cancellationToken) =>
+        Task.FromResult(_pages.Find(p => p.Id == id));
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = false)]
