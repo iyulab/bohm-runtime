@@ -255,10 +255,11 @@ public sealed class CompanyModelTests : IAsyncLifetime
         await using var host = await RunningHost.StartAsync();
         using (var none = await host.ControlClient().PostAsync("/__control/llm/company-model/check", null)) HttpAssert.Status(HttpStatusCode.NotFound, none);
 
-        using var closed = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        closed.Start();
-        var port = ((IPEndPoint)closed.LocalEndpoint).Port;
-        closed.Stop(); // nothing listens there now
+        // A port bound but not listening: a connection is refused, and no other test's server can take the port meanwhile
+        // (a listener stopped right away let a parallel test's server bind the same port, and the check then answered).
+        using var closed = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+        closed.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var port = ((IPEndPoint)closed.LocalEndPoint!).Port;
         using (var set = await SetAsync(host, $"http://127.0.0.1:{port}/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
         var check = await CheckAsync(host);
         Assert.Equal("unreachable", check.GetProperty("result").GetString());
