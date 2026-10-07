@@ -100,6 +100,9 @@ public sealed record RuntimeHostOptions
 
     /// <summary>Replaces the network for asset fetching — for tests.</summary>
     public Func<HttpMessageHandler>? AssetHttpHandler { get; init; }
+
+    /// <summary>Replaces the network for reading sites' robots.txt — for tests.</summary>
+    public Func<HttpMessageHandler>? RobotsHttpHandler { get; init; }
 }
 
 /// <summary>
@@ -147,6 +150,13 @@ public static class RuntimeHost
         // No overall timeout: a streamed answer can legitimately run for minutes.
         builder.Services.AddHttpClient(nameof(Llm.LlmProxy), client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { UseCookies = false, AllowAutoRedirect = false });
+        // robots.txt for the agent: any address the person's browser could open, the local network included — never cookies.
+        builder.Services.AddHttpClient(Agent.RobotsPolicy.ClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(Agent.RobotsPolicy.ProductToken);
+        }).ConfigurePrimaryHttpMessageHandler(options.RobotsHttpHandler ?? (() => new SocketsHttpHandler { UseCookies = false, MaxAutomaticRedirections = 5 }));
+        builder.Services.AddSingleton<Agent.RobotsPolicy>();
         builder.Services.AddSingleton(new StorageChannel(new ChannelSessions(), AdoptedAppServing.ChannelOptions));
         builder.Services.AddSingleton(new ProblemReports(AdoptedAppServing.ProblemOptions));
         builder.Services.AddSingleton<OpenApps>();
