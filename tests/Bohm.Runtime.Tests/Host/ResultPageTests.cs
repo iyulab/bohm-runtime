@@ -51,6 +51,29 @@ public sealed class ResultPageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_title_heading_the_text_opens_with_is_left_out_and_its_sections_stay_headings()
+    {
+        using var made = await _host.ControlClient().PostAsync("/__control/results",
+            new StringContent("""{"title":"Open pages","text":"# Summary of the open pages\n\n## River buses\nBoats from March.\n\n## Batteries\nTen minutes."}""", Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.Created, made);
+        var id = JsonDocument.Parse(await made.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+        var html = Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id));
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(html, "<h1>"));   // the page's own title only
+        Assert.Contains("<h1>Open pages</h1>", html);
+        Assert.DoesNotContain("Summary of the open pages", html);
+        Assert.Contains("<h2>River buses</h2>", html);
+        Assert.Contains("<h2>Batteries</h2>", html);
+    }
+
+    [Theory]
+    [InlineData("# Only a heading", "# Only a heading")]
+    [InlineData("## Not the title\ntext", "## Not the title\ntext")]
+    [InlineData("  # Title\r\n\r\nBody  ", "Body")]
+    public void Only_an_opening_first_level_heading_is_left_out(string text, string kept) =>
+        Assert.Equal(kept, Bohm.Runtime.Host.Adoption.ResultPage.WithoutOwnTitle(text));
+
+    [Fact]
     public async Task Without_sources_the_page_has_no_sources_heading()
     {
         using var made = await _host.ControlClient().PostAsync("/__control/results",
