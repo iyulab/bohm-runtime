@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Bohm.Runtime.Adoption;
+using Bohm.Runtime.Pages;
 using LocalOrigin.AspNetCore.Previews;
 using LocalOrigin.AspNetCore.Storage;
 
@@ -16,6 +17,10 @@ namespace Bohm.Runtime.Host.Adoption;
 /// reads the application's sources as they are,
 /// records no use, asks no model (a call to one is declined and noted) and adds nothing to what the application is told it is missing.
 /// Load errors and refused requests are kept on the preview, for the caller to read.
+/// A proposed new application is tried with pages the person sends it (<see cref="AppPreviews.Preview.Pages"/>):
+/// once one has arrived, its calls to a model are relayed as the application's would be — sending a page to
+/// try it with is the person asking it to do its work — and it is served with a session of its own, so that
+/// only its own page can make them.
 /// </remarks>
 internal static class PreviewServing
 {
@@ -64,7 +69,8 @@ internal static class PreviewServing
 
         if (path.StartsWithSegments("/__bohm/llm"))
         {
-            await DeclineModelAsync(context, preview).ConfigureAwait(false);
+            if (preview.Pages is { Any: true }) await Llm.LlmProxy.HandleAsync(context, preview.Scope, app: null).ConfigureAwait(false);
+            else await DeclineModelAsync(context, preview).ConfigureAwait(false);
             return;
         }
 
@@ -83,7 +89,7 @@ internal static class PreviewServing
 
         if (path.StartsWithSegments(PagesServing.PathPrefix))
         {
-            await (app is null ? PagesServing.ServeEmptyAsync(context) : PagesServing.ServeToPreviewAsync(context, app)).ConfigureAwait(false);
+            await PagesServing.ServeToPreviewAsync(context, (ReceivedPages?)preview.Pages ?? app?.Pages).ConfigureAwait(false);
             return;
         }
 
@@ -94,7 +100,10 @@ internal static class PreviewServing
         }
 
         var channel = context.RequestServices.GetRequiredService<StorageChannel>();
-        var page = new ChannelPage("preview", channel.Script("preview", app is null ? new Dictionary<string, string>() : app.Storage.GetItems()));
+        var items = app is null ? new Dictionary<string, string>() : app.Storage.GetItems();
+        // One that pages can be sent to gets a session, as an application's page does — what lets its own page, and no
+        // other, call a model once a page has arrived. Its writes still go nowhere.
+        var page = preview.Pages is null ? new ChannelPage("preview", channel.Script("preview", items)) : channel.Open(context, preview.Scope, items);
         var (body, charset) = AdoptedAppServing.Inject(context, preview.Html, page, app, preview.AppId ?? "preview");
         response.Headers.CacheControl = "no-store";
         response.ContentType = $"text/html; charset={charset}";

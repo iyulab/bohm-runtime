@@ -44,9 +44,10 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>DELETE /__control/apps/{id}</c></term><description>Removes an archived application, or an unsaved result, for good: its folder goes to the recycle bin (the operating system's way back); its usage record stays and keeps appearing in the usage report with the day it was removed. 409 when the application is not archived.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/proposals</c></term><description>Proposes a change to the application's current source: the body is <c>{ instruction, target: { html, text? } }</c> — what the person asked and the element they pointed at. With <c>broken: { html, problems: [text, …] }</c> the change starts from that version instead — the earlier proposal for this request, which failed when the shell opened it with a copy of the data — and the model is told the problems (the first ten) to fix them while keeping the change; 400 when it has no HTML or no problem. Answers <c>{ html, summary, edits: [{ old, new }], model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the model's answer reached its length limit after these edits, or <c>step-limit</c> when it used all its rounds of reading and replacing, so they may not be all it meant to make; nothing is applied (taking it in is a new revision). Made with the model chosen for proposals (<c>/__control/edit/model</c>). 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when the model cannot run or stops — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit before any change, or <c>step-limit</c> when the model used all its rounds before one.</description></item>
 /// <item><term><c>POST /__control/apps/proposals</c></term><description>Proposes a new application — from what the person asked alone, or from an answer and the tables on the pages behind it: the body is <c>{ question, answer?, lang?, pages?: [{ url, title?, tables: [{ selector, headers, rows, preview }] }] }</c> — the tables as the shell found them; with no pages the application is what the person asked for, reading no source. With <c>broken: { html, problems: [text, …] }</c> (no pages) the earlier proposal for that request, which failed when the shell opened it, is fixed from that version with exact replacements and the problems told (the first ten), and held to the same checks; 400 with pages, or without its HTML or a problem. Answers <c>{ title, html, sources: [{ name, page, rule: { site, selector, columns } }], summary, model, refused: [reason, …] }</c> — <c>refused</c> holds what was sent back to the model before the proposal was kept; nothing is kept. The rules are made from the tables and columns the model chose among those given, and the application is refused unless it reads exactly the sources it declares and puts their values on the page only as text. Made with the model chosen for proposals, but never the one on this computer — 409 <c>{ needs: "largerModel" }</c> — or 409 with what is missing, 503 with why when the model cannot run, stops or proposes nothing usable — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit first.</description></item>
-/// <item><term><c>POST /__control/previews</c></term><description>Holds a proposed new application for a look, from <c>{ html, readings: { name: { source, columns, rows } } }</c>: answers <c>{ token, origin }</c>, served there with no data and each source answering the rows given, for two minutes. Nothing is kept. <c>GET /__control/previews/{token}</c> and <c>DELETE</c> as for an application's previews.</description></item>
+/// <item><term><c>POST /__control/previews</c></term><description>Holds a proposed new application for a look, from <c>{ html, readings: { name: { source, columns, rows } } }</c>: answers <c>{ token, origin, shareTarget }</c>, served there with no data and each source answering the rows given, until two minutes after it was last used. <c>shareTarget</c> is the query names its manifest gives a shared page (<c>{ title, text, url }</c>, as for <c>apps/page-targets</c>), or <c>null</c> when it receives none. Nothing is kept. <c>GET /__control/previews/{token}</c> and <c>DELETE</c> as for an application's previews.</description></item>
+/// <item><term><c>POST /__control/previews/{token}/pages</c></term><description>Sends a web page to a proposed new application's preview, to try it with — the body and answer as for <c>apps/{id}/pages</c>. The page is held with the preview, which reads it at <c>/__bohm/pages/{id}</c>, and goes with it; once one has arrived the preview's calls to a model are relayed as the application's would be (before, they are declined). 404 once the preview has expired or been removed.</description></item>
 /// <item><term><c>POST /__control/apps/promotions</c></term><description>Takes in a proposed application — <c>{ html, title?, sources?: [{ name, rule }], readings?: { name: { source, columns, rows } } }</c> — with its sources, if any, allowed (taking it in is the person's permission) and the rows read for them kept as the first readings. 201 with the application. Everything is checked first: a bad rule, rows for no source, or rows its source would refuse leave nothing behind (400).</description></item>
-/// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, for two minutes. Nothing about the application changes.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, until two minutes after it was last used. Nothing about the application changes.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview loaded: <c>{ errors, blocked, askedModel }</c> — errors thrown, with lines as in the previewed document, what the content security policy refused (<c>category host</c>), and whether it called a model — declined in a preview, so errors that followed may not happen once it is taken in. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
@@ -376,6 +377,16 @@ internal static partial class ControlPlane
                 await WriteAsync(response, new PreviewReport(newPreview.Errors, newPreview.Blocked, newPreview.AskedModel), cancel).ConfigureAwait(false);
                 break;
 
+            case (_, ["previews", var receivingToken, "pages", .. var previewPagesRest]):
+                if (context.RequestServices.GetRequiredService<AppPreviews>().Find(null, receivingToken) is not { Pages: { } held })
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await PagesServing.HandleControlAsync(context, held, previewPagesRest).ConfigureAwait(false);
+                break;
+
             case ("DELETE", ["previews", var removedNew]):
                 response.StatusCode = context.RequestServices.GetRequiredService<AppPreviews>().Remove(null, removedNew)
                     ? StatusCodes.Status204NoContent : StatusCodes.Status404NotFound;
@@ -608,7 +619,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await PagesServing.HandleControlAsync(context, await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(pagesId).ConfigureAwait(false), pagesRest).ConfigureAwait(false);
+                await PagesServing.HandleControlAsync(context, (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(pagesId).ConfigureAwait(false)).Pages, pagesRest).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var removeId]):
@@ -1723,7 +1734,8 @@ internal static partial class ControlPlane
 
     internal sealed record TabView(long Ack, long Issued, bool Left);
 
-    internal sealed record PreviewView(string Token, string Origin);
+    /// <param name="ShareTarget">For a proposed new application whose manifest says it receives pages, the query names it gives them — what the person tries it with through <c>POST /__control/previews/{token}/pages</c>.</param>
+    internal sealed record PreviewView(string Token, string Origin, Bohm.Runtime.Pages.ShareTarget? ShareTarget = null);
 
     internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> Blocked, bool AskedModel);
 }

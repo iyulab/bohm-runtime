@@ -123,7 +123,7 @@ internal static class PromotionEndpoints
 
         var token = context.RequestServices.GetRequiredService<AppPreviews>().CreateNew(Encoding.UTF8.GetBytes(html), readings);
         response.StatusCode = StatusCodes.Status201Created;
-        await WriteAsync(response, new Control.ControlPlane.PreviewView(token, AppPreviews.Origin(token, port).AbsoluteUri), cancel).ConfigureAwait(false);
+        await WriteAsync(response, new Control.ControlPlane.PreviewView(token, AppPreviews.Origin(token, port).AbsoluteUri, Bohm.Runtime.Pages.ShareTarget.Find(html)), cancel).ConfigureAwait(false);
     }
 
     /// <summary>

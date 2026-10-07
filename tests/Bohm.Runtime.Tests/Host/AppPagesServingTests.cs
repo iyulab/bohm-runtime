@@ -171,6 +171,62 @@ public sealed class AppPagesServingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_new_proposal_is_tried_with_pages_sent_to_its_preview_which_go_with_it()
+    {
+        using var created = await _host.ControlClient().PostAsync("/__control/previews", Json(JsonSerializer.Serialize(new { html = ReceivingApp, readings = new { } })));
+        HttpAssert.Status(HttpStatusCode.Created, created);
+        var view = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement;
+        var token = view.GetProperty("token").GetString();
+        Assert.Equal("title", view.GetProperty("shareTarget").GetProperty("title").GetString());
+        Assert.Equal("url", view.GetProperty("shareTarget").GetProperty("url").GetString());
+
+        using var sent = await _host.ControlClient().PostAsync($"/__control/previews/{token}/pages", Json(Sent));
+        HttpAssert.Status(HttpStatusCode.OK, sent);
+        var pageId = JsonDocument.Parse(await sent.Content.ReadAsStringAsync()).RootElement.GetProperty("page").GetProperty("id").GetString();
+
+        using var preview = _host.ClientFor($"pv-{token}.localhost");
+        var listed = Assert.Single(JsonDocument.Parse(await preview.GetStringAsync("/__bohm/pages")).RootElement.EnumerateArray());
+        Assert.Equal(pageId, listed.GetProperty("id").GetString());
+        var whole = JsonDocument.Parse(await preview.GetStringAsync($"/__bohm/pages/{pageId}")).RootElement;
+        Assert.Equal("First line.\nSecond line.", whole.GetProperty("text").GetString());
+        Assert.Empty(Directory.EnumerateDirectories(_host.DataRoot, "pages", SearchOption.AllDirectories));   // held with the preview, nowhere on disk
+
+        using (await _host.ControlClient().DeleteAsync($"/__control/previews/{token}")) { }
+        using var gone = await _host.ControlClient().PostAsync($"/__control/previews/{token}/pages", Json(Sent));
+        HttpAssert.Status(HttpStatusCode.NotFound, gone);
+
+        using var plain = await _host.ControlClient().PostAsync("/__control/previews", Json("""{"html":"<p>new</p>","readings":{}}"""));
+        Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await plain.Content.ReadAsStringAsync()).RootElement.GetProperty("shareTarget").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_preview_asks_no_model_until_a_page_is_sent_and_then_its_own_page_asks_as_the_application_would()
+    {
+        using var created = await _host.ControlClient().PostAsync("/__control/previews", Json(JsonSerializer.Serialize(new { html = ReceivingApp, readings = new { } })));
+        var token = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement.GetProperty("token").GetString();
+        using var preview = _host.ClientFor($"pv-{token}.localhost");
+        using var load = await preview.GetAsync("/");
+        var cookie = Assert.Single(load.Headers.GetValues("Set-Cookie")).Split(';')[0];   // a session of the preview's own
+        async Task<HttpResponseMessage> AskAsync(string? withCookie)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions") { Content = Json("""{"model":"m"}""") };
+            if (withCookie is not null) request.Headers.Add("Cookie", withCookie);
+            return await preview.SendAsync(request);
+        }
+
+        using (var declined = await AskAsync(cookie)) HttpAssert.Status(HttpStatusCode.ServiceUnavailable, declined);
+        Assert.True(JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/previews/{token}")).RootElement.GetProperty("askedModel").GetBoolean());
+
+        using (var sent = await _host.ControlClient().PostAsync($"/__control/previews/{token}/pages", Json(Sent))) HttpAssert.Status(HttpStatusCode.OK, sent);
+
+        using var asked = await AskAsync(cookie);   // relayed as the application's would be: here, no key is connected
+        HttpAssert.Status(HttpStatusCode.Unauthorized, asked);
+        Assert.Equal("bohm_no_key", JsonDocument.Parse(await asked.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("type").GetString());
+        using var stranger = await AskAsync(null);
+        HttpAssert.Status(HttpStatusCode.Forbidden, stranger);
+    }
+
+    [Fact]
     public async Task Pages_are_data_they_go_with_the_data_and_stay_behind_without_it()
     {
         var id = await _host.AdoptAsync(ReceivingApp);

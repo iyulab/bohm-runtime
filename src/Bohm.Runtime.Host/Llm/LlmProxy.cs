@@ -48,7 +48,7 @@ internal static class LlmProxy
         "Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods",
     };
 
-    public static async Task HandleAsync(HttpContext context, string appId, OpenApp app)
+    public static async Task HandleAsync(HttpContext context, string appId, OpenApp? app)
     {
         var request = context.Request;
         var response = context.Response;
@@ -112,7 +112,7 @@ internal static class LlmProxy
 
         if (string.IsNullOrEmpty(key))
         {
-            app.NeedsKey(provider.Id);
+            app?.NeedsKey(provider.Id);
             await WriteErrorAsync(response, provider, HttpStatusCode.Unauthorized, "no_key",
                 $"No {provider.DisplayName} API key is connected. Connect one in Bohm to use AI in this app.").ConfigureAwait(false);
             return;
@@ -230,7 +230,7 @@ internal static class LlmProxy
     /// learns it, to offer getting the model on this computer.
     /// </summary>
     /// <returns>Whether the request was answered; <see langword="false"/> leaves it to the key check, as with no AI at all.</returns>
-    private static async Task<bool> TranscribeKeylessAsync(HttpContext context, OpenApp app, LlmProvider provider, CompanyModel company, bool localChat)
+    private static async Task<bool> TranscribeKeylessAsync(HttpContext context, OpenApp? app, LlmProvider provider, CompanyModel company, bool localChat)
     {
         var request = context.Request;
         var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
@@ -249,7 +249,7 @@ internal static class LlmProxy
         }
 
         if (!company.Configured && !localChat) return false;
-        if (speech.Supported) app.NeedsSpeechModel();
+        if (speech.Supported) app?.NeedsSpeechModel();
         await WriteErrorAsync(context.Response, provider, HttpStatusCode.ServiceUnavailable, "local_model_unavailable",
             "No model here turns speech into text yet. Keep the recording and try again later.").ConfigureAwait(false);
         return true;
