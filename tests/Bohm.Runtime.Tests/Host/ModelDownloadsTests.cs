@@ -17,6 +17,18 @@ public sealed class ModelDownloadsTests : IDisposable
     }
 
     [Fact]
+    public void The_librarys_failures_read_in_the_interfaces_terms()
+    {
+        // LMSupply 0.110 wraps a download the network broke in ModelDownloadException — a generator's model and the
+        // speech model both read it as HttpRequestException, which the download view shows as unreachable.
+        var broke = new HttpRequestException("no route", null, HttpStatusCode.BadGateway);
+        var network = Assert.IsType<HttpRequestException>(LMSupplyModelSource.Translated(new LMSupply.Exceptions.ModelDownloadException("download failed", "m", broke)));
+        Assert.Equal(HttpStatusCode.BadGateway, network.StatusCode);
+        Assert.IsType<KeyNotFoundException>(LMSupplyModelSource.Translated(new LMSupply.Exceptions.ModelNotFoundException("no such model", "m")));
+        Assert.Null(LMSupplyModelSource.Translated(new LMSupply.Exceptions.ModelDownloadException("disk full", "m", new IOException("full"))));
+    }
+
+    [Fact]
     public async Task The_catalog_lists_each_model_with_its_licence_size_and_whether_it_is_here_without_the_network()
     {
         var source = new StandIn(_cache);

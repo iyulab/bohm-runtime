@@ -127,7 +127,7 @@ internal sealed class LMSupplyModelSource : IModelSource
     /// answers the same whether it does not exist or is private or gated — as <see cref="KeyNotFoundException"/>, and a
     /// download the network broke as <see cref="HttpRequestException"/>. <see langword="null"/>: leave it as it is.
     /// </summary>
-    private static Exception? Translated(Exception e) => e switch
+    internal static Exception? Translated(Exception e) => e switch
     {
         ModelNotFoundException => new KeyNotFoundException(e.Message, e),
         UnauthorizedAccessException { InnerException: HttpRequestException } => new KeyNotFoundException(e.Message, e),

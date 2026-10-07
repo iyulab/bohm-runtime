@@ -73,8 +73,19 @@ internal sealed class LMSupplySpeechModelSource : ISpeechModelSource
 
     // The files a load would fetch, as the host lists them — the catalog's own figure is an estimate that can be far off
     // (it said 970 MB for a download of about 250 MB).
-    public Task<long> DownloadSizeAsync(CancellationToken cancellationToken) =>
-        LocalTranscriber.GetDownloadSizeBytesAsync(Model, Options(download: true), cancellationToken);
+    // The library's failures in the interface's terms, as for a generator's model (a download the network broke is an
+    // HttpRequestException — LMSupply 0.110 wraps it in ModelDownloadException).
+    public async Task<long> DownloadSizeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await LocalTranscriber.GetDownloadSizeBytesAsync(Model, Options(download: true), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception e) when (LMSupplyModelSource.Translated(e) is { } translated)
+        {
+            throw translated;
+        }
+    }
 
     public Task<bool> IsDownloadedAsync(CancellationToken cancellationToken) =>
         LocalTranscriber.IsModelDownloadedAsync(Model, Options(download: false), cancellationToken);
@@ -82,7 +93,14 @@ internal sealed class LMSupplySpeechModelSource : ISpeechModelSource
     public async Task<ISpeechToText> LoadAsync(bool download, IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken)
     {
         var relay = progress is null ? null : new Relay(p => progress.Report(new(p.OverallBytesDownloaded ?? p.BytesDownloaded, p.OverallTotalBytes ?? p.TotalBytes)));
-        return new Loaded(await LocalTranscriber.LoadAsync(Model, Options(download), relay, cancellationToken).ConfigureAwait(false));
+        try
+        {
+            return new Loaded(await LocalTranscriber.LoadAsync(Model, Options(download), relay, cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception e) when (LMSupplyModelSource.Translated(e) is { } translated)
+        {
+            throw translated;
+        }
     }
 
     private static TranscriberOptions Options(bool download) => new() { Provider = ExecutionProvider.Cpu, DisableAutoDownload = !download };
