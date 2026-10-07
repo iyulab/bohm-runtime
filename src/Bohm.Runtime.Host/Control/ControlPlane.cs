@@ -63,6 +63,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/loss-suspected</c></term><description>Records that a closing page of the application went away before its last writes could be confirmed as applied. Counted per day in the usage record.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
+/// <item><term><c>GET /__control/web/robots?url=</c></term><description>Whether the browser's agent may open the web address <c>url</c> on its own, by the site's robots.txt (RFC 9309, product token <c>Bohm-Agent</c>, else the <c>*</c> rules): <c>{ allowed, reason, rule, robotsUrl, crawlDelay }</c> — <c>reason</c> is <c>disallowed</c>, <c>server-error</c> or <c>unreachable</c> when it may not (a missing file allows everything; a server error or no answer allows nothing), <c>rule</c> the line that decided it. Read once a day per origin (a failure for five minutes), without cookies, counted as fetched from the site's host. What a person opens is not asked here. 400 for an address that is not http(s).</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
@@ -760,6 +761,15 @@ internal static partial class ControlPlane
 
             case ("GET", ["runtime"]):
                 await WriteAsync(response, new RuntimeFacts(AppContract.Edition), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["web", "robots"]):
+                if (!Uri.TryCreate(request.Query["url"].ToString(), UriKind.Absolute, out var siteAddress) || siteAddress.Scheme is not ("http" or "https"))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+                await WriteAsync(response, await context.RequestServices.GetRequiredService<Agent.RobotsPolicy>().CheckAsync(siteAddress, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["egress"]):
@@ -1753,6 +1763,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.DrainResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TabView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(EgressSnapshot))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(Agent.SiteVerdict))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalView))]
