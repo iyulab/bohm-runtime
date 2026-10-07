@@ -101,6 +101,10 @@ internal static class WebAgent
         such an answer as an app that reads those pages again, so do not explain how to save it.
         """;
 
+    /// <summary>The line that tells the model when it is: the date, the day of the week and the time on this computer, with its offset from UTC.</summary>
+    internal static string Now(DateTimeOffset now) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"It is now {now:yyyy-MM-dd} ({now:dddd}) {now:HH:mm} on this computer (UTC{(now.Offset < TimeSpan.Zero ? "-" : "+")}{now.Offset:hh\\:mm}).");
+
     /// <summary>
     /// Runs one turn of <paramref name="conversation"/>, which ends with the person's question or with the host's tool results.
     /// The model's text reaches <paramref name="onText"/> piece by piece as it is written, when one is given — the result still
@@ -110,9 +114,11 @@ internal static class WebAgent
     /// The caller's last round for this question: the model is asked to answer now from what it has read, and given no
     /// tool to call (the tools stay declared — a conversation that has tool calls needs them, for some providers).
     /// </param>
+    /// <param name="now">This computer's time when the turn starts, told the model (<see cref="Now"/>): a model on the organization's server or on this computer is told the date by nothing else, and «today», «this week» or a date field on a page then gets the date it was trained on.</param>
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
-        Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false)
+        DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false)
     {
+        var systemPrompt = SystemPrompt + "\n" + Now(now);
         if (last) conversation = [.. conversation, new ChatMessage(ChatRole.User, LastRoundNote)];
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
         // As for proposals, inside it: no thinking unless asked — read for each request, so thinking seen
@@ -145,13 +151,13 @@ internal static class WebAgent
         async Task<(AgentLoop Loop, int Before, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
         {
             var guarded = await GuardToolResultsAsync(raw, cancellationToken).ConfigureAwait(false);
-            var history = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
+            var history = new List<ChatMessage> { new(ChatRole.System, systemPrompt) };
             history.AddRange(guarded.Take(guarded.Count - 1));
             var last = guarded[^1];
 
             // The loop owns the system prompt (it keeps it when history is initialized), so it gets the
             // conversation without one. A question starts a turn; the host's tool results continue one.
-            var turn = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = SystemPrompt });
+            var turn = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = systemPrompt });
             // Streamed either way: one path to the model, and the text is there to pass on as it comes.
             IAsyncEnumerable<AgentResponseChunk> chunks;
             var from = 0;
