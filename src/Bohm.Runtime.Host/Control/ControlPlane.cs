@@ -1461,12 +1461,13 @@ internal static partial class ControlPlane
             return;
         }
 
+        var now = context.RequestServices.GetRequiredService<TimeProvider>().GetLocalNow();
         if (!AcceptsLines(context.Request))
         {
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, null, cancel, last).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -1486,7 +1487,7 @@ internal static partial class ControlPlane
         await response.StartAsync(cancel).ConfigureAwait(false);
         try
         {
-            var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation,
+            var turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now,
                 (text, token) => WriteLineAsync(response, new TurnText(text), token), cancel, last).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
