@@ -114,6 +114,7 @@ public sealed class AppPromotionTests : IAsyncLifetime
         var asked = Assert.Single(_server.Asked).Body;
         Assert.Contains("A reading log for the books I borrow", asked, StringComparison.Ordinal);
         Assert.Contains("propose_app", asked, StringComparison.Ordinal);
+        Assert.Contains("in the language with code en — and when it calls an AI, have the AI write what the person will read in that language too.", asked, StringComparison.Ordinal);
         Assert.DoesNotContain("page-tables", asked, StringComparison.Ordinal);
         Assert.Empty(AdoptedFolders());
     }

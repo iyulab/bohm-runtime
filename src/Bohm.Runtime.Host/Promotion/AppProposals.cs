@@ -303,7 +303,11 @@ internal static partial class AppProposals
         var prompt = new StringBuilder();
         prompt.Append("The person asked: ").Append(request.Question).Append("\n\n");
         if (!string.IsNullOrWhiteSpace(request.Answer)) prompt.Append("The answer they were given:\n").Append(Truncate(request.Answer, MaxAnswer)).Append("\n\n");
-        if (!string.IsNullOrWhiteSpace(request.Lang)) prompt.Append("Write the application's text in the language with code ").Append(request.Lang).Append(".\n\n");
+        // What an application's AI writes is read by the same person: left to itself, a model may write the instruction
+        // an application sends — and so the AI's answers — in a language of its own.
+        if (!string.IsNullOrWhiteSpace(request.Lang))
+            prompt.Append("Write the application's text in the language with code ").Append(request.Lang)
+                .Append(" — and when it calls an AI, have the AI write what the person will read in that language too.\n\n");
         if (request.Pages is not { Count: > 0 } pages) return prompt.ToString().TrimEnd();
 
         prompt.Append("<page-tables>\n");
