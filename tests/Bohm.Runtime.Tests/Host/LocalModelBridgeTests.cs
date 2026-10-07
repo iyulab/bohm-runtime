@@ -2,6 +2,7 @@ using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Bohm.Runtime.Host;
 using Bohm.Runtime.Host.Llm;
 using Microsoft.Extensions.AI;
 
@@ -349,6 +350,27 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
             return v.GetProperty("loading").GetBoolean() ? null : v;
         }, TimeSpan.FromMinutes(5));
         Assert.True(view.GetProperty("loaded").GetBoolean(), view.GetProperty("failure").ToString());
+    }
+
+    [Fact]
+    public async Task A_real_model_with_no_length_set_is_fitted_to_the_length_it_was_started_with()
+    {
+        var model = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");
+        var server = Environment.GetEnvironmentVariable("BOHM_TEST_LLAMA_SERVER");
+        Assert.SkipWhen(string.IsNullOrEmpty(model) || string.IsNullOrEmpty(server), "BOHM_TEST_GGUF and BOHM_TEST_LLAMA_SERVER are not set.");
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-local-length-").FullName;
+        await using var local = new LocalModel(new RuntimeHostOptions
+        {
+            DataRoot = dataRoot,
+            ControlSecret = "secret",
+            LocalModel = new LocalModelOptions { ModelPath = model!, ServerPath = server },
+        });
+
+        await local.GetAsync(TestContext.Current.CancellationToken);
+
+        // The library's own default once was a fixed 4,096 whatever the model; it now starts the model at its trained
+        // length within memory, and the requests are fitted to that.
+        Assert.True(local.Limits.ContextWindow > 4096, $"context window {local.Limits.ContextWindow}");
     }
 
     private static async Task<JsonElement> EventuallyAsync(Func<Task<JsonElement?>> probe, TimeSpan? limit = null)

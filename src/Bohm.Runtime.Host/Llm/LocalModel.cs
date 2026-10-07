@@ -23,7 +23,10 @@ public sealed record LocalModelOptions
     /// </summary>
     public string? ServerPath { get; init; }
 
-    /// <summary>Context length in tokens; the model's own default when <see langword="null"/>.</summary>
+    /// <summary>
+    /// Context length in tokens. When <see langword="null"/> the model library chooses it — the model's trained
+    /// length, bounded by the computer's memory — and the length it chose is what requests are fitted to.
+    /// </summary>
     public int? ContextLength { get; init; }
 
     /// <summary>Replaces the model — for tests.</summary>
@@ -197,6 +200,10 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
             LastFailure = null;
             _client = new ModelFitChatClient(new GeneratorChatClient(_generator), new ModelLimits(settings.ContextLength));
+            // Without a length set here the model library sizes the context itself (the model's trained length,
+            // bounded by memory) and says what it started the model with — the length every request must fit.
+            if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } started)
+                _client.Reported(started.MaxContextLength);
             return _client;
         }
         finally
