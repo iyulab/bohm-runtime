@@ -59,7 +59,7 @@ internal static class PromotionEndpoints
             return;
         }
 
-        // Asked for lines: one JSON object per line as the model works — { writing, start } for the application's HTML (or a fix's
+        // Asked for lines: one JSON object per line as the model works — { thinking } as a model that thinks thinks, { writing, start } for the application's HTML (or a fix's
         // new text) as it is written, { refused } for a proposal sent back to it — then { status: "done", … } with the proposal as
         // the plain answer has it, or, since the status went out before the model was asked, { status: "failed", … } with what a
         // 503 would carry.

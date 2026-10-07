@@ -57,6 +57,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// </summary>
     public ConcurrentQueue<(string Name, string Arguments)> StreamedCalls { get; } = new();
 
+    /// <summary>The model's thinking (<c>reasoning_content</c>) streamed in pieces before each of <see cref="StreamedCalls"/>, as a model that thinks first does.</summary>
+    public string? StreamedThinking { get; set; }
+
     /// <summary>How many characters of a streamed call's arguments go in one piece.</summary>
     public const int ArgumentPiece = 9;
 
@@ -179,6 +182,8 @@ public sealed class FakeProvider : IAsyncDisposable
                 var callNumber = self.Received.Count;
                 string[] pieces =
                 [
+                    .. (self.StreamedThinking ?? "").Chunk(ArgumentPiece).Select(piece =>
+                        $$$"""{"choices":[{"delta":{"reasoning_content":{{{JsonSerializer.Serialize(new string(piece))}}}}}]}"""),
                     $$$"""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-{{{callNumber}}}","type":"function","function":{"name":"{{{call.Name}}}","arguments":""}}]}}]}""",
                     .. call.Arguments.Chunk(ArgumentPiece).Select(piece =>
                         $$$"""{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":{{{JsonSerializer.Serialize(new string(piece))}}}}}]}}]}"""),

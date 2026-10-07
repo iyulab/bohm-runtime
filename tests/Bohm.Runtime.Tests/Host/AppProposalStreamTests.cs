@@ -64,6 +64,22 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_model_that_thinks_first_has_its_thinking_said_before_the_writing()
+    {
+        const string Thought = "A table of books with the date each is due back, sorted by that date.";
+        _server.StreamedThinking = Thought;
+        _server.StreamedCalls.Enqueue(("propose_app", ProposeApp("Reading log", Html)));
+
+        using var response = await ProposalLinesAsync(Instruction);
+
+        var progress = (await LinesAsync(response)).SkipLast(1).ToList();
+        var thinking = progress.TakeWhile(l => l.TryGetProperty("thinking", out _)).ToList();
+        Assert.True(thinking.Count > 1, $"{thinking.Count} lines");   // as it thinks, not one line at the end
+        Assert.Equal(Thought, string.Concat(thinking.Select(l => l.GetProperty("thinking").GetString())));
+        Assert.Equal(Html, string.Concat(progress.Skip(thinking.Count).Select(l => l.GetProperty("writing").GetString())));
+    }
+
+    [Fact]
     public async Task A_proposal_sent_back_is_said_between_the_two_writings()
     {
         _server.StreamedCalls.Enqueue(("propose_app", ProposeApp("", Html)));

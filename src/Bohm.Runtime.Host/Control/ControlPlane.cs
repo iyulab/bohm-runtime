@@ -1597,7 +1597,7 @@ internal static partial class ControlPlane
             return;
         }
 
-        // Asked for lines: as for a new application (`apps/proposals`) — { writing, start } for each replacement's new text as the
+        // Asked for lines: as for a new application (`apps/proposals`) — { thinking } as a model that thinks thinks, { writing, start } for each replacement's new text as the
         // model writes it, then { status: "done", … } with the proposal or { status: "failed", … } with what a 503 would carry.
         var lines = AcceptsLines(context.Request);
         Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null;
