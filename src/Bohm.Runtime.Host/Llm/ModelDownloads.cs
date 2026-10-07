@@ -1,7 +1,7 @@
 using LMSupply;
 using LMSupply.Exceptions;
 using LMSupply.Generator;
-using LMSupply.Generator.Internal.Llama;
+using LMSupply.Generator.Gguf;
 
 namespace Bohm.Runtime.Host.Llm;
 
