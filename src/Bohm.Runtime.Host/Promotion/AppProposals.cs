@@ -40,8 +40,18 @@ internal sealed record BrokenVersion(string Html, IReadOnlyList<string> Problems
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 
+/// <summary>What asking for a new application comes to: an application, or — for what was asked alone — a thing to do now instead.</summary>
+internal abstract record ProposalOutcome;
+
 /// <summary>A proposed application: nothing is kept until the person takes it in.</summary>
-internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused);
+internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused) : ProposalOutcome;
+
+/// <summary>
+/// No application: what the person asked is one thing to do now about what is in front of them — the pages open now — which
+/// an application, seeing none of them, could not do. The caller does it the way such a request is done (a web question,
+/// whose result is a page); <paramref name="Reason"/> is the model's one line on why.
+/// </summary>
+internal sealed record OneTimeTask(string Reason) : ProposalOutcome;
 
 /// <summary>
 /// Proposes a new application. From what the person asked alone, the model writes the application the
@@ -128,6 +138,14 @@ internal static partial class AppProposals
         do first. Put what people type on the page with textContent, not innerHTML. Call an AI only when
         what they asked for needs one.
 
+        Sometimes what they write is not a tool to keep but one thing to do now about what is in front
+        of them: summarize the pages open now, compare these tabs, answer something about the page they
+        are reading. An application sees none of their open pages — it would only ask for them again.
+        Then write no application: call one_time_task once with a short reason, and it is done right
+        away instead — the open pages read and the result made a page. When they ask for a tool to keep,
+        write the application, even one that works on pages it is given ("an app that summarizes the
+        pages I send it").
+
         If a proposal is refused, the reason comes back; correct it and call propose_app again. Give
         propose_app a summary: one sentence for the person, in the application's language, saying what
         the application does.
@@ -139,10 +157,11 @@ internal static partial class AppProposals
     /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
     /// <param name="appAi">For an application made from an instruction, which AI answers its calls here (<see cref="AppAi"/>) — said to the model as one more line of how it runs.</param>
     /// <param name="onProgress">Told the application's HTML as the model writes it, and each refused proposal — when the provider sends a call while it is written.</param>
-    public static async Task<AppProposal> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null,
+    public static async Task<ProposalOutcome> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null,
         Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
     {
         AppProposal? accepted = null;
+        OneTimeTask? task = null;
         var refusals = new List<string>();
 
         var propose = AIFunctionFactory.Create(
@@ -161,6 +180,15 @@ internal static partial class AppProposals
             },
             "propose_app",
             "Proposes the application: its title, the tables it reads, if any (by page and table number, with the header names of the columns to keep), its whole HTML, and a summary — one sentence for the person saying what it does.");
+        // Only what was asked alone can be a thing to do now: an answer and its pages were already done, and are asked to be read again.
+        var oneTime = AIFunctionFactory.Create(
+            (string reason) =>
+            {
+                task = new OneTimeTask(reason.Trim());
+                return "Noted: it will be done now instead. Write nothing more.";
+            },
+            "one_time_task",
+            "Says that what the person asked is one thing to do now about the pages open in front of them, not a tool to keep — with a short reason. No application is made.");
 
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
         var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
@@ -176,7 +204,7 @@ internal static partial class AppProposals
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
         var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;
         Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
-            new AgentLoop(client, new AgentOptions { Tools = [propose], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
+            new AgentLoop(client, new AgentOptions { Tools = request.FromInstruction ? [propose, oneTime] : [propose], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
             Prompt(request), WrittenFields, refusals, onProgress, cancellationToken);
         var response = await RunAsync().ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
@@ -189,6 +217,8 @@ internal static partial class AppProposals
         }
 
         var closing = response.Content?.Trim() ?? "";
+        // An application written after all wins — the model changed its mind, and the person asked to make one.
+        if (accepted is null && task is not null) return task;
         if (accepted is null)
         {
             if (refusals.Count > 0) throw new ProposalFailedException("The model proposed no application that could be kept: " + refusals[^1]);

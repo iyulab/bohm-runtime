@@ -72,7 +72,7 @@ internal static class PromotionEndpoints
             onProgress = (progress, token) => Control.ControlPlane.WriteLineAsync(response, progress, PromotionJson.Default.ProposalProgress, token);
         }
 
-        AppProposal proposal;
+        ProposalOutcome outcome;
         try
         {
             var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
@@ -84,7 +84,7 @@ internal static class PromotionEndpoints
             var speechWithoutKey = request.Broken is null && request.FromInstruction
                 && ((keyless && speech.Supported) || await speech.DownloadedAsync(cancel).ConfigureAwait(false)
                     || (company.Configured && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null));
-            proposal = request.Broken is not null
+            outcome = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
@@ -104,6 +104,16 @@ internal static class PromotionEndpoints
             return;
         }
 
+        if (outcome is OneTimeTask task)
+        {
+            if (lines)
+                await Control.ControlPlane.WriteLineAsync(response, new OneTimeTaskLine("done", task.Reason, model.Name), PromotionJson.Default.OneTimeTaskLine, cancel).ConfigureAwait(false);
+            else
+                await WriteAsync(response, new OneTimeTaskView(task.Reason, model.Name), cancel).ConfigureAwait(false);
+            return;
+        }
+
+        var proposal = (AppProposal)outcome;
         if (lines)
             await Control.ControlPlane.WriteLineAsync(response,
                 new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
@@ -222,6 +232,12 @@ internal static class PromotionEndpoints
     /// <summary>The last line of a proposal made as it goes: <see cref="AppProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
     internal sealed record AppProposalLine(string Status, string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
 
+    /// <summary>No application — what was asked is one thing to do now (<see cref="OneTimeTask"/>): <c>{ task, model }</c>, <c>task</c> the model's reason.</summary>
+    internal sealed record OneTimeTaskView(string Task, string Model);
+
+    /// <summary>The same as the last line of a proposal made as it goes, with the status <c>done</c>.</summary>
+    internal sealed record OneTimeTaskLine(string Status, string Task, string Model);
+
     /// <summary>The last line of a proposal the model could not make: the fields of the 503's body, with the status <c>failed</c>.</summary>
     internal sealed record ProposalFailedLine(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped);
 
@@ -240,6 +256,8 @@ internal static class PromotionEndpoints
 [JsonSerializable(typeof(PromotionEndpoints.AppProposalView))]
 [JsonSerializable(typeof(PromotionEndpoints.AppProposalLine))]
 [JsonSerializable(typeof(PromotionEndpoints.ProposalFailedLine))]
+[JsonSerializable(typeof(PromotionEndpoints.OneTimeTaskView))]
+[JsonSerializable(typeof(PromotionEndpoints.OneTimeTaskLine))]
 [JsonSerializable(typeof(Edit.ProposalProgress))]
 [JsonSerializable(typeof(PromotionEndpoints.PreviewRequest))]
 [JsonSerializable(typeof(PromotionEndpoints.PromotionRequest))]

@@ -51,7 +51,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
         model.Script.Enqueue(new TextContent("A price list read from the shop."));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Equal("Prices", proposal.Title);
         Assert.Equal(Html, proposal.Html);
@@ -93,7 +93,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c2", PricesFrom(2, "Item", "Price")));
         model.Script.Enqueue(new TextContent("Fixed."));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Equal(["Item", "Price"], Assert.Single(proposal.Sources).Rule.Columns);
         Assert.Contains(reason, Assert.Single(proposal.Refused), StringComparison.Ordinal);   // what was sent back is told with the proposal
@@ -123,7 +123,7 @@ public sealed class AppProposalTests
         var thinking = new ThinksAwayFirst(Propose("c1", PricesFrom(2, "Item", "Price")));
         var model = new ModelFitChatClient(thinking, ModelLimits.Unknown); // nobody said whether it thinks
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
 
         Assert.Equal("Prices", proposal.Title);
         Assert.Equal([null, ReasoningEffort.Low, ReasoningEffort.Low], thinking.Efforts); // the first as the server likes; again, briefly
@@ -196,7 +196,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", Array.Empty<object>(), LogHtml, "Reading log"));
         model.Script.Enqueue(new TextContent("A log of borrowed books, kept on this computer."));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
 
         Assert.Equal("Reading log", proposal.Title);
         Assert.Equal(LogHtml, proposal.Html);
@@ -209,6 +209,49 @@ public sealed class AppProposalTests
         var prompt = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.User).Select(m => m.Text));
         Assert.Contains("A reading log for the books I borrow", prompt, StringComparison.Ordinal);
         Assert.DoesNotContain("page-tables", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task What_was_asked_alone_may_be_a_thing_to_do_now_and_then_no_application_is_made()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "one_time_task", new Dictionary<string, object?> { ["reason"] = " The open pages, summarized now. " }));
+        model.Script.Enqueue(new TextContent(""));
+
+        var task = Assert.IsType<OneTimeTask>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown,
+            new AppRequest("Summarize all the pages open now", null, "en", null), TestContext.Current.CancellationToken));
+
+        Assert.Equal("The open pages, summarized now.", task.Reason);
+        var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
+        Assert.Contains("call one_time_task", system, StringComparison.Ordinal);
+        Assert.Contains("(\"an app that summarizes the", system, StringComparison.Ordinal);   // a tool that works on pages is still an application
+    }
+
+    [Fact]
+    public async Task Only_what_was_asked_alone_is_offered_a_thing_to_do_now()
+    {
+        var made = new FakeChatModel();
+        made.Script.Enqueue(Propose("c1", Array.Empty<object>(), LogHtml, "Reading log"));
+        var fromPages = new FakeChatModel();
+        fromPages.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+
+        await AppProposals.ProposeAsync(made, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        await AppProposals.ProposeAsync(fromPages, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["one_time_task", "propose_app"], made.Calls[0].Options!.Tools!.Select(t => t.Name).Order());
+        Assert.Equal(["propose_app"], fromPages.Calls[0].Options!.Tools!.Select(t => t.Name));   // an answer's pages are asked to be read again
+    }
+
+    [Fact]
+    public async Task An_application_written_after_saying_it_is_a_thing_to_do_now_is_the_proposal()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "one_time_task", new Dictionary<string, object?> { ["reason"] = "Now." }));
+        model.Script.Enqueue(Propose("c2", Array.Empty<object>(), LogHtml, "Reading log"));
+
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
+
+        Assert.Equal(LogHtml, proposal.Html);
     }
 
     [Fact]
@@ -235,7 +278,7 @@ public sealed class AppProposalTests
         var model = new FakeChatModel();
         model.Script.Enqueue(Propose("c1", Array.Empty<object>(), html, "Books"));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
 
         Assert.Equal(html, proposal.Html);   // no page values reach it — the innerHTML rule is about those
     }
@@ -249,7 +292,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", Array.Empty<object>(), html, "Books"));
         model.Script.Enqueue(Propose("c2", Array.Empty<object>(), LogHtml, "Reading log"));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
 
         Assert.Equal(LogHtml, proposal.Html);
         Assert.Contains(reason, Assert.Single(proposal.Refused), StringComparison.Ordinal);
@@ -262,7 +305,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(Propose("c1", PricesFrom(1, "Item"), LogHtml, "Reading log"));
         model.Script.Enqueue(Propose("c2", Array.Empty<object>(), LogHtml, "Reading log"));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
 
         Assert.Empty(proposal.Sources);
         Assert.Contains("no web pages", Assert.Single(proposal.Refused), StringComparison.Ordinal);
@@ -288,7 +331,7 @@ public sealed class AppProposalTests
         model.Script.Enqueue(call);
         model.Script.Enqueue(new TextContent("The second proposal was accepted, so I keep it as it is."));
 
-        var proposal = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
 
         Assert.Equal("빌린 책을 적어 두는 기록장입니다.", proposal.Summary);
         var system = string.Join('\n', model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));

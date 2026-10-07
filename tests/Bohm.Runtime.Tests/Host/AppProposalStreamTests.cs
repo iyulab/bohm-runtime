@@ -64,6 +64,21 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_thing_to_do_now_rather_than_a_tool_to_keep_ends_with_the_task_and_no_application()
+    {
+        _server.StreamedCalls.Enqueue(("one_time_task", JsonSerializer.Serialize(new { reason = "They want the open pages summarized now." })));
+
+        using var response = await ProposalLinesAsync("""{"question":"Summarize all the pages open now","lang":"en"}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var done = (await LinesAsync(response))[^1];
+        Assert.Equal("done", done.GetProperty("status").GetString());
+        Assert.Equal("They want the open pages summarized now.", done.GetProperty("task").GetString());
+        Assert.False(done.TryGetProperty("html", out _));
+        Assert.Contains("one_time_task", _server.Asked[0].Body, StringComparison.Ordinal);   // offered with propose_app; the model then closes the turn
+    }
+
+    [Fact]
     public async Task A_model_that_thinks_first_has_its_thinking_said_before_the_writing()
     {
         const string Thought = "A table of books with the date each is due back, sorted by that date.";
