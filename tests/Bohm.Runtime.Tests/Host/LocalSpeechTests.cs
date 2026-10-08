@@ -139,6 +139,8 @@ public sealed class LocalSpeechTests
     public async Task A_browser_recording_is_turned_into_text_by_the_real_speech_model()
     {
         // The model (about 970 MB) is not got by the suite: it must be in the model library's cache already.
+        // That makes this the path every start after the first takes — a model said to be here, loaded with download off
+        // in a process that did not get it — which is where a cache holding only the quantized files once failed to load.
         Assert.SkipWhen(Environment.GetEnvironmentVariable("BOHM_TEST_SPEECH") != "1", "BOHM_TEST_SPEECH is not set to 1.");
         var native = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native");
         Assert.SkipUnless(OperatingSystem.IsWindows() && File.Exists(Path.Combine(native, "onnxruntime.dll")), "No native ONNX Runtime next to the tests.");
