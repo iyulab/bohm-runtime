@@ -32,7 +32,7 @@
     <PackageReference Include="IronHive.Providers.OpenAI" Version="0.58.0" />
     <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.58.0" />
     <PackageReference Include="IronProw.LMSupply" Version="0.15.12" />
-    <PackageReference Include="LMSupply.Generator" Version="0.112.1" />
+    <PackageReference Include="LMSupply.Generator" Version="0.114.0" />
     <PackageReference Include="Markdig" Version="1.4.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
   </ItemGroup>
@@ -44,7 +44,7 @@
     loads from the runtime's directory.
   -->
   <ItemGroup>
-    <PackageReference Include="LMSupply.Transcriber" Version="0.112.1" />
+    <PackageReference Include="LMSupply.Transcriber" Version="0.114.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
   </ItemGroup>
 
