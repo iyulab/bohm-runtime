@@ -115,7 +115,10 @@ internal static partial class EditProposals
 
         """ + ReplaceRules + """
 
-        Change only what is asked, and keep the application's data handling as it is.
+        Change only what is asked, and keep the application's data handling as it is. When the person
+        asks to see something the saved data already implies (a city from the places, a total, a
+        count), work it out from what is stored, so it shows for what is already there; add a field for
+        them to fill only when it cannot be worked out.
 
         """ + Closing + "\n\n" + AppContract;
 
