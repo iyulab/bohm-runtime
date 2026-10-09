@@ -83,6 +83,33 @@ public sealed class AppPreviewTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Errors_after_a_declined_model_call_are_reported_apart_from_those_before_it()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var (token, _) = await CreateAsync(id, Page);
+        using var preview = _host.ClientFor($"pv-{token}.localhost");
+
+        await ReportAsync(preview, """{"tab":"preview","kind":"load-error","message":"Uncaught TypeError: list is undefined (line 4)"}""");
+        var before = await ReadAsync(id, token);
+        Assert.Single(before.GetProperty("errors").EnumerateArray());
+        Assert.Empty(before.GetProperty("afterModel").EnumerateArray());
+
+        using (var llm = await preview.PostAsync("/__bohm/llm/api.openai.com/v1/chat/completions", new StringContent("{}")))
+            HttpAssert.Status(HttpStatusCode.ServiceUnavailable, llm);
+        await ReportAsync(preview, """{"tab":"preview","kind":"error","message":"AI sorting failed Error: AI answered with status 503"}""");
+        // A second declined call does not move the split.
+        using (var again = await preview.PostAsync("/__bohm/llm/api.openai.com/v1/chat/completions", new StringContent("{}")))
+            HttpAssert.Status(HttpStatusCode.ServiceUnavailable, again);
+        await ReportAsync(preview, """{"tab":"preview","kind":"error","message":"Uncaught TypeError: reply is undefined"}""");
+
+        var report = await ReadAsync(id, token);
+        Assert.Equal("Uncaught TypeError: list is undefined (line 4)", Assert.Single(report.GetProperty("errors").EnumerateArray()).GetString());
+        Assert.Equal(["AI sorting failed Error: AI answered with status 503", "Uncaught TypeError: reply is undefined"],
+            report.GetProperty("afterModel").EnumerateArray().Select(e => e.GetString()));
+        Assert.True(report.GetProperty("askedModel").GetBoolean());
+    }
+
+    [Fact]
     public async Task Load_errors_reported_by_the_preview_are_the_previews_and_not_the_applications()
     {
         var id = await _host.AdoptAsync(Page);

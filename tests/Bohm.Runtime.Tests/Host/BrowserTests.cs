@@ -447,6 +447,40 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_error_a_preview_logs_because_its_model_call_was_declined_is_reported_after_the_model()
+    {
+        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        var id = await _host.AdoptAsync(NotesApp);
+
+        // Sorts with a model as it loads and logs the failure — what a page does when no model answers.
+        using var client = _host.ControlClient();
+        using var created = await client.PostAsync($"/__control/apps/{id}/previews", new StringContent("""
+            <!doctype html><title>Budget</title>
+            <script>
+              fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', body: '{}' })
+                .then(r => { if (!r.ok) throw new Error('AI answered with status ' + r.status); })
+                .catch(e => { console.error('AI sorting failed', e); window.done = true; });
+            </script>
+            """));
+        var view = JsonDocument.Parse(await created.Content.ReadAsStringAsync()).RootElement;
+        var token = view.GetProperty("token").GetString()!;
+
+        var preview = await _browser!.NewPageAsync();
+        await preview.GotoAsync(view.GetProperty("origin").GetString()!);
+        await preview.WaitForFunctionAsync("window.done === true");
+
+        var report = await EventuallyAsync(async cancellation =>
+        {
+            var r = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/previews/{token}", cancellation)).RootElement;
+            return r.GetProperty("afterModel").GetArrayLength() > 0 ? r : (JsonElement?)null;
+        });
+        Assert.Equal("AI sorting failed Error: AI answered with status 503", Assert.Single(report.GetProperty("afterModel").EnumerateArray()).GetString());
+        Assert.Empty(report.GetProperty("errors").EnumerateArray());
+        Assert.True(report.GetProperty("askedModel").GetBoolean());
+        await preview.CloseAsync();
+    }
+
+    [Fact]
     public async Task A_module_imported_from_a_cdn_is_named_instead_of_a_bare_error()
     {
         Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");

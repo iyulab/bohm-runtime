@@ -32,7 +32,9 @@ internal sealed class AppPreviews(TimeProvider time)
         public byte[] Html { get; } = html;
         public IReadOnlyDictionary<string, SourceReading> Readings { get; } = readings ?? new Dictionary<string, SourceReading>();
         public HeldPages? Pages { get; } = pages;
-        public bool AskedModel;
+
+        /// <summary>How many errors the report held when the first call to a model was declined; <see langword="null"/> before.</summary>
+        public int? ErrorsBeforeModel;
     }
 
     public sealed class Preview(Preview<Content> held)
@@ -57,8 +59,17 @@ internal sealed class AppPreviews(TimeProvider time)
         /// <summary>What went wrong while the document loaded.</summary>
         public PreviewReport Report => held.Report;
 
-        /// <summary>Errors thrown while the document loaded, with lines counted as in the document.</summary>
-        public IReadOnlyList<string> Errors => held.Report.Errors;
+        /// <summary>
+        /// Errors thrown or reported while the document was served, with lines counted as in the document — those that
+        /// arrived before its first call to a model was declined, which taking it in would show too.
+        /// </summary>
+        public IReadOnlyList<string> Errors => Split().Before;
+
+        /// <summary>
+        /// Errors that arrived after the document's first call to a model was declined: they may follow from that answer,
+        /// which the application taken in would not get. Empty while no call was declined.
+        /// </summary>
+        public IReadOnlyList<string> AfterModel => Split().After;
 
         /// <summary>What the content security policy refused, as <c>category host</c>.</summary>
         public IReadOnlyList<string> Blocked =>
@@ -67,12 +78,24 @@ internal sealed class AppPreviews(TimeProvider time)
         /// <summary>Whether the document called a model while it was served and was declined; see <see cref="PreviewServing"/>.</summary>
         public bool AskedModel
         {
-            get { lock (held.Content) return held.Content.AskedModel; }
+            get { lock (held.Content) return held.Content.ErrorsBeforeModel is not null; }
         }
 
+        /// <summary>
+        /// Records that a call to a model was declined. The first one splits the errors: the report keeps them in the order
+        /// they arrived, and the page reports each as it happens, so those already here came before the answer.
+        /// </summary>
         public void MarkAskedModel()
         {
-            lock (held.Content) held.Content.AskedModel = true;
+            lock (held.Content) held.Content.ErrorsBeforeModel ??= held.Report.Errors.Count;
+        }
+
+        private (IReadOnlyList<string> Before, IReadOnlyList<string> After) Split()
+        {
+            var errors = held.Report.Errors;
+            int? before;
+            lock (held.Content) before = held.Content.ErrorsBeforeModel;
+            return before is not { } count || count >= errors.Count ? (errors, []) : ([.. errors.Take(count)], [.. errors.Skip(count)]);
         }
     }
 
