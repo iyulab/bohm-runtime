@@ -150,6 +150,8 @@ internal static partial class AppProposals
           totals and counts where the eye lands first.
         - When there is nothing yet, a line or two says what to do first. While it waits (an AI answer,
           reading a file, saving), it shows what it is doing. A deletion can be undone right away.
+        - Nothing is shown as wrong before the person has done anything: a required field is marked
+          when a save is tried and it is empty, not on first sight.
         - It fits the window it is in, narrow or wide, and every label, message and button is in the
           person's language.
         """;
