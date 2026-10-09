@@ -64,4 +64,9 @@
     <InternalsVisibleTo Include="Bohm.Runtime.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Built-in skills (SKILL.md folders) the make model reads on demand — loose files beside the executable, single-file or not. -->
+    <None Include="Skills\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
 </Project>
