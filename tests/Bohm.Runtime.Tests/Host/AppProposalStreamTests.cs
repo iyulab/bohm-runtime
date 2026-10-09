@@ -133,6 +133,34 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_look_over_a_new_application_sends_its_picture_to_the_provider()
+    {
+        const string Made = """<!doctype html><title>Reading log</title><ul id="books"></ul>""";
+        const string Picture = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        _server.StreamedCalls.Enqueue(("replace", JsonSerializer.Serialize(new { old_text = "<ul id=\"books\"></ul>", new_text = "<p>Add your first book.</p><ul id=\"books\"></ul>" })));
+        var request = JsonSerializer.Serialize(new { question = "A reading log for the books I borrow", lang = "en", review = new { html = Made, image = Picture } });
+
+        using var response = await ProposalLinesAsync(request);
+
+        var lines = await LinesAsync(response);
+        Assert.Contains("Add your first book.", lines[^1].GetProperty("html").GetString(), StringComparison.Ordinal);
+        // The provider is shown the picture, as an image part of the request — not its address as text.
+        var first = JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("messages").EnumerateArray().Last(m => m.GetProperty("role").GetString() == "user");
+        var image = Assert.Single(first.GetProperty("content").EnumerateArray(), part => part.GetProperty("type").GetString() == "image_url");
+        Assert.Equal(Picture, image.GetProperty("image_url").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task A_look_without_a_picture_is_refused()
+    {
+        var request = JsonSerializer.Serialize(new { question = "A reading log", lang = "en", review = new { html = "<!doctype html><title>Log</title>", image = "https://example.com/shot.png" } });
+
+        using var response = await ProposalLinesAsync(request);
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+    }
+
+    [Fact]
     public async Task A_change_to_a_saved_application_asked_for_lines_writes_its_new_text_as_it_is_written()
     {
         var id = await _host.AdoptAsync("""<!doctype html><title>Log</title><h1 id="t">Reading log</h1>""");

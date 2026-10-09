@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using IronHive.Agent.Loop;
+using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Host.Edit;
 
@@ -29,13 +30,18 @@ internal static class ProposalStream
     /// <paramref name="onProgress"/>; <paramref name="refused"/> is read after each piece of the turn, and a
     /// reason it gained since is passed on as <see cref="ProposalProgress.Refused"/>.
     /// </summary>
+    /// <param name="attachments">What the prompt shows besides its text — a picture of the application, say. Sent with the prompt as one message.</param>
     public static async Task<TurnRecord> RunAsync(AgentLoop loop, string prompt, IReadOnlyDictionary<string, string> written,
-        IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken)
+        IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken,
+        IReadOnlyList<AIContent>? attachments = null)
     {
         var calls = new Dictionary<string, ToolArgumentText?>(StringComparer.Ordinal);
         var told = refused?.Count ?? 0;
         TurnRecord? record = null;
-        await foreach (var chunk in loop.RunStreamingAsync(prompt, cancellationToken).ConfigureAwait(false))
+        // A turn starts from a text prompt; one that shows more starts from the whole message and continues from it.
+        if (attachments is { Count: > 0 }) loop.InitializeHistory([new ChatMessage(ChatRole.User, [new TextContent(prompt), .. attachments])]);
+        var stream = attachments is { Count: > 0 } ? loop.ContinueStreamingAsync(cancellationToken) : loop.RunStreamingAsync(prompt, cancellationToken);
+        await foreach (var chunk in stream.ConfigureAwait(false))
         {
             if (chunk.Turn is { } turn) record = turn;
             if (onProgress is null) continue;

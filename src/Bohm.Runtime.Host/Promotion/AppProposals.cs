@@ -26,7 +26,8 @@ internal sealed record PageTables(string Url, string? Title, IReadOnlyList<Table
 /// the tables of the pages behind it. With no pages, the request is the application itself — what the
 /// person asked for, made from nothing.
 /// </summary>
-internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables>? Pages, BrokenVersion? Broken = null)
+internal sealed record AppRequest(string Question, string? Answer, string? Lang, IReadOnlyList<PageTables>? Pages, BrokenVersion? Broken = null,
+    ReviewedVersion? Review = null)
 {
     /// <summary>Whether the application is made from what the person asked alone, with no page to read again.</summary>
     public bool FromInstruction => Pages is not { Count: > 0 };
@@ -37,6 +38,12 @@ internal sealed record AppRequest(string Question, string? Answer, string? Lang,
 /// (errors with lines as in that HTML).
 /// </summary>
 internal sealed record BrokenVersion(string Html, IReadOnlyList<string> Problems);
+
+/// <summary>
+/// The proposal just written for a request, opened without problems: its HTML and a picture of how it looks
+/// (a <c>data:image/…;base64,</c> URL) — looked at once more against what a good application has.
+/// </summary>
+internal sealed record ReviewedVersion(string Html, string Image);
 
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
@@ -290,6 +297,40 @@ internal static partial class AppProposals
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The fixed version cannot be kept: " + string.Join(" ", problems));
         return new AppProposal(title, fixedVersion.Html, [], fixedVersion.Summary, []);
     }
+
+    /// <summary>
+    /// One look at an application just written for what was asked alone (<see cref="AppRequest.Review"/>), as it shows:
+    /// the picture goes to the model with the request and what a good application has, and the model changes what
+    /// falls short with exact replacements — the round a person would otherwise make by asking after seeing it. No
+    /// change is an answer too: the version stays as it was.
+    /// </summary>
+    /// <exception cref="ArgumentException">There is no version to look at, or its picture is not a data URL of an image.</exception>
+    public static async Task<AppProposal> ReviewAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
+    {
+        var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
+        if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
+        var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
+            ReviewInstruction(request.Question), null, cancellationToken, onProgress, [new DataContent(review.Image)]).ConfigureAwait(false);
+        var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
+        var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
+        if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
+        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, []);
+    }
+
+    /// <summary>A <c>data:</c> URL of a PNG, JPEG or WebP picture, in base64.</summary>
+    internal static bool IsImageDataUrl(string? url) =>
+        url is not null && (url.StartsWith("data:image/png;base64,", StringComparison.Ordinal)
+            || url.StartsWith("data:image/jpeg;base64,", StringComparison.Ordinal)
+            || url.StartsWith("data:image/webp;base64,", StringComparison.Ordinal));
+
+    private static string ReviewInstruction(string question) =>
+        "This is the application you just wrote for this request: «" + question.Trim() + "». The picture shows how its "
+        + "first screen looks now. Compare what you see with what was asked and with what a good application has:\n"
+        + GoodApplication + "\n"
+        + "Change only what falls short of that — layout, spacing, sizes, colours, the first-time hint, wording — with exact "
+        + "replacements. Keep every feature, every element id, every localStorage key and the shape of what is stored as it is. "
+        + "When nothing falls short, change nothing and say so in one sentence.";
 
     private static (List<string> Problems, List<ProposedSource> Proposed) Check(AppRequest request, string? title, SourceChoice[]? choices, string? html)
     {

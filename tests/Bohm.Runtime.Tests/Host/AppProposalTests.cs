@@ -379,6 +379,51 @@ public sealed class AppProposalTests
         Assert.Contains("around line 5", asked, StringComparison.Ordinal);   // shown where the error is
     }
 
+    /// <summary>A 1×1 PNG, as the shell sends a picture of the application.</summary>
+    private const string Picture = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    [Fact]
+    public async Task A_new_application_is_looked_over_from_a_picture_of_it_and_kept_to_the_same_checks()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?> { ["old_text"] = "<ul id=\"books\"></ul>", ["new_text"] = "<p id=\"empty\">Add your first book.</p><ul id=\"books\"></ul>" }));
+        model.Script.Enqueue(new TextContent("Said what to do first."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        var proposal = await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken);
+
+        Assert.Contains("<p id=\"empty\">Add your first book.</p>", proposal.Html, StringComparison.Ordinal);
+        Assert.Equal("Said what to do first.", proposal.Summary);
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User);
+        var picture = Assert.Single(asked.Contents.OfType<DataContent>());   // the picture goes with the request, in one message
+        Assert.Equal("image/png", picture.MediaType);
+        Assert.Contains("A reading log for the books I borrow", asked.Text, StringComparison.Ordinal);
+        Assert.Contains("A good application looks finished", asked.Text, StringComparison.Ordinal);
+        Assert.Contains(model.Calls[0].Messages, m => m.Role == ChatRole.System);   // the edit's own instructions still lead
+    }
+
+    [Fact]
+    public async Task Nothing_to_change_after_a_look_keeps_the_version_as_it_was()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        var proposal = await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken);
+
+        Assert.Equal(LogHtml, proposal.Html);
+    }
+
+    [Theory]
+    [InlineData("https://example.com/shot.png")]
+    [InlineData("data:text/html;base64,PGgxPg==")]
+    public async Task A_look_needs_a_picture(string image)
+    {
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, image) };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => AppProposals.ReviewAsync(new FakeChatModel(), ModelLimits.Unknown, looked, TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task The_line_an_error_names_is_shown_as_it_is_now_beside_the_error()
     {

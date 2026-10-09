@@ -155,8 +155,9 @@ internal static partial class EditProposals
     /// the change asked for.
     /// </param>
     /// <param name="onProgress">Told the new text of each replacement as the model writes it — when the provider sends a call while it is written.</param>
+    /// <param name="attachments">What the model is shown with the request — a picture of the application as it looks, say.</param>
     public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, IReadOnlyList<string>? problems,
-        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null)
+        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null)
     {
         var text = SourceText.Of(source);
         var lines = text.Lf.Split('\n');
@@ -165,13 +166,13 @@ internal static partial class EditProposals
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -452,7 +453,7 @@ internal static partial class EditProposals
     private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["replace"] = "new_text" };
 
     private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt,
-        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null)
+        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -499,7 +500,7 @@ internal static partial class EditProposals
             .Build();
         var loop = new AgentLoop(client, new AgentOptions { Tools = [readSource, replace], SystemPrompt = systemPrompt, StreamToolArguments = onProgress is not null });
 
-        var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false);
+        var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
             Stopped: ProposalFailedException.StoppedBy(response.StopReason));
     }

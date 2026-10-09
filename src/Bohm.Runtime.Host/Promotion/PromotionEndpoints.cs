@@ -20,6 +20,9 @@ internal static class PromotionEndpoints
     /// <summary>What the model that writes applications lacks: the model on this computer is too small to write one.</summary>
     public const string NeedsLargerModel = "largerModel";
 
+    /// <summary>The largest picture a look over a new application takes (its data URL, in characters) — a screen's JPEG is far less.</summary>
+    private const int MaxReviewImage = 4 * 1024 * 1024;
+
     public static async Task ProposeAsync(HttpContext context, CancellationToken cancel)
     {
         var response = context.Response;
@@ -28,7 +31,10 @@ internal static class PromotionEndpoints
             || (request.Pages ?? []).Any(p => p is null || string.IsNullOrWhiteSpace(p.Url) || p.Tables is null || p.Tables.Any(t => t is null || t.Headers is null || t.Preview is null))
             // A failed proposal is fixed only for an application made from what was asked — one reading pages is made again.
             || request.Broken is { } broken && (!request.FromInstruction || string.IsNullOrWhiteSpace(broken.Html) || broken.Problems is null
-                || !broken.Problems.Any(p => !string.IsNullOrWhiteSpace(p))))
+                || !broken.Problems.Any(p => !string.IsNullOrWhiteSpace(p)))
+            // A look over the version just written, the same: an application made from what was asked, with a picture of it.
+            || request.Review is { } review && (!request.FromInstruction || request.Broken is not null || string.IsNullOrWhiteSpace(review.Html)
+                || !AppProposals.IsImageDataUrl(review.Image) || review.Image.Length > MaxReviewImage))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -81,11 +87,13 @@ internal static class PromotionEndpoints
             // Whether a recording is turned into text without a key — asked only for an application made from an instruction:
             // the speech model on this computer (here, or to be got while some AI answers without a key), or the organization's server's.
             var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
-            var speechWithoutKey = request.Broken is null && request.FromInstruction
+            var speechWithoutKey = request.Broken is null && request.Review is null && request.FromInstruction
                 && ((keyless && speech.Supported) || await speech.DownloadedAsync(cancel).ConfigureAwait(false)
                     || (company.Configured && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null));
             outcome = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
+                : request.Review is not null
+                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
                     onProgress).ConfigureAwait(false);
