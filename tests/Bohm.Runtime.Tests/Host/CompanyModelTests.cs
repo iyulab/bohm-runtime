@@ -456,6 +456,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(404, provider.GetProperty("status").GetInt32());
         Assert.Equal("The model fixed-model does not exist.", provider.GetProperty("message").GetString());
         Assert.Equal(JsonValueKind.Null, provider.GetProperty("retryAfter").ValueKind);
+        Assert.False(provider.TryGetProperty("billing", out _));
     }
 
     [Theory]
@@ -476,6 +477,26 @@ public sealed class CompanyModelTests : IAsyncLifetime
         var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
         Assert.Equal(status, provider.GetProperty("status").GetInt32());
         Assert.Equal(7, provider.GetProperty("retryAfter").GetInt32());
+    }
+
+    [Theory]
+    // Out of credit: a 402, and an exhausted quota sent as a 429 — neither is a wait-and-retry.
+    [InlineData(402, """{"error":{"message":"Insufficient balance.","type":"payment_required"}}""", "Insufficient balance.")]
+    [InlineData(429, """{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}""", "You exceeded your current quota.")]
+    public async Task When_the_server_refuses_for_billing_the_person_is_told_it_is_billing_not_busy(int status, string body, string message)
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        _server.Refusal = (status, body);
+
+        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(status, provider.GetProperty("status").GetInt32());
+        Assert.Contains(message, provider.GetProperty("message").GetString());
+        Assert.True(provider.GetProperty("billing").GetBoolean());
     }
 
     [Theory]

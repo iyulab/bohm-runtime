@@ -193,7 +193,7 @@ internal static class WebAgent
             if (last.Role == ChatRole.User)
             {
                 turn.InitializeHistory(history.Skip(1));
-                chunks = turn.RunStreamingAsync(last.Text, cancellationToken);
+                chunks = turn.RunStreamingAsync(last, cancellationToken);   // the whole message — a picture with the question goes too
             }
             else
             {

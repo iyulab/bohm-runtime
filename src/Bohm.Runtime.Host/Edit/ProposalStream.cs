@@ -38,10 +38,8 @@ internal static class ProposalStream
         var calls = new Dictionary<string, ToolArgumentText?>(StringComparer.Ordinal);
         var told = refused?.Count ?? 0;
         TurnRecord? record = null;
-        // A turn starts from a text prompt; one that shows more starts from the whole message and continues from it.
-        if (attachments is { Count: > 0 }) loop.InitializeHistory([new ChatMessage(ChatRole.User, [new TextContent(prompt), .. attachments])]);
-        var stream = attachments is { Count: > 0 } ? loop.ContinueStreamingAsync(cancellationToken) : loop.RunStreamingAsync(prompt, cancellationToken);
-        await foreach (var chunk in stream.ConfigureAwait(false))
+        var message = new ChatMessage(ChatRole.User, [new TextContent(prompt), .. attachments ?? []]);
+        await foreach (var chunk in loop.RunStreamingAsync(message, cancellationToken).ConfigureAwait(false))
         {
             if (chunk.Turn is { } turn) record = turn;
             if (onProgress is null) continue;
