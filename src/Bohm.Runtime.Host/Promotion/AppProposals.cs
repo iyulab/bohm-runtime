@@ -124,6 +124,12 @@ internal static partial class AppProposals
         innerHTML, outerHTML, insertAdjacentHTML or document.write. Convert numbers yourself when you
         compute with them; a cell may be empty or not a number. Show when the values were read.
 
+        Reading the pages again is the browser's own button beside the application: it reads the pages
+        with the same rules and reloads the application, which then shows the new reading as it opens.
+        Do not add a button of your own that says it reads, reloads or refreshes the pages — fetching
+        the same source again only shows the same reading, and two buttons with one name that do
+        different things mislead the person.
+
         The application is one file served from its own origin with a strict content security policy:
         no other host can be reached, so write all script and style in the file. It may keep its own
         settings in localStorage. There is no server behind it besides the sources above.
