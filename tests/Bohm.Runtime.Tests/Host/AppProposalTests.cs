@@ -238,8 +238,9 @@ public sealed class AppProposalTests
         await AppProposals.ProposeAsync(made, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken);
         await AppProposals.ProposeAsync(fromPages, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken);
 
-        Assert.Equal(["one_time_task", "propose_app"], made.Calls[0].Options!.Tools!.Select(t => t.Name).Order());
-        Assert.Equal(["propose_app"], fromPages.Calls[0].Options!.Tools!.Select(t => t.Name));   // an answer's pages are asked to be read again
+        // Both may read a built-in skill; only what was asked alone may be a thing to do now.
+        Assert.Equal(["load_skill", "one_time_task", "propose_app"], made.Calls[0].Options!.Tools!.Select(t => t.Name).Order());
+        Assert.Equal(["load_skill", "propose_app"], fromPages.Calls[0].Options!.Tools!.Select(t => t.Name).Order());   // an answer's pages are asked to be read again
     }
 
     [Fact]
@@ -404,5 +405,17 @@ public sealed class AppProposalTests
         var failure = await Assert.ThrowsAsync<ProposalFailedException>(() => AppProposals.FixAsync(model, ModelLimits.Unknown, broken, TestContext.Current.CancellationToken));
 
         Assert.Contains("cdn.example.com", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_built_in_skills_ship_beside_the_runtime_and_are_valid()
+    {
+        var skills = IronHive.Agent.Skills.SkillsLoader.Create(new IronHive.Agent.Skills.SkillsConfig { Roots = [AppProposals.SkillsRoot] });
+
+        Assert.Empty(skills.Diagnostics);
+        Assert.Equal(["ai-inside-the-app", "photos-voice-and-files", "printable-page", "records-and-tables"], skills.Skills.Select(s => s.Name).Order());
+        Assert.Equal(0, skills.DroppedCount);
+        // What the model is told: each skill's name and when to read it.
+        Assert.Contains("printable-page", skills.Contributor.GetInstructions(), StringComparison.Ordinal);
     }
 }
