@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Bohm.Runtime.Host.Edit;
 
@@ -16,7 +17,13 @@ namespace Bohm.Runtime.Host.Edit;
 /// The seconds a busy or rate-limited provider asked the caller to wait before asking again, when it said
 /// (<c>Retry-After</c>) — so the person hears «in a few seconds» instead of guessing; rounded up.
 /// </param>
-internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAfter = null)
+/// <param name="Billing">
+/// The provider refused because the account's balance, credit or quota ran out (a 402, an exhausted quota sent as
+/// a 429, a «credit balance is too low» 400) — waiting will not help and a different model name will not either;
+/// the person tops up that service or picks another. Written only when true.
+/// </param>
+internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAfter = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Billing = false)
 {
     private const int MaxMessage = 500;
 
@@ -34,6 +41,10 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
                 return new ProviderRefusal(client.StatusCode, Bounded(client.Message));
             if (e is Google.GenAI.ServerError { StatusCode: > 0 } server)
                 return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
+            // A billing refusal, whichever provider sent it: the outermost word, before the SDK exception it may wrap
+            // (whose status alone would read as a rate limit or a bad request). Inside a stream it carries no status.
+            if (e is IronHive.Abstractions.Exceptions.BillingException billing)
+                return new ProviderRefusal((int?)billing.StatusCode ?? 402, Bounded(e.Message), Billing: true);
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
             if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
                 return new ProviderRefusal(429, Bounded(e.Message), Seconds(limited.RetryAfter));
