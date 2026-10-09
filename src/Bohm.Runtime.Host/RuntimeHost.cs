@@ -8,6 +8,7 @@ using LocalOrigin.AspNetCore.Storage;
 using LocalOrigin.Origins;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using TauriKit.Sidecar.Loopback;
 
 namespace Bohm.Runtime.Host;
 
@@ -26,8 +27,8 @@ public sealed record RuntimeHostOptions
     public int? Port { get; init; }
 
     /// <summary>
-    /// Secret that control requests must bear. Chosen by whoever starts the runtime, per launch.
-    /// Without one, the control API does not exist.
+    /// Secret that control requests must bear (at least <see cref="LoopbackCredentials.MinimumLength"/>
+    /// characters). Chosen by whoever starts the runtime, per launch. Without one, the control API does not exist.
     /// </summary>
     public string? ControlSecret { get; init; }
 
@@ -171,13 +172,23 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Edit.AgentModel>();
+        // Every endpoint needs a registered caller unless it is named open; the shell is the only one.
+        var callers = new LoopbackCredentials();
+        if (options.ControlSecret is { } secret) callers.Register(secret, ShellCaller);
+        builder.Services.AddLoopbackAuthentication(callers);
         configure?.Invoke(builder);
 
         var app = builder.Build();
-        app.Run(context =>
+        // A request naming any host but this computer's own — including a public name rebound to the loopback
+        // address — is refused. Names under .localhost are this computer's (browsers resolve them themselves):
+        // the applications and the previews live there.
+        app.UseLoopbackHostCheck(localhostSubdomains: true);
+        if (options.ControlSecret is not null)
+            app.Map(ControlPlane.PathPrefix + "/{**rest}", ControlPlane.HandleAsync).RequireHost("127.0.0.1", "localhost").RequireCaller(ShellCaller);
+
+        // What pages ask for: open, because an application's own key (or none) is all a page holds.
+        app.MapFallback("{**path}", context =>
         {
-            // Only names under .localhost reach an application. A request naming any other host —
-            // including a public name rebound to the loopback address — is not served.
             if (AdoptedAppServing.AppIdOf(context.Request) is { } appId)
                 return AdoptedAppServing.ServeAsync(context, appId);
 
@@ -185,14 +196,17 @@ public static class RuntimeHost
             if (AppPreviews.TokenOf(context.Request) is { } previewToken)
                 return PreviewServing.ServeAsync(context, previewToken);
 
-            if (ControlPlane.IsControlHost(context.Request))
-                return ControlPlane.HandleAsync(context, options.ControlSecret);
-
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return Task.CompletedTask;
-        });
+        }).AllowAnonymous();
         return app;
     }
+
+    /// <summary>The kind of caller the control secret is registered for — the shell that started this runtime.</summary>
+    private const string ShellCaller = "shell";
+
+    /// <summary>What the line announcing the port starts with; <c>previousPort=M</c> follows when the remembered port was taken.</summary>
+    public const string ReadyPrefix = "bohm-runtime ready port=";
 
     /// <summary>
     /// The network for fetching applications' code: it connects only to public addresses. The

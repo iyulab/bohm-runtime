@@ -33,7 +33,7 @@ public sealed partial class RunningHost : IAsyncDisposable
     /// <summary>The port the data root was served on before, when it could not be used again.</summary>
     public int? PreviousPort { get; private init; }
 
-    public const string Secret = "per-launch-secret";
+    public const string Secret = "per-launch-secret-0123456789abcdef";
 
     public static async Task<RunningHost> StartAsync(string? dataRoot = null, string? secret = Secret, Func<RuntimeHostOptions, RuntimeHostOptions>? configure = null)
     {

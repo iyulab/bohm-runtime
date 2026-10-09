@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using Bohm.Runtime.Credentials;
+using Bohm.Runtime.Host;
 using System.Text;
 using System.Text.Json;
 
@@ -17,7 +18,7 @@ public sealed class ProcessTests : IDisposable
     [Fact]
     public async Task The_process_announces_its_port_then_adopts_and_shuts_down_on_request()
     {
-        const string secret = "launch-secret";
+        const string secret = "launch-secret-for-one-test-run-0123456";
         using var process = Start(secret);
         try
         {
@@ -61,8 +62,7 @@ public sealed class ProcessTests : IDisposable
         using var process = Start("s");
         try
         {
-            var ready = await ReadReadyAsync(process);
-            return (ready.GetProperty("port").GetInt32(), ready.TryGetProperty("previousPort", out var previous) ? previous.GetInt32() : null);
+            return await ReadReadyAsync(process);
         }
         finally
         {
@@ -116,7 +116,7 @@ public sealed class ProcessTests : IDisposable
     [Fact]
     public async Task The_organizations_model_server_given_at_start_is_fixed()
     {
-        const string secret = "launch-secret";
+        const string secret = "launch-secret-for-one-test-run-0123456";
         using var process = Start(secret, extra: ["--company-model-endpoint", "http://models.example:8000/v1", "--company-model", "qwen"]);
         try
         {
@@ -141,7 +141,7 @@ public sealed class ProcessTests : IDisposable
     [InlineData("--company-model-endpoint", "ftp://models.example/v1", "--company-model", "qwen")]
     public async Task A_model_server_given_only_in_part_or_unusable_stops_the_runtime_with_its_usage(params string[] extra)
     {
-        using var process = Start("launch-secret", extra: extra);
+        using var process = Start("launch-secret-for-one-test-run-0123456", extra: extra);
         using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await process.WaitForExitAsync(exited.Token);
         Assert.Equal(2, process.ExitCode);
@@ -156,7 +156,7 @@ public sealed class ProcessTests : IDisposable
             return;
         }
 
-        const string secret = "launch-secret";
+        const string secret = "launch-secret-for-one-test-run-0123456";
         var prefix = $"Bohm-verify-{Guid.NewGuid():N}";
         var theirs = new WindowsCredentialVault(prefix);
         var persons = new WindowsCredentialVault();
@@ -215,14 +215,17 @@ public sealed class ProcessTests : IDisposable
     }
 
     private static async Task<int> ReadReadyPortAsync(Process process) =>
-        (await ReadReadyAsync(process)).GetProperty("port").GetInt32();
+        (await ReadReadyAsync(process)).Port;
 
-    private static async Task<JsonElement> ReadReadyAsync(Process process)
+    // The line the shell waits for: the prefix, the port, then key=value words.
+    private static async Task<(int Port, int? PreviousPort)> ReadReadyAsync(Process process)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var line = await process.StandardOutput.ReadLineAsync(timeout.Token);
-        var ready = JsonDocument.Parse(line!).RootElement.Clone();
-        Assert.Equal("ready", ready.GetProperty("event").GetString());
-        return ready;
+        Assert.StartsWith(RuntimeHost.ReadyPrefix, line);
+        var words = line![RuntimeHost.ReadyPrefix.Length..].Split(' ');
+        var fields = words.Skip(1).Select(word => word.Split('=', 2)).ToDictionary(pair => pair[0], pair => pair[1]);
+        return (int.Parse(words[0], System.Globalization.CultureInfo.InvariantCulture),
+            fields.TryGetValue("previousPort", out var previous) ? int.Parse(previous, System.Globalization.CultureInfo.InvariantCulture) : null);
     }
 }

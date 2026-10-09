@@ -107,19 +107,11 @@ internal static partial class ControlPlane
     /// <summary>The longest a drain waits. Past it the caller proceeds and a loss is possible.</summary>
     private static readonly TimeSpan DrainLimit = TimeSpan.FromSeconds(2);
 
-    public static bool IsControlHost(HttpRequest request) =>
-        request.Host.Host is "127.0.0.1" or "localhost" && request.Path.StartsWithSegments(PathPrefix);
-
-    public static async Task HandleAsync(HttpContext context, string? secret)
+    /// <summary>Answers a control request. Who may ask is the endpoint's to check (the shell's credential, a loopback name).</summary>
+    public static async Task HandleAsync(HttpContext context)
     {
         var request = context.Request;
         var response = context.Response;
-        if (secret is null || !Authorized(request, secret))
-        {
-            response.StatusCode = secret is null ? StatusCodes.Status404NotFound : StatusCodes.Status401Unauthorized;
-            return;
-        }
-
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
         var segments = request.Path.Value![PathPrefix.Length..].Trim('/').Split('/');
         var port = request.Host.Port ?? 80;
@@ -1180,14 +1172,6 @@ internal static partial class ControlPlane
 
     private static Task<bool> DrainAsync(HttpContext context, CancellationToken cancellationToken) =>
         context.RequestServices.GetRequiredService<Activity>().WaitForQuietAsync(Quiet, DrainLimit, cancellationToken);
-
-    private static bool Authorized(HttpRequest request, string secret)
-    {
-        var header = request.Headers.Authorization.ToString();
-        const string scheme = "Bearer ";
-        if (!header.StartsWith(scheme, StringComparison.Ordinal)) return false;
-        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(header[scheme.Length..]), Encoding.UTF8.GetBytes(secret));
-    }
 
     private static async Task<byte[]> ReadBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
