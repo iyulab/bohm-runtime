@@ -7,6 +7,7 @@ using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
 using IronHive.Agent.Permissions;
+using IronHive.Agent.Skills;
 using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Host.Edit;
@@ -166,13 +167,13 @@ internal static partial class EditProposals
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, skills: !onThisComputer).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, skills: !onThisComputer).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -452,8 +453,14 @@ internal static partial class EditProposals
     /// <summary>What a change writes while it is shown: each replacement's new text.</summary>
     private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["replace"] = "new_text" };
 
+    /// <param name="skills">
+    /// Whether the model may read a built-in skill (printing, records, files, AI inside the application — see
+    /// <see cref="Promotion.AppProposals.SkillsRoot"/>) for a change that needs one. Not for the model on this computer,
+    /// whose short rounds and slow long prompts a skill catalog would only crowd.
+    /// </param>
     private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt,
-        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null)
+        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
+        bool skills = false)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -498,7 +505,14 @@ internal static partial class EditProposals
                 options.MaxOutputTokens ??= maxOutputTokens;
             })
             .Build();
-        var loop = new AgentLoop(client, new AgentOptions { Tools = [readSource, replace], SystemPrompt = systemPrompt, StreamToolArguments = onProgress is not null });
+        var loader = skills ? SkillsLoader.Create(new SkillsConfig { Roots = [Promotion.AppProposals.SkillsRoot] }) : null;
+        if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;
+        var loop = new AgentLoop(client, new AgentOptions
+        {
+            Tools = loader is null ? [readSource, replace] : [readSource, replace, loader.LoadTool],
+            SystemPrompt = systemPrompt,
+            StreamToolArguments = onProgress is not null,
+        });
 
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,

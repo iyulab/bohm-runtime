@@ -243,6 +243,23 @@ public sealed class EditProposalTests : IAsyncLifetime
         Assert.Equal([null, ReasoningEffort.None], thinking.Efforts); // the first round as the server likes; after its thinking, none
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Only_a_model_off_this_computer_may_read_a_built_in_skill_for_a_change(bool onThisComputer, bool offered)
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?> { ["old_text"] = "Add Task", ["new_text"] = "Save" }));
+        model.Script.Enqueue(new TextContent("Renamed the button."));
+
+        await EditProposals.ProposeAsync(model, onThisComputer, ModelLimits.Unknown, App,
+            new EditTarget("""<button onclick="addTask()">Add Task</button>""", "Add Task"), "Change this text to Save", null, TestContext.Current.CancellationToken);
+
+        // A change like «make it print on A4» reads the skill a new application would; the small model here is not given the catalog.
+        Assert.Equal(offered, model.Calls[0].Options!.Tools!.Any(t => t.Name == "load_skill"));
+        Assert.Equal(offered, model.Calls[0].Messages.Any(m => m.Role == ChatRole.System && m.Text.Contains("printable-page", StringComparison.Ordinal)));
+    }
+
     /// <summary>A server model that thinks before a replacement, then closes — recording the thinking it was asked for each round.</summary>
     private sealed class ThinksThenCalls : IChatClient
     {

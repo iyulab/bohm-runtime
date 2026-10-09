@@ -86,7 +86,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.Equal($"Bearer {Key}", request.Headers["Authorization"]); // every compatible base takes the key as a bearer token
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
-        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("function").GetProperty("name").GetString()).Order());
+        Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("function").GetProperty("name").GetString()).Order());
         // Settings only the model on this computer is given — providers refuse the ones they do not know.
         Assert.False(body.RootElement.TryGetProperty("reasoning_effort", out _));
         Assert.False(body.RootElement.TryGetProperty("max_completion_tokens", out _));
@@ -117,7 +117,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.Equal(Key, request.Headers["x-goog-api-key"]);
         Assert.False(request.Headers.ContainsKey("Authorization"));
         using var body = JsonDocument.Parse(request.Body);
-        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray()
+        Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray()
             .SelectMany(t => t.GetProperty("functionDeclarations").EnumerateArray()).Select(f => f.GetProperty("name").GetString()).Order());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
@@ -159,7 +159,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.Equal($"Bearer {Key}", request.Headers["Authorization"]);
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
-        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
+        Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
         // The Responses API keeps what it is sent unless told not to; the application's source is sent to be
         // answered, not to be kept.
         Assert.True(body.RootElement.TryGetProperty("store", out var store), request.Body);
@@ -191,7 +191,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.False(request.Headers.ContainsKey("Authorization"));
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
-        Assert.Equal(["read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
+        Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal("api.anthropic.com", sent.GetProperty("host").GetString());
