@@ -2,15 +2,16 @@ using System.Diagnostics;
 using System.Globalization;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host;
+using TauriKit.Sidecar.Loopback;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
 //        [--company-models <json> | --company-model-endpoint <url> --company-model <name>]
-// The control API is enabled by passing a per-launch secret in the BOHM_RUNTIME_SECRET
+// The control API is enabled by passing a per-launch secret (32 characters or more) in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
-// {"event":"ready","port":<n>} — so the process that started it learns the port it chose.
+// `bohm-runtime ready port=<n>` — so the process that started it learns the port it chose.
 // Without --port the data root keeps its port across launches (remembered in host.json); when that
-// port is taken the host starts on a new one and the line says so: {"event":"ready","port":<n>,"previousPort":<m>}.
+// port is taken the host starts on a new one and the line says so: `bohm-runtime ready port=<n> previousPort=<m>`.
 // --port 0 lets the operating system choose every time.
 // With --parent-pid the host stops by itself when that process ends, so a companion runtime is
 // never left running after the application that started it crashed or was killed.
@@ -82,7 +83,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
 {
     DataRoot = dataRoot,
     Port = port,
-    ControlSecret = Environment.GetEnvironmentVariable("BOHM_RUNTIME_SECRET"),
+    ControlSecret = LoopbackCredentials.ReadToken("BOHM_RUNTIME_SECRET"),
     LlamaServerPath = llamaServer,
     SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,
@@ -121,8 +122,8 @@ if (parentPid is { } pid)
     _ = parent.WaitForExitAsync().ContinueWith(_ => app.Lifetime.StopApplication(), TaskScheduler.Default);
 }
 
-Console.WriteLine(started.PreviousPort is { } previous
-    ? $$"""{"event":"ready","port":{{started.Port}},"previousPort":{{previous}}}"""
-    : $$"""{"event":"ready","port":{{started.Port}}}""");
+Console.WriteLine(LoopbackHost.ReadyLine(RuntimeHost.ReadyPrefix, started.Port, started.PreviousPort is { } previous
+    ? [new("previousPort", previous.ToString(CultureInfo.InvariantCulture))]
+    : null));
 await app.WaitForShutdownAsync();
 return 0;

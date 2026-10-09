@@ -87,14 +87,23 @@ public sealed class AdoptedAppServingTests : IAsyncLifetime
     [Theory]
     [InlineData("127.0.0.1")]
     [InlineData("localhost")]
-    [InlineData("example.com")]
-    [InlineData("0123456789abcdef0123456789abcdef.example.com")]
     [InlineData("not-an-id.localhost")]
     public async Task Hosts_other_than_an_application_origin_are_not_served(string host)
     {
         using var response = await _host.ClientFor(host).GetAsync("/");
 
         HttpAssert.Status(HttpStatusCode.NotFound, response);
+    }
+
+    [Theory]
+    [InlineData("example.com")]
+    [InlineData("0123456789abcdef0123456789abcdef.example.com")]
+    public async Task A_name_that_is_not_this_computers_own_is_refused(string host)
+    {
+        // A public name rebound to the loopback address (DNS rebinding) reaches the port with its own name.
+        using var response = await _host.ClientFor(host).GetAsync("/");
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
     }
 
     [Fact]
