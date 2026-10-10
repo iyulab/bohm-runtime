@@ -172,6 +172,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Promotion.AppSkills>();
+        builder.Services.AddSingleton<Promotion.AppMcp>();
         builder.Services.AddSingleton<Edit.AgentModel>();
         // Every endpoint needs a registered caller unless it is named open; the shell is the only one.
         var callers = new LoopbackCredentials();

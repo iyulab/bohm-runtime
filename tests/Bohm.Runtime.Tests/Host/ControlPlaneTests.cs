@@ -128,6 +128,96 @@ public sealed class ControlPlaneTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.BadRequest, bad);
     }
 
+    /// <summary>The stdio MCP server the tests start (<c>tests/Bohm.Runtime.McpStub</c>, built beside this assembly in the same configuration).</summary>
+    private static string McpStubPath()
+    {
+        var here = new DirectoryInfo(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var stub = Path.Combine(here.Parent!.Parent!.Parent!.Parent!.FullName, "Bohm.Runtime.McpStub", "bin", here.Parent.Name, here.Name);
+        return Path.Combine(stub, OperatingSystem.IsWindows() ? "Bohm.Runtime.McpStub.exe" : "Bohm.Runtime.McpStub");
+    }
+
+    [Fact]
+    public async Task Mcp_servers_are_read_as_their_documentation_writes_them_connected_and_listed_without_secret_values()
+    {
+        using var client = _host.ControlClient();
+        async Task<JsonElement[]> McpItemsAsync() =>
+            [.. JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement.GetProperty("items").EnumerateArray().Where(i => i.GetProperty("kind").GetString() == "mcp")];
+        async Task<JsonElement> UntilAsync(string name, Func<JsonElement, bool> settled)
+        {
+            for (var tries = 0; ; tries++)
+            {
+                var item = (await McpItemsAsync()).Single(i => i.GetProperty("name").GetString() == name);
+                if (settled(item) || tries == 200) return item;
+                await Task.Delay(100);
+            }
+        }
+
+        var document = JsonDocument.Parse(await client.GetStringAsync("/__control/extensions/mcp")).RootElement;
+        Assert.Equal(Path.Combine(_host.DataRoot, "mcp.json"), document.GetProperty("path").GetString());
+        Assert.Equal("", document.GetProperty("text").GetString());
+        Assert.Empty(await McpItemsAsync());
+
+        // Not JSON, and an entry that names both a command and an address: refused, nothing written.
+        using (var notJson = await client.PutAsync("/__control/extensions/mcp", new StringContent("{ mcpServers: ")))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, notJson);
+            Assert.Equal("json", JsonDocument.Parse(await notJson.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        }
+        using (var both = await client.PutAsync("/__control/extensions/mcp", new StringContent("""{ "mcpServers": { "both": { "command": "x", "url": "http://127.0.0.1:9/mcp" } } }""")))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, both);
+            var refused = JsonDocument.Parse(await both.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal("refused", refused.GetProperty("reason").GetString());
+            Assert.Equal("both", refused.GetProperty("notes")[0].GetProperty("entry").GetString());
+        }
+        Assert.False(File.Exists(Path.Combine(_host.DataRoot, "mcp.json")));
+
+        // The snippet as an MCP server's documentation writes it — a local command with a secret in its environment, and a
+        // turned-off address with a key in its query. The reader notes the key it does not know and keeps the entry.
+        var snippet = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["mcpServers"] = new Dictionary<string, object>
+            {
+                ["stub"] = new { command = McpStubPath(), env = new { STUB_TOKEN = "s3cret" }, envFile = ".env" },
+                ["remote"] = new { url = "http://127.0.0.1:9/mcp?key=s3cret", disabled = true },
+            },
+        });
+        using (var saved = await client.PutAsync("/__control/extensions/mcp", new StringContent(snippet)))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, saved);
+            var notes = JsonDocument.Parse(await saved.Content.ReadAsStringAsync()).RootElement.GetProperty("notes");
+            Assert.Contains(notes.EnumerateArray(), n => n.GetProperty("entry").GetString() == "stub" && n.GetProperty("kind").GetString() == "ignored");
+        }
+        Assert.Equal(snippet + "\n", File.ReadAllText(Path.Combine(_host.DataRoot, "mcp.json")));
+
+        var stub = await UntilAsync("stub", i => i.GetProperty("state").GetString() is "connected" or "failed");
+        Assert.Equal("connected", stub.GetProperty("state").GetString());
+        Assert.Equal(1, stub.GetProperty("tools").GetInt32());
+        Assert.True(stub.GetProperty("enabled").GetBoolean());
+        Assert.False(stub.GetProperty("builtin").GetBoolean());
+        Assert.Contains("(STUB_TOKEN)", stub.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        var remote = (await McpItemsAsync()).Single(i => i.GetProperty("name").GetString() == "remote");
+        Assert.Equal("off", remote.GetProperty("state").GetString());
+        Assert.Equal("http://127.0.0.1:9/mcp", remote.GetProperty("detail").GetString());
+        Assert.DoesNotContain("s3cret", await client.GetStringAsync("/__control/extensions"), StringComparison.Ordinal);
+
+        // Off closes it; on connects again.
+        using (var off = await client.PutAsync("/__control/extensions/mcp/stub/enabled", new StringContent("false")))
+            HttpAssert.Status(HttpStatusCode.NoContent, off);
+        Assert.Equal("off", (await McpItemsAsync()).Single(i => i.GetProperty("name").GetString() == "stub").GetProperty("state").GetString());
+        using (var on = await client.PutAsync("/__control/extensions/mcp/stub/enabled", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.NoContent, on);
+        Assert.Equal("connected", (await UntilAsync("stub", i => i.GetProperty("state").GetString() is "connected" or "failed")).GetProperty("state").GetString());
+        using (var unknown = await client.PutAsync("/__control/extensions/mcp/nobody/enabled", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+
+        // An empty document removes the file and every server.
+        using (var cleared = await client.PutAsync("/__control/extensions/mcp", new StringContent("")))
+            HttpAssert.Status(HttpStatusCode.OK, cleared);
+        Assert.False(File.Exists(Path.Combine(_host.DataRoot, "mcp.json")));
+        Assert.Empty(await McpItemsAsync());
+    }
+
     [Fact]
     public async Task A_skill_the_person_approved_is_written_checked_and_listed_and_one_that_would_not_be_used_never_lands()
     {

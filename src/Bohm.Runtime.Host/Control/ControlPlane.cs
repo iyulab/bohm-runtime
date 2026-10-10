@@ -64,7 +64,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/web/robots?url=</c></term><description>Whether the browser's agent may open the web address <c>url</c> on its own, by the site's robots.txt (RFC 9309, product token <c>Bohm-Agent</c>, else the <c>*</c> rules): <c>{ allowed, reason, rule, robotsUrl, crawlDelay }</c> — <c>reason</c> is <c>disallowed</c>, <c>server-error</c> or <c>unreachable</c> when it may not (a missing file allows everything; a server error or no answer allows nothing), <c>rule</c> the line that decided it. Read once a day per origin (a failure for five minutes), without cookies, counted as fetched from the site's host. What a person opens is not asked here. 400 for an address that is not http(s).</description></item>
-/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill). <c>POST …/extensions/skill</c> with <c>{ name, description, instructions }</c> adds the person's own skill — written as its <c>SKILL.md</c> and checked as skills are read before it lands (201 with the item; 409 when a skill has that name; 400 <c>{ reason }</c> — <c>name</c> · <c>description</c> · <c>instructions</c> · <c>format</c>). Only after the person approved it.</description></item>
+/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill). <c>POST …/extensions/skill</c> with <c>{ name, description, instructions }</c> adds the person's own skill — written as its <c>SKILL.md</c> and checked as skills are read before it lands (201 with the item; 409 when a skill has that name; 400 <c>{ reason }</c> — <c>name</c> · <c>description</c> · <c>instructions</c> · <c>format</c>). Only after the person approved it. Beside the skills, the MCP servers the person listed in <c>mcp.json</c> in the data root (<c>kind</c> <c>mcp</c>, with <c>state</c> — <c>off</c> · <c>connecting</c> · <c>connected</c> and its <c>tools</c> · <c>failed</c> · <c>refused</c> — and <c>detail</c>, the command or address without secret values): <c>GET …/extensions/mcp</c> answers the document <c>{ path, text }</c>; <c>PUT …/extensions/mcp</c> replaces it with the body, read first the way it will be read — 400 <c>{ reason: json | refused, notes }</c> when it is not JSON or an entry would be left out, otherwise <c>{ notes }</c> with the keys the reader ignored; an empty body removes it. Connections start when the list is read and close when the document changes. <c>PUT …/extensions/mcp/{name}/enabled</c> turns a server on or off.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
@@ -775,7 +775,49 @@ internal static partial class ControlPlane
             case ("GET", ["extensions"]):
                 var appSkills = context.RequestServices.GetRequiredService<Promotion.AppSkills>();
                 await WriteAsync(response, new ExtensionsView(appSkills.UserRoot,
-                    appSkills.List().Select(s => new ExtensionView("skill", s.Name, s.Description, s.Builtin, s.Enabled, s.Problem)).ToList()), cancel).ConfigureAwait(false);
+                [
+                    .. appSkills.List().Select(s => new ExtensionView("skill", s.Name, s.Description, s.Builtin, s.Enabled, s.Problem)),
+                    .. context.RequestServices.GetRequiredService<Promotion.AppMcp>().List()
+                        .Select(m => new ExtensionView("mcp", m.Name, null, Builtin: false, m.Enabled, m.Problem, m.State, m.Detail, m.Tools)),
+                ]), cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["extensions", "mcp"]):
+                var mcpDocument = context.RequestServices.GetRequiredService<Promotion.AppMcp>();
+                await WriteAsync(response, new McpDocumentView(mcpDocument.FilePath, mcpDocument.Text()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT", ["extensions", "mcp"]):
+                try
+                {
+                    var saved = await context.RequestServices.GetRequiredService<Promotion.AppMcp>()
+                        .SaveAsync(Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
+                    await WriteAsync(response, new McpSaveView(null, Notes(saved)), cancel).ConfigureAwait(false);
+                }
+                catch (Promotion.InvalidMcpDocumentException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues)), cancel).ConfigureAwait(false);
+                }
+
+                break;
+
+            case ("PUT", ["extensions", "mcp", var serverName, "enabled"]):
+                try
+                {
+                    using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    await context.RequestServices.GetRequiredService<Promotion.AppMcp>().SetEnabledAsync(serverName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
+                    response.StatusCode = StatusCodes.Status204NoContent;
+                }
+                catch (KeyNotFoundException)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                }
+                catch (Exception e) when (e is JsonException or InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                }
+
                 break;
 
             case ("POST", ["extensions", "skill"]):
@@ -1403,7 +1445,25 @@ internal static partial class ControlPlane
     /// </summary>
     internal sealed record ExtensionsView(string SkillsFolder, List<ExtensionView> Items);
 
-    internal sealed record ExtensionView(string Kind, string Name, string? Description, bool Builtin, bool Enabled, string? Problem);
+    /// <summary>
+    /// One skill or MCP server. For a server (<c>kind</c> <c>"mcp"</c>): <c>state</c> — <c>off</c> · <c>connecting</c> ·
+    /// <c>connected</c> (with <c>tools</c>) · <c>failed</c> · <c>refused</c>, <c>detail</c> — its command or address with no secret
+    /// values, and <c>problem</c> — why it failed or was left out.
+    /// </summary>
+    internal sealed record ExtensionView(string Kind, string Name, string? Description, bool Builtin, bool Enabled, string? Problem,
+        string? State = null, string? Detail = null, int? Tools = null);
+
+    /// <summary>The MCP document as the person wrote it (<c>text</c> — empty when there is none) and where it is.</summary>
+    internal sealed record McpDocumentView(string Path, string Text);
+
+    /// <summary>What the reader said about an MCP document: <c>entry</c> (null for the document), <c>kind</c> (<c>refused</c> · <c>ignored</c>), <c>message</c>.</summary>
+    internal sealed record McpNoteView(string? Entry, string Kind, string Message);
+
+    /// <summary>An MCP document saved (<c>notes</c> — keys the reader ignored), or refused (<c>reason</c> <c>json</c> · <c>refused</c>, with the entries' <c>notes</c>).</summary>
+    internal sealed record McpSaveView(string? Reason, List<McpNoteView> Notes);
+
+    private static List<McpNoteView> Notes(IEnumerable<IronHive.Agent.Mcp.McpConfigIssue> issues) =>
+        [.. issues.Select(i => new McpNoteView(i.Entry, i.Kind == IronHive.Agent.Mcp.McpConfigIssueKind.Refused ? "refused" : "ignored", i.Message))];
 
     internal sealed record PackageRefusal(string Reason);
 
@@ -1809,6 +1869,8 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpDocumentView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpSaveView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<UnreadableApp>))]
