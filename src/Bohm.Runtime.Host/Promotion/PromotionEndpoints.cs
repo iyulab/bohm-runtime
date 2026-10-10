@@ -87,16 +87,17 @@ internal static class PromotionEndpoints
             // Whether a recording is turned into text without a key — asked only for an application made from an instruction:
             // the speech model on this computer (here, or to be got while some AI answers without a key), or the organization's server's.
             var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
+            var skills = context.RequestServices.GetRequiredService<AppSkills>().Config();
             var speechWithoutKey = request.Broken is null && request.Review is null && request.FromInstruction
                 && ((keyless && speech.Supported) || await speech.DownloadedAsync(cancel).ConfigureAwait(false)
                     || (company.Configured && await company.TranscriptionModelAsync(cancel).ConfigureAwait(false) is not null));
             outcome = request.Broken is not null
-                ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
+                ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : request.Review is not null
-                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress).ConfigureAwait(false)
+                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
-                    onProgress).ConfigureAwait(false);
+                    onProgress, skills).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {

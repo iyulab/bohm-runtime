@@ -105,6 +105,30 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Skills_are_listed_and_turned_off_and_on_through_the_control_api()
+    {
+        using var client = _host.ControlClient();
+        async Task<JsonElement> ListAsync() => JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement;
+
+        var listed = await ListAsync();
+        Assert.Equal(Path.Combine(_host.DataRoot, "skills"), listed.GetProperty("skillsFolder").GetString());
+        var printable = listed.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("name").GetString() == "printable-page");
+        Assert.Equal("skill", printable.GetProperty("kind").GetString());
+        Assert.True(printable.GetProperty("builtin").GetBoolean());
+        Assert.True(printable.GetProperty("enabled").GetBoolean());
+
+        using (var off = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("false")))
+            HttpAssert.Status(HttpStatusCode.NoContent, off);
+        Assert.False((await ListAsync()).GetProperty("items").EnumerateArray().Single(i => i.GetProperty("name").GetString() == "printable-page").GetProperty("enabled").GetBoolean());
+        using (var on = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.NoContent, on);
+        using (var unknown = await client.PutAsync("/__control/extensions/skill/no-such-skill/enabled", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+        using (var bad = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("\"yes\"")))
+            HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+    }
+
+    [Fact]
     public async Task Kept_records_are_merged_with_those_written_since_and_given_back_through_the_control_api()
     {
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>"))).Id;

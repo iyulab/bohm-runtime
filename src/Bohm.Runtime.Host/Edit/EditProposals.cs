@@ -161,22 +161,24 @@ internal static partial class EditProposals
     /// <param name="onProgress">Told the new text of each replacement as the model writes it — when the provider sends a call while it is written.</param>
     /// <param name="attachments">What the model is shown with the request — a picture of the application as it looks, say.</param>
     public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, IReadOnlyList<string>? problems,
-        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null)
+        CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
+        SkillsConfig? skills = null)
     {
         var text = SourceText.Of(source);
+        var read = onThisComputer ? null : skills ?? Promotion.AppSkills.Builtin;
         var lines = text.Lf.Split('\n');
         var whole = ShowsWholeSource(text.Lf, lines.Length, onThisComputer, ModelLimits.Of(model, limits));
         EditProposal proposal;
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, skills: !onThisComputer).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, read).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, skills: !onThisComputer).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, read).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -463,7 +465,7 @@ internal static partial class EditProposals
     /// </param>
     private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt,
         CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
-        bool skills = false)
+        SkillsConfig? skills = null)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -512,7 +514,7 @@ internal static partial class EditProposals
                 options.MaxOutputTokens ??= maxOutputTokens;
             })
             .Build();
-        var loader = skills ? SkillsLoader.Create(new SkillsConfig { Roots = [Promotion.AppProposals.SkillsRoot] }) : null;
+        var loader = skills is null ? null : SkillsLoader.Create(skills);
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;
         var loop = new AgentLoop(client, new AgentOptions
         {

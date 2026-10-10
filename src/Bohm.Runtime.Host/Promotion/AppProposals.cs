@@ -80,8 +80,6 @@ internal static partial class AppProposals
     /// <summary>How many rounds of tool calls one proposal may take — a skill or two read, a proposal and a few corrections.</summary>
     public const int MaxRounds = 6;
 
-    /// <summary>Where the built-in skills are: one folder per skill, each with its SKILL.md, shipped beside the runtime.</summary>
-    internal static string SkillsRoot => Path.Combine(AppContext.BaseDirectory, "Skills");
 
     /// <summary>What a proposal writes while it is shown: the application's HTML.</summary>
     private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["propose_app"] = "html" };
@@ -200,7 +198,7 @@ internal static partial class AppProposals
     /// <param name="appAi">For an application made from an instruction, which AI answers its calls here (<see cref="AppAi"/>) — said to the model as one more line of how it runs.</param>
     /// <param name="onProgress">Told the application's HTML as the model writes it, and each refused proposal — when the provider sends a call while it is written.</param>
     public static async Task<ProposalOutcome> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null)
     {
         AppProposal? accepted = null;
         OneTimeTask? task = null;
@@ -246,10 +244,10 @@ internal static partial class AppProposals
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
         var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;
         // What only some applications need (printing, say) is a skill: its name and when to read it are said here, its body read on demand.
-        var skills = SkillsLoader.Create(new SkillsConfig { Roots = [SkillsRoot] });
-        if (skills.Contributor.GetInstructions() is { Length: > 0 } catalog) system += "\n\n" + catalog;
+        var loader = SkillsLoader.Create(skills ?? AppSkills.Builtin);
+        if (loader.Contributor.GetInstructions() is { Length: > 0 } catalog) system += "\n\n" + catalog;
         Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
-            new AgentLoop(client, new AgentOptions { Tools = request.FromInstruction ? [propose, oneTime, skills.LoadTool] : [propose, skills.LoadTool], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
+            new AgentLoop(client, new AgentOptions { Tools = request.FromInstruction ? [propose, oneTime, loader.LoadTool] : [propose, loader.LoadTool], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
             Prompt(request), WrittenFields, refusals, onProgress, cancellationToken);
         var response = await RunAsync().ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
@@ -291,7 +289,7 @@ internal static partial class AppProposals
     /// written again. The fixed version is held to the same checks as a made one.
     /// </summary>
     public static async Task<AppProposal> FixAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null)
     {
         var broken = request.Broken ?? throw new ArgumentException("No broken version to fix.", nameof(request));
         var lines = broken.Html.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
@@ -299,7 +297,7 @@ internal static partial class AppProposals
             .Select(m => int.Parse(m.Groups["line"].Value, CultureInfo.InvariantCulture)).FirstOrDefault(n => n >= 1 && n <= lines.Length);
         var near = at > 0 && lines[at - 1].Trim() is { Length: > 0 } line ? line : "<body>";
         var fixedVersion = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, broken.Html, new Edit.EditTarget(near, null),
-            request.Question, broken.Problems, cancellationToken, onProgress).ConfigureAwait(false);
+            request.Question, broken.Problems, cancellationToken, onProgress, skills: skills).ConfigureAwait(false);
         var title = TitleOf().Match(fixedVersion.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Broken = null }, title, null, fixedVersion.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The fixed version cannot be kept: " + string.Join(" ", problems));
@@ -314,12 +312,12 @@ internal static partial class AppProposals
     /// </summary>
     /// <exception cref="ArgumentException">There is no version to look at, or its picture is not a data URL of an image.</exception>
     public static async Task<AppProposal> ReviewAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null)
     {
         var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
         if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
         var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
-            ReviewInstruction(request.Question), null, cancellationToken, onProgress, [new DataContent(review.Image)]).ConfigureAwait(false);
+            ReviewInstruction(request.Question), null, cancellationToken, onProgress, [new DataContent(review.Image)], skills).ConfigureAwait(false);
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));

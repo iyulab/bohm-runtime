@@ -456,12 +456,78 @@ public sealed class AppProposalTests
     [Fact]
     public void The_built_in_skills_ship_beside_the_runtime_and_are_valid()
     {
-        var skills = IronHive.Agent.Skills.SkillsLoader.Create(new IronHive.Agent.Skills.SkillsConfig { Roots = [AppProposals.SkillsRoot] });
+        var skills = IronHive.Agent.Skills.SkillsLoader.Create(AppSkills.Builtin);
 
         Assert.Empty(skills.Diagnostics);
         Assert.Equal(["ai-inside-the-app", "photos-voice-and-files", "printable-page", "records-and-tables"], skills.Skills.Select(s => s.Name).Order());
         Assert.Equal(0, skills.DroppedCount);
         // What the model is told: each skill's name and when to read it.
         Assert.Contains("printable-page", skills.Contributor.GetInstructions(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_persons_own_skill_is_offered_beside_the_built_in_ones_and_one_turned_off_is_not()
+    {
+        var data = Directory.CreateTempSubdirectory("bohm-skills-").FullName;
+        try
+        {
+            using var appSkills = new AppSkills(new RuntimeHostOptions { DataRoot = data });
+            WriteSkill(Path.Combine(appSkills.UserRoot, "team-style"), "team-style", "Use when the person asks for the team's colours and type.");
+            await appSkills.SetEnabledAsync("printable-page", enabled: false, TestContext.Current.CancellationToken);
+            var model = new FakeChatModel();
+            model.Script.Enqueue(Propose("c1", Array.Empty<object>(), LogHtml, "Reading log"));
+
+            await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken, skills: appSkills.Config());
+
+            var system = model.Calls[0].Messages.First(m => m.Role == ChatRole.System).Text;
+            Assert.Contains("team-style", system, StringComparison.Ordinal);
+            Assert.Contains("records-and-tables", system, StringComparison.Ordinal);
+            Assert.DoesNotContain("printable-page", system, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(data, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task The_skill_list_shows_built_in_and_own_skills_and_why_one_is_not_used()
+    {
+        var data = Directory.CreateTempSubdirectory("bohm-skills-").FullName;
+        try
+        {
+            using var appSkills = new AppSkills(new RuntimeHostOptions { DataRoot = data });
+            Assert.Equal(4, appSkills.List().Count(s => s.Builtin && s.Enabled && s.Problem is null)); // no folder of one's own yet
+
+            WriteSkill(Path.Combine(appSkills.UserRoot, "team-style"), "team-style", "Use for the team's colours.");
+            WriteSkill(Path.Combine(appSkills.UserRoot, "printable-page"), "printable-page", "Mine, same name as a built-in one.");
+            Directory.CreateDirectory(Path.Combine(appSkills.UserRoot, "broken"));
+            File.WriteAllText(Path.Combine(appSkills.UserRoot, "broken", "SKILL.md"), "no front matter");
+
+            var list = appSkills.List();
+            var own = Assert.Single(list, s => s.Name == "team-style");
+            Assert.False(own.Builtin);
+            Assert.True(own.Enabled);
+            Assert.True(Assert.Single(list, s => s.Name == "printable-page" && s.Problem is null).Builtin); // the built-in one is used
+            Assert.Equal("shadowed", Assert.Single(list, s => s.Name == "printable-page" && s.Problem is not null).Problem);
+            Assert.Equal("invalid", Assert.Single(list, s => s.Name == "broken").Problem);
+
+            await appSkills.SetEnabledAsync("team-style", enabled: false, TestContext.Current.CancellationToken);
+            Assert.False(appSkills.List().Single(s => s.Name == "team-style").Enabled);
+            Assert.Contains("team-style", appSkills.Config().Exclude!);
+            await appSkills.SetEnabledAsync("team-style", enabled: true, TestContext.Current.CancellationToken);
+            Assert.True(appSkills.List().Single(s => s.Name == "team-style").Enabled);
+            await Assert.ThrowsAsync<KeyNotFoundException>(() => appSkills.SetEnabledAsync("broken", enabled: true, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Directory.Delete(data, recursive: true);
+        }
+    }
+
+    private static void WriteSkill(string folder, string name, string description)
+    {
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "SKILL.md"), $"---\nname: {name}\ndescription: {description}\n---\n\nThe body.\n");
     }
 }
