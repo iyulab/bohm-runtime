@@ -499,6 +499,24 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.True(provider.GetProperty("billing").GetBoolean());
     }
 
+    [Fact]
+    public async Task When_the_server_fails_an_answer_it_had_started_the_person_is_told_it_failed_on_the_way_not_that_it_finished()
+    {
+        await using var host = await StartAsync(fixedAtStart: true);
+        _server.StreamFailure = """{"error":{"message":"The server had an error while processing your request.","code":"server_error"}}""";
+
+        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
+            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
+            Encoding.UTF8, "application/json"));
+
+        // An upstream that failed its response — a passing failure the shell tells as «try again shortly», not a finished proposal.
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.Equal(502, provider.GetProperty("status").GetInt32());
+        Assert.Contains("server_error", provider.GetProperty("message").GetString());
+        Assert.False(provider.TryGetProperty("billing", out _));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

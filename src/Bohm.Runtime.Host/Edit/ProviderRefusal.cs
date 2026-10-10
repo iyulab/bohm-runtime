@@ -11,7 +11,7 @@ namespace Bohm.Runtime.Host.Edit;
 /// message — a fact the shell shows the person, not a sentence of ours. Without it the person sees
 /// only that the proposal did not finish, never why (a wrong model name, a missing thought signature).
 /// </summary>
-/// <param name="Status">The provider's HTTP status.</param>
+/// <param name="Status">The provider's HTTP status — 502 for an answer the provider failed after it accepted the request, which has none of its own.</param>
 /// <param name="Message">The provider's own message, when its answer carried one; bounded.</param>
 /// <param name="RetryAfter">
 /// The seconds a busy or rate-limited provider asked the caller to wait before asking again, when it said
@@ -48,6 +48,11 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
             if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
                 return new ProviderRefusal(429, Bounded(e.Message), Seconds(limited.RetryAfter));
+            // A provider that accepted the request and then failed the answer — an error inside a stream that had started, a
+            // dropped connection: it has no HTTP status of its own, so it reads as an upstream that failed its response (502),
+            // with the provider's code and message. A passing failure — asking again usually works.
+            if (e is IronHive.Abstractions.Exceptions.ProviderResponseException failed)
+                return new ProviderRefusal(502, Bounded(failed.ErrorCode is { Length: > 0 } code && !e.Message.Contains(code, StringComparison.Ordinal) ? $"{code}: {e.Message}" : e.Message));
             // Any other refusal: its status, and its own message already read out of the body.
             if (e is HttpRequestException { StatusCode: { } status })
                 return new ProviderRefusal((int)status, Bounded(e.Message),
