@@ -64,6 +64,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/web/robots?url=</c></term><description>Whether the browser's agent may open the web address <c>url</c> on its own, by the site's robots.txt (RFC 9309, product token <c>Bohm-Agent</c>, else the <c>*</c> rules): <c>{ allowed, reason, rule, robotsUrl, crawlDelay }</c> — <c>reason</c> is <c>disallowed</c>, <c>server-error</c> or <c>unreachable</c> when it may not (a missing file allows everything; a server error or no answer allows nothing), <c>rule</c> the line that decided it. Read once a day per origin (a failure for five minutes), without cookies, counted as fetched from the site's host. What a person opens is not asked here. 400 for an address that is not http(s).</description></item>
+/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill).</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
@@ -771,6 +772,30 @@ internal static partial class ControlPlane
                 await WriteAsync(response, await context.RequestServices.GetRequiredService<Agent.RobotsPolicy>().CheckAsync(siteAddress, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
+            case ("GET", ["extensions"]):
+                var appSkills = context.RequestServices.GetRequiredService<Promotion.AppSkills>();
+                await WriteAsync(response, new ExtensionsView(appSkills.UserRoot,
+                    appSkills.List().Select(s => new ExtensionView("skill", s.Name, s.Description, s.Builtin, s.Enabled, s.Problem)).ToList()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT", ["extensions", "skill", var skillName, "enabled"]):
+                try
+                {
+                    using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    await context.RequestServices.GetRequiredService<Promotion.AppSkills>().SetEnabledAsync(skillName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
+                    response.StatusCode = StatusCodes.Status204NoContent;
+                }
+                catch (KeyNotFoundException)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                }
+                catch (Exception e) when (e is JsonException or InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                }
+
+                break;
+
             case ("GET", ["egress"]):
                 await WriteAsync(response, context.RequestServices.GetRequiredService<Egress>().Snapshot(), cancel).ConfigureAwait(false);
                 break;
@@ -1344,6 +1369,15 @@ internal static partial class ControlPlane
 
     internal sealed record ExportedView(string Id, string Path);
 
+    /// <summary>
+    /// What the AI that makes and changes applications can be given beyond itself: <c>skillsFolder</c> is where the person's own
+    /// skills go (a folder each, with its <c>SKILL.md</c>); each item is one of them or a built-in one — <c>kind</c> <c>"skill"</c>,
+    /// <c>builtin</c>, <c>enabled</c>, and <c>problem</c> (<c>"shadowed"</c> · <c>"invalid"</c>) for one that is not used.
+    /// </summary>
+    internal sealed record ExtensionsView(string SkillsFolder, List<ExtensionView> Items);
+
+    internal sealed record ExtensionView(string Kind, string Name, string? Description, bool Builtin, bool Enabled, string? Problem);
+
     internal sealed record PackageRefusal(string Reason);
 
     private static PackageRefusal Refusal(InvalidPackageException e) => new(e.Problem switch
@@ -1627,7 +1661,8 @@ internal static partial class ControlPlane
         {
             proposal = await (target is null
                 ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
-                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel, onProgress)).ConfigureAwait(false);
+                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel, onProgress,
+                    skills: context.RequestServices.GetRequiredService<Promotion.AppSkills>().Config())).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
@@ -1745,6 +1780,7 @@ internal static partial class ControlPlane
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<UnreadableApp>))]
