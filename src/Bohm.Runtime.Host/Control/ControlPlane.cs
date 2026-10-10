@@ -64,7 +64,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/web/robots?url=</c></term><description>Whether the browser's agent may open the web address <c>url</c> on its own, by the site's robots.txt (RFC 9309, product token <c>Bohm-Agent</c>, else the <c>*</c> rules): <c>{ allowed, reason, rule, robotsUrl, crawlDelay }</c> — <c>reason</c> is <c>disallowed</c>, <c>server-error</c> or <c>unreachable</c> when it may not (a missing file allows everything; a server error or no answer allows nothing), <c>rule</c> the line that decided it. Read once a day per origin (a failure for five minutes), without cookies, counted as fetched from the site's host. What a person opens is not asked here. 400 for an address that is not http(s).</description></item>
-/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill).</description></item>
+/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill). <c>POST …/extensions/skill</c> with <c>{ name, description, instructions }</c> adds the person's own skill — written as its <c>SKILL.md</c> and checked as skills are read before it lands (201 with the item; 409 when a skill has that name; 400 <c>{ reason }</c> — <c>name</c> · <c>description</c> · <c>instructions</c> · <c>format</c>). Only after the person approved it.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
@@ -776,6 +776,33 @@ internal static partial class ControlPlane
                 var appSkills = context.RequestServices.GetRequiredService<Promotion.AppSkills>();
                 await WriteAsync(response, new ExtensionsView(appSkills.UserRoot,
                     appSkills.List().Select(s => new ExtensionView("skill", s.Name, s.Description, s.Builtin, s.Enabled, s.Problem)).ToList()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["extensions", "skill"]):
+                try
+                {
+                    using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    string Field(string key) => body.RootElement.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
+                    var added = await context.RequestServices.GetRequiredService<Promotion.AppSkills>()
+                        .AddAsync(Field("name"), Field("description"), Field("instructions"), cancel).ConfigureAwait(false);
+                    response.StatusCode = StatusCodes.Status201Created;
+                    await WriteAsync(response, new ExtensionView("skill", added.Name, added.Description, added.Builtin, added.Enabled, added.Problem), cancel)
+                        .ConfigureAwait(false);
+                }
+                catch (Promotion.SkillExistsException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                }
+                catch (Promotion.InvalidSkillException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new PackageRefusal(e.Part), cancel).ConfigureAwait(false);
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                }
+
                 break;
 
             case ("PUT", ["extensions", "skill", var skillName, "enabled"]):
@@ -1781,6 +1808,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionsView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.AppView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.MatchView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<UnreadableApp>))]
