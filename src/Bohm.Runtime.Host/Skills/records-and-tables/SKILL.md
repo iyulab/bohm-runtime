@@ -5,6 +5,10 @@ description: How to make an application that keeps a growing list of records —
 
 # Records that stay readable as they grow
 
+Here: the records live in localStorage (a few megabytes) and are kept when the application is changed later — a change keeps the keys and the shape of what is stored, so choose them as names you would keep.
+
+One way that works — suggestions, not rules: where the request or your own judgment says otherwise, follow that.
+
 The list starts empty and grows for months. Design for the hundredth entry, not the first.
 
 - **Adding.** One short form at the top (or a clear "Add" button that opens it), the most-used field focused, Enter to save, the form cleared after saving and the new row briefly highlighted. Sensible defaults: today's date, the last category used.

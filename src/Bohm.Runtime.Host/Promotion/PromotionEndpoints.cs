@@ -125,9 +125,9 @@ internal static class PromotionEndpoints
         var proposal = (AppProposal)outcome;
         if (lines)
             await Control.ControlPlane.WriteLineAsync(response,
-                new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
+                new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
         else
-            await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps), cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, int port, CancellationToken cancel)
@@ -236,10 +236,11 @@ internal static class PromotionEndpoints
     /// <param name="Sources">Its sources: each a name, the page (1-based) its rule was made from, and the rule.</param>
     /// <param name="Summary">The model's sentence on what the application shows.</param>
     /// <param name="Model">Which model proposed it.</param>
-    internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
+    /// <param name="Keeps">What the application remembers, in the person's words — a line per kind of record; empty when the model said nothing.</param>
+    internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused, string Keeps);
 
     /// <summary>The last line of a proposal made as it goes: <see cref="AppProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
-    internal sealed record AppProposalLine(string Status, string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused);
+    internal sealed record AppProposalLine(string Status, string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused, string Keeps);
 
     /// <summary>No application — what was asked is one thing to do now (<see cref="OneTimeTask"/>): <c>{ task, model }</c>, <c>task</c> the model's reason.</summary>
     internal sealed record OneTimeTaskView(string Task, string Model);

@@ -5,6 +5,10 @@ description: How to make an application whose result is printed or saved as a PD
 
 # A page that prints well
 
+Here: the application's address is an internal one, and the browser prints it with the date and title in the margins unless the stylesheet sets `@page { margin: 0 }` — so set it and give the printed content its own margins.
+
+One way that works — suggestions, not rules: where the request or your own judgment says otherwise, follow that.
+
 The person prints from the application with the browser's own print (Ctrl+P, or a "Print" button that calls `window.print()`). What is on paper is the document, not the tool around it.
 
 - **Two faces, one file.** Keep the editing controls (inputs, buttons, lists of saved items, hints) on screen, and in `@media print` show only the document. Hide controls with `@media print { .no-print { display: none !important; } }` rather than duplicating the document.

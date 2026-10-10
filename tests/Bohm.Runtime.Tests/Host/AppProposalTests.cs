@@ -399,7 +399,8 @@ public sealed class AppProposalTests
         var picture = Assert.Single(asked.Contents.OfType<DataContent>());   // the picture goes with the request, in one message
         Assert.Equal("image/png", picture.MediaType);
         Assert.Contains("A reading log for the books I borrow", asked.Text, StringComparison.Ordinal);
-        Assert.Contains("A good application looks finished", asked.Text, StringComparison.Ordinal);
+        Assert.Contains("compare what you see with what was asked", asked.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("a-finished-look", asked.Text, StringComparison.Ordinal);   // a checklist on demand, not a rubric laid on
         Assert.Contains(model.Calls[0].Messages, m => m.Role == ChatRole.System);   // the edit's own instructions still lead
     }
 
@@ -454,12 +455,32 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task What_the_model_is_always_told_is_what_holds_here_not_how_it_should_look()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("c1", "propose_app", new Dictionary<string, object?>
+        {
+            ["title"] = "Reading log", ["sources"] = JsonSerializer.SerializeToElement(Array.Empty<object>()), ["html"] = LogHtml,
+            ["summary"] = "Keeps the books you borrow.", ["keeps"] = "Books — title, author, returned",
+        }));
+
+        var proposal = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Instruction, TestContext.Current.CancellationToken));
+
+        var system = string.Join("\n", model.Calls[0].Messages.Where(m => m.Role == ChatRole.System).Select(m => m.Text));
+        Assert.Contains("What holds here", system, StringComparison.Ordinal);
+        Assert.Contains("What is here to use", system, StringComparison.Ordinal);
+        Assert.DoesNotContain("A good application looks finished", system, StringComparison.Ordinal);   // a skill to read, not a rule laid on
+        Assert.Contains("a-finished-look", system, StringComparison.Ordinal);                             // offered by name
+        Assert.Equal("Books — title, author, returned", proposal.Keeps);
+    }
+
+    [Fact]
     public void The_built_in_skills_ship_beside_the_runtime_and_are_valid()
     {
         var skills = IronHive.Agent.Skills.SkillsLoader.Create(AppSkills.Builtin);
 
         Assert.Empty(skills.Diagnostics);
-        Assert.Equal(["ai-inside-the-app", "photos-voice-and-files", "printable-page", "records-and-tables"], skills.Skills.Select(s => s.Name).Order());
+        Assert.Equal(["a-finished-look", "ai-inside-the-app", "photos-voice-and-files", "printable-page", "records-and-tables"], skills.Skills.Select(s => s.Name).Order());
         Assert.Equal(0, skills.DroppedCount);
         // What the model is told: each skill's name and when to read it.
         Assert.Contains("printable-page", skills.Contributor.GetInstructions(), StringComparison.Ordinal);
