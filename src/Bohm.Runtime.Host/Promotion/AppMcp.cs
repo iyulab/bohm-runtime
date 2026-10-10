@@ -18,10 +18,18 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     private const string OffFile = "mcp-off.json";
     private static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly McpPluginManager _manager = new(loggers.CreateLogger<McpPluginManager>());
+    private readonly ILogger<McpPluginManager> _log = loggers.CreateLogger<McpPluginManager>();
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly object _sync = new();
     private readonly ConcurrentDictionary<string, Task<int>> _connections = new(StringComparer.Ordinal);
+
+    // Closing a connection can take seconds (a stdio server is given time to exit), and nobody should wait for it: a save
+    // or a switch answers at once. A changed document retires the whole manager and starts a new one; a server turned off
+    // is disconnected in the background, and turning it on again waits for that first.
+    private McpPluginManager _manager = new(loggers.CreateLogger<McpPluginManager>());
+    private readonly ConcurrentDictionary<string, Task> _closing = new(StringComparer.Ordinal);
+    private readonly List<Task> _retiring = [];
 
     /// <summary>Where the document is.</summary>
     public string FilePath => Path.Combine(options.DataRoot, FileName);
@@ -66,7 +74,8 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
                 continue;
             }
 
-            var connecting = _connections.GetOrAdd(name, _ => ConnectAsync(name, server));
+            Task<int> connecting;
+            lock (_sync) connecting = _connections.GetOrAdd(name, _ => ConnectAsync(_manager, name, server));
             entries.Add(connecting.Status switch
             {
                 TaskStatus.RanToCompletion => new McpEntry(name, true, "connected", Detail(server), connecting.Result, null),
@@ -108,7 +117,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
                 File.Delete(FilePath);
             else
                 await WriteAsync(FilePath, text.EndsWith('\n') ? text : text + "\n", cancellationToken).ConfigureAwait(false);
-            await DisconnectAllAsync().ConfigureAwait(false);
+            RetireConnections();
         }
         finally
         {
@@ -141,7 +150,10 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
             else off.Add(name);
             await WriteAsync(Path.Combine(options.DataRoot, OffFile),
                 JsonSerializer.Serialize(off.ToArray(), SkillsJson.Default.StringArray) + "\n", cancellationToken).ConfigureAwait(false);
-            if (_connections.TryRemove(name, out _)) await _manager.DisconnectAsync(name, CancellationToken.None).ConfigureAwait(false);
+            lock (_sync)
+            {
+                if (_connections.TryRemove(name, out _)) _closing[name] = _manager.DisconnectAsync(name, CancellationToken.None);
+            }
         }
         finally
         {
@@ -152,6 +164,17 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     public async ValueTask DisposeAsync()
     {
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        Task[] pending;
+        lock (_sync) pending = [.. _closing.Values, .. _retiring];
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // A server that would not close cleanly is closed by disposing what is left below.
+        }
+
         await _manager.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         _gate.Dispose();
@@ -160,22 +183,42 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     private static McpPluginsConfig Read(string text) =>
         string.IsNullOrWhiteSpace(text) ? new McpPluginsConfig() : McpPluginsConfigLoader.Parse(text);
 
-    private async Task<int> ConnectAsync(string name, McpPluginConfig server)
+    private async Task<int> ConnectAsync(McpPluginManager manager, string name, McpPluginConfig server)
     {
         // Off the caller's request: a list answers at once and shows «connecting» until this settles.
         await Task.Yield();
+        if (_closing.TryRemove(name, out var closing))
+        {
+            try
+            {
+                await closing.ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // It is gone either way; connect anew.
+            }
+        }
+
         // The reader already gave an entry without its own timeout the document's default.
         var timeout = server.TimeoutMs > 0 ? TimeSpan.FromMilliseconds(server.TimeoutMs) : DefaultConnectTimeout;
         using var within = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         within.CancelAfter(timeout);
-        await _manager.ConnectAsync(name, server, within.Token).ConfigureAwait(false);
-        return (await _manager.GetToolsAsync(name, within.Token).ConfigureAwait(false)).Count;
+        await manager.ConnectAsync(name, server, within.Token).ConfigureAwait(false);
+        return (await manager.GetToolsAsync(name, within.Token).ConfigureAwait(false)).Count;
     }
 
-    private async Task DisconnectAllAsync()
+    /// <summary>Starts over with a new manager; the old one closes its connections in the background.</summary>
+    private void RetireConnections()
     {
-        _connections.Clear();
-        await _manager.DisconnectAllAsync(CancellationToken.None).ConfigureAwait(false);
+        lock (_sync)
+        {
+            var old = _manager;
+            _manager = new McpPluginManager(_log);
+            _connections.Clear();
+            _closing.Clear();
+            _retiring.RemoveAll(t => t.IsCompleted);
+            _retiring.Add(old.DisposeAsync().AsTask());
+        }
     }
 
     /// <summary>

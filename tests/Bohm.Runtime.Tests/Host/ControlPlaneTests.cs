@@ -202,8 +202,10 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.DoesNotContain("s3cret", await client.GetStringAsync("/__control/extensions"), StringComparison.Ordinal);
 
         // Off closes it; on connects again.
+        var turningOff = System.Diagnostics.Stopwatch.StartNew();
         using (var off = await client.PutAsync("/__control/extensions/mcp/stub/enabled", new StringContent("false")))
             HttpAssert.Status(HttpStatusCode.NoContent, off);
+        Assert.True(turningOff.Elapsed < TimeSpan.FromSeconds(2), $"turning off took {turningOff.Elapsed}");
         Assert.Equal("off", (await McpItemsAsync()).Single(i => i.GetProperty("name").GetString() == "stub").GetProperty("state").GetString());
         using (var on = await client.PutAsync("/__control/extensions/mcp/stub/enabled", new StringContent("true")))
             HttpAssert.Status(HttpStatusCode.NoContent, on);
@@ -211,9 +213,12 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         using (var unknown = await client.PutAsync("/__control/extensions/mcp/nobody/enabled", new StringContent("true")))
             HttpAssert.Status(HttpStatusCode.NotFound, unknown);
 
-        // An empty document removes the file and every server.
+        // An empty document removes the file and every server — at once: the old connections close in the background
+        // (a stdio server is given seconds to exit, and a save does not wait for that).
+        var clearing = System.Diagnostics.Stopwatch.StartNew();
         using (var cleared = await client.PutAsync("/__control/extensions/mcp", new StringContent("")))
             HttpAssert.Status(HttpStatusCode.OK, cleared);
+        Assert.True(clearing.Elapsed < TimeSpan.FromSeconds(2), $"clearing took {clearing.Elapsed}");
         Assert.False(File.Exists(Path.Combine(_host.DataRoot, "mcp.json")));
         Assert.Empty(await McpItemsAsync());
     }
