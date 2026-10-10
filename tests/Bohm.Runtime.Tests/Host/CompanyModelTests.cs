@@ -499,21 +499,26 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.True(provider.GetProperty("billing").GetBoolean());
     }
 
-    [Fact]
-    public async Task When_the_server_fails_an_answer_it_had_started_the_person_is_told_it_failed_on_the_way_not_that_it_finished()
+    [Theory]
+    // A documented server error is told as that error (500); a code no vendor documents a status for reads as an upstream
+    // that failed its response (502). Both are passing failures the shell tells as «try again shortly».
+    [InlineData("""{"error":{"message":"The server had an error while processing your request.","code":"server_error"}}""", 500, "server_error")]
+    [InlineData("""{"error":{"message":"Something odd happened.","code":"odd_failure"}}""", 502, "odd_failure")]
+    // A compatible server that writes the status in the code: a bad request is not a wait-and-retry.
+    [InlineData("""{"error":{"message":"Prompt is malformed.","code":400}}""", 400, "Prompt is malformed.")]
+    public async Task When_the_server_fails_an_answer_it_had_started_the_person_is_told_it_failed_on_the_way_not_that_it_finished(string failure, int status, string said)
     {
         await using var host = await StartAsync(fixedAtStart: true);
-        _server.StreamFailure = """{"error":{"message":"The server had an error while processing your request.","code":"server_error"}}""";
+        _server.StreamFailure = failure;
 
         using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
             """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
             Encoding.UTF8, "application/json"));
 
-        // An upstream that failed its response — a passing failure the shell tells as «try again shortly», not a finished proposal.
         HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
         var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
-        Assert.Equal(502, provider.GetProperty("status").GetInt32());
-        Assert.Contains("server_error", provider.GetProperty("message").GetString());
+        Assert.Equal(status, provider.GetProperty("status").GetInt32());
+        Assert.Contains(said, provider.GetProperty("message").GetString());
         Assert.False(provider.TryGetProperty("billing", out _));
     }
 
