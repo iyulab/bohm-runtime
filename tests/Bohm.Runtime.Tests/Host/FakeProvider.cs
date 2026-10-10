@@ -28,6 +28,12 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>
+    /// When set, a streamed request is accepted (200) and then failed inside the stream with this <c>data:</c> line — as a server
+    /// that errs after it started answering (an OpenAI-compatible <c>data: {"error": …}</c>).
+    /// </summary>
+    public string? StreamFailure { get; set; }
+
     /// <summary>The <c>Retry-After</c> a <see cref="Refusal"/> carries — a busy server's hint of when to ask again.</summary>
     public string? RetryAfter { get; set; }
 
@@ -37,8 +43,11 @@ public sealed class FakeProvider : IAsyncDisposable
     /// </summary>
     public string? Models { get; set; }
 
-    /// <summary>The OpenAI-compatible answer's <c>finish_reason</c> — <c>length</c> as a server ends an answer at its length limit; <see langword="null"/> leaves it out.</summary>
-    public string? FinishReason { get; set; }
+    /// <summary>
+    /// The OpenAI-compatible answer's <c>finish_reason</c> — <c>stop</c> as a server ends an answer (an answer streamed without one
+    /// reads as cut off since IronHive 0.60), <c>length</c> as it ends one at its length limit; <see langword="null"/> leaves it out.
+    /// </summary>
+    public string? FinishReason { get; set; } = "stop";
 
     /// <summary>The requests received other than for the model list and the question whether the model thinks — what a task asked of a model.</summary>
     public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)) && !IsThinkingQuestion(r))];
@@ -85,6 +94,14 @@ public sealed class FakeProvider : IAsyncDisposable
                 if (self.RetryAfter is { } retryAfter) context.Response.Headers.RetryAfter = retryAfter;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(refusal.Body);
+                return;
+            }
+
+            if (self.StreamFailure is { } failure && body.Contains("\"stream\":true", StringComparison.Ordinal) && !IsThinkingQuestion(self.Received.Last()))
+            {
+                context.Response.ContentType = "text/event-stream";
+                await context.Response.WriteAsync("data: {\"choices\":[{\"delta\":{\"content\":\"Partial \"}}]}\n\n");
+                await context.Response.WriteAsync($"data: {failure}\n\n");
                 return;
             }
 
