@@ -105,6 +105,35 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Kept_records_are_merged_with_those_written_since_and_given_back_through_the_control_api()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('loans')</script>"))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+        {
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("loans", """[{"id":1}]""")]);
+            await _host.Catalog.ReviseAsync(id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('loans')</script>"), null, storage);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("loans", """[{"id":1},{"id":2}]""")]);
+            await _host.Catalog.RevertAsync(id, storage);
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("loans", """[{"id":1},{"id":3}]""")]);
+        }
+
+        using var client = _host.ControlClient();
+        async Task<JsonElement> KeptAsync() => JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/revisions")).RootElement[1];
+
+        var kept = await KeptAsync();
+        Assert.Equal("mergeable", kept.GetProperty("undone").GetString());
+        Assert.Equal(1, kept.GetProperty("incoming").GetInt32());
+        using (var undoFirst = await client.PostAsync($"/__control/apps/{id}/revisions/2/undo-merge", null))
+            HttpAssert.Status(HttpStatusCode.Conflict, undoFirst);
+        using (var merged = await client.PostAsync($"/__control/apps/{id}/revisions/2/merge", null))
+            HttpAssert.Status(HttpStatusCode.OK, merged);
+        Assert.Equal("merged", (await KeptAsync()).GetProperty("undone").GetString());
+        using (var back = await client.PostAsync($"/__control/apps/{id}/revisions/2/undo-merge", null))
+            HttpAssert.Status(HttpStatusCode.OK, back);
+        Assert.Equal("mergeable", (await KeptAsync()).GetProperty("undone").GetString());
+    }
+
+    [Fact]
     public async Task A_suspected_loss_is_counted_in_the_application_usage_record()
     {
         var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;

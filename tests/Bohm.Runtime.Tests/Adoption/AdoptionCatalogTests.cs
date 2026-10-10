@@ -1,5 +1,6 @@
 using LocalOrigin.Storage;
 using System.Text;
+using System.Text.Json.Nodes;
 using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Storage;
 using Bohm.Runtime.Tests.Storage;
@@ -396,6 +397,55 @@ public sealed class AdoptionCatalogTests : IDisposable
         Assert.Equal(UndoneData.Diverged, (await catalog.ListRevisionsAsync(other.Id))[1].Undone);
         await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ImportUndoneAsync(other.Id, 2, otherStorage));
         Assert.Equal("2", otherStorage.GetItems()["loans"]);
+    }
+
+    [Fact]
+    public async Task Records_written_after_going_back_merge_with_those_the_revision_wrote_and_the_merge_can_be_given_back()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('lib')</script>"), Path.Combine(_root, "library.html"));
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        const string Before = """{"books":[{"id":1},{"id":2},{"id":3},{"id":4}],"loans":[{"id":"a"},{"id":"b"},{"id":"c"}]}""";
+        await storage.ApplyAsync([KeyValueOperation.Set("lib", Before)]);
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('lib')</script>"), null, storage);
+        await storage.ApplyAsync([KeyValueOperation.Set("lib", Before.Replace("""{"id":"c"}]""", """{"id":"c"},{"id":"d"}]""", StringComparison.Ordinal))]);
+        await catalog.RevertAsync(app.Id, storage);
+        // A loan written in the revision gone back to: before, this was «diverged» and the new revision's loan stayed a file.
+        await storage.ApplyAsync([KeyValueOperation.Set("lib", Before.Replace("""{"id":"c"}]""", """{"id":"c"},{"id":"e"}]""", StringComparison.Ordinal))]);
+
+        var kept = (await catalog.ListRevisionsAsync(app.Id))[1];
+        Assert.Equal(UndoneData.Mergeable, kept.Undone);
+        Assert.Equal(1, kept.Incoming);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.ImportUndoneAsync(app.Id, 2, storage)); // taking it in whole would lose «e»
+
+        await catalog.MergeUndoneAsync(app.Id, 2, storage);
+        var loans = JsonNode.Parse(storage.GetItems()["lib"])!["loans"]!.AsArray().Select(l => (string)l!["id"]!);
+        Assert.Equal(["a", "b", "c", "e", "d"], loans);
+        Assert.Equal(UndoneData.Merged, (await catalog.ListRevisionsAsync(app.Id))[1].Undone);
+        Assert.Equal(1, (await catalog.GetAsync(app.Id))!.Revision); // the code stays
+
+        await catalog.UndoMergeAsync(app.Id, 2, storage); // the other way
+        Assert.Equal(Before.Replace("""{"id":"c"}]""", """{"id":"c"},{"id":"e"}]""", StringComparison.Ordinal), storage.GetItems()["lib"]);
+        Assert.Equal(UndoneData.Mergeable, (await catalog.ListRevisionsAsync(app.Id))[1].Undone);
+
+        // Merged, then written on: everything kept is in the data now — nothing to merge, nothing to undo.
+        await catalog.MergeUndoneAsync(app.Id, 2, storage);
+        var merged = storage.GetItems()["lib"];
+        await storage.ApplyAsync([KeyValueOperation.Set("lib", merged.Replace("""{"id":4}""", """{"id":4},{"id":5}""", StringComparison.Ordinal))]);
+        Assert.Equal(UndoneData.Included, (await catalog.ListRevisionsAsync(app.Id))[1].Undone);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.UndoMergeAsync(app.Id, 2, storage));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.MergeUndoneAsync(app.Id, 2, storage));
+
+        // The same loan changed both ways is not merged: the kept data stays a file.
+        var conflict = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<script>localStorage.getItem('lib')</script>"), Path.Combine(_root, "conflict.html"));
+        await using var conflictStorage = await catalog.OpenStorageAsync(conflict.Id);
+        await conflictStorage.ApplyAsync([KeyValueOperation.Set("lib", """{"loans":[{"id":"a","back":false}]}""")]);
+        await catalog.ReviseAsync(conflict.Id, Encoding.UTF8.GetBytes("<script>/* v2 */ localStorage.getItem('lib')</script>"), null, conflictStorage);
+        await conflictStorage.ApplyAsync([KeyValueOperation.Set("lib", """{"loans":[{"id":"a","back":true}]}""")]);
+        await catalog.RevertAsync(conflict.Id, conflictStorage);
+        await conflictStorage.ApplyAsync([KeyValueOperation.Set("lib", """{"loans":[{"id":"a","back":"lost"}]}""")]);
+        Assert.Equal(UndoneData.Diverged, (await catalog.ListRevisionsAsync(conflict.Id))[1].Undone);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => catalog.MergeUndoneAsync(conflict.Id, 2, conflictStorage));
     }
 
     [Fact]
