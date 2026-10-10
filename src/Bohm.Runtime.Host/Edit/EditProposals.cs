@@ -476,13 +476,17 @@ internal static partial class EditProposals
             (string old_text, string new_text) =>
             {
                 var done = SourcePiece.Replace(draft, old_text, new_text);
-                if (done.Source is { } changed)
-                {
-                    draft = changed;
-                    edits.Add(new SourceEdit(done.Old!, done.New!)); // what the source held and now holds — not the model's copy of it
-                }
+                if (done.Source is not { } changed) return done.Message;
 
-                return done.Message;
+                // A replacement that leaves a script unreadable is told so in its answer — applied all the same, since a
+                // change made in several replacements may pass through a broken middle on its way.
+                var broken = AppScripts.SyntaxProblems(changed);
+                var newlyBroken = broken.Count > AppScripts.SyntaxProblems(draft).Count;
+                draft = changed;
+                edits.Add(new SourceEdit(done.Old!, done.New!)); // what the source held and now holds — not the model's copy of it
+                return newlyBroken
+                    ? done.Message + " But the source no longer parses: " + string.Join(" ", broken) + " Unless a replacement still to come completes it, correct it."
+                    : done.Message;
             },
             "replace",
             "Replaces one exact piece of the application's source, which must appear exactly once, with new text.");

@@ -287,7 +287,8 @@ public sealed class AppProposalTests
     [Theory]
     [InlineData("<script>fetch('/__bohm/sources/books')</script>", "books")]
     [InlineData("<script src=\"https://cdn.example.com/x.js\"></script>", "cdn.example.com")]
-    public async Task An_application_from_an_instruction_that_reads_a_source_or_loads_code_from_elsewhere_is_sent_back(string html, string reason)
+    [InlineData("<script>const total;</script>", "does not parse as JavaScript, at line 1")]
+    public async Task An_application_from_an_instruction_that_reads_a_source_loads_code_from_elsewhere_or_does_not_parse_is_sent_back(string html, string reason)
     {
         var model = new FakeChatModel();
         model.Script.Enqueue(Propose("c1", Array.Empty<object>(), html, "Books"));

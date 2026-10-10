@@ -392,6 +392,7 @@ internal static partial class AppProposals
                 problems.Add($"The application reads source '{undeclared}', which is not declared.");
             foreach (var unread in proposed.Where(p => !read.Contains(p.Name)))
                 problems.Add($"The application never reads source '{unread.Name}' (fetch('/__bohm/sources/{unread.Name}')).");
+            problems.AddRange(AppScripts.SyntaxProblems(html));
         }
 
         return (problems, proposed);

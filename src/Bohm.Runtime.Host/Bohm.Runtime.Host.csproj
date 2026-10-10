@@ -15,6 +15,12 @@
     <ProjectReference Include="..\Bohm.Runtime\Bohm.Runtime.csproj" />
   </ItemGroup>
 
+  <!-- A JavaScript parser (no engine): an application's inline scripts are read before it is accepted, so a syntax
+       error goes back to the model that wrote it instead of reaching the person. -->
+  <ItemGroup>
+    <PackageReference Include="Acornima" Version="1.8.0" />
+  </ItemGroup>
+
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
   <ItemGroup>
     <PackageReference Include="LocalOrigin.AspNetCore" Version="0.3.0" />
