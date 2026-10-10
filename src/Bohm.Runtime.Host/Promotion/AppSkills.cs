@@ -69,7 +69,64 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
         }
     }
 
+    /// <summary>
+    /// Adds the person's own skill <paramref name="name"/>: writes its <c>SKILL.md</c> (the frontmatter from
+    /// <paramref name="name"/> and <paramref name="description"/>, then <paramref name="instructions"/>) into a folder
+    /// beside <see cref="UserRoot"/>, checks it the way the skills are read, and only then moves it in — a skill that would
+    /// not be used never lands. The person approved it before this is called; nothing here asks.
+    /// </summary>
+    /// <exception cref="SkillExistsException">A skill (built-in or the person's) already has that name.</exception>
+    /// <exception cref="InvalidSkillException">The name, the description or the instructions do not make a skill.</exception>
+    public async Task<SkillEntry> AddAsync(string name, string description, string instructions, CancellationToken cancellationToken)
+    {
+        // Only a plain folder name reaches the disk; the format's own rules (pattern, length) are the discovery's below.
+        if (name.Length is 0 or > 64 || name != Path.GetFileName(name) || name is "." or ".." || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            throw new InvalidSkillException("name");
+        if (string.IsNullOrWhiteSpace(instructions)) throw new InvalidSkillException("instructions");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var staging = Path.Combine(options.DataRoot, "skills-adding-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            if (List().Any(s => string.Equals(s.Name, name, StringComparison.Ordinal))) throw new SkillExistsException(name);
+            var folder = Path.Combine(staging, name);
+            Directory.CreateDirectory(folder);
+            var text = $"---\nname: {name}\ndescription: {Quoted(description)}\n---\n\n{instructions.Trim()}\n";
+            await File.WriteAllTextAsync(Path.Combine(folder, "SKILL.md"), text, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+            var found = SkillDiscovery.Discover(new SkillsConfig { Roots = [staging] });
+            if (found.Diagnostics.FirstOrDefault(d => d.Severity == SkillDiagnosticSeverity.Error) is { } problem)
+                throw new InvalidSkillException(problem.Code switch
+                {
+                    SkillDiagnosticCode.MissingName or SkillDiagnosticCode.InvalidName or SkillDiagnosticCode.NameDoesNotMatchDirectory => "name",
+                    SkillDiagnosticCode.MissingDescription => "description",
+                    _ => "format",
+                });
+            Directory.CreateDirectory(UserRoot);
+            var target = Path.Combine(UserRoot, name);
+            if (Directory.Exists(target)) throw new SkillExistsException(name);
+            Directory.Move(folder, target);
+            return List().First(s => s.Problem is null && string.Equals(s.Name, name, StringComparison.Ordinal));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A folder left behind is harmless: it is not under a root the skills are read from.
+            }
+
+            _gate.Release();
+        }
+    }
+
     public void Dispose() => _gate.Dispose();
+
+    /// <summary>A YAML double-quoted scalar on one line — a description may hold a colon, a quote or a hash.</summary>
+    private static string Quoted(string text) =>
+        "\"" + string.Join(' ', text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()))
+            .Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 
     private HashSet<string> Off()
     {
@@ -106,6 +163,15 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
 /// <c>"shadowed"</c> (a built-in skill has its name) or <c>"invalid"</c> (its <c>SKILL.md</c> is not in the format) for one that is not used.
 /// </summary>
 internal sealed record SkillEntry(string Name, string? Description, bool Builtin, bool Enabled, string? Problem);
+
+/// <summary>A skill to add has a name a skill already has.</summary>
+internal sealed class SkillExistsException(string name) : Exception($"A skill named '{name}' exists.");
+
+/// <summary>What to add does not make a skill: <see cref="Part"/> is <c>name</c>, <c>description</c>, <c>instructions</c> or <c>format</c>.</summary>
+internal sealed class InvalidSkillException(string part) : Exception($"The skill's {part} is not valid.")
+{
+    public string Part { get; } = part;
+}
 
 [System.Text.Json.Serialization.JsonSerializable(typeof(string[]), TypeInfoPropertyName = "StringArray")]
 internal sealed partial class SkillsJson : System.Text.Json.Serialization.JsonSerializerContext;
