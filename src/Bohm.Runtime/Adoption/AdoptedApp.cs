@@ -83,8 +83,9 @@ public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Si
 /// </param>
 /// <param name="Request">For a revision made by a change the person asked for, their words; otherwise <see langword="null"/>.</param>
 /// <param name="RestoredFrom">For a revision that went back to the code of an earlier one, that revision's number; otherwise <see langword="null"/>.</param>
+/// <param name="Incoming">For kept data that is <see cref="UndoneData.Mergeable"/>, how many changes merging would take in (a key, a property or a record each); otherwise <see langword="null"/>.</param>
 public sealed record AppRevision(int Revision, int? Previous, DateTimeOffset TakenInAt, AdoptionSource Source, bool InUse, UndoneData? Undone,
-    string? Request = null, int? RestoredFrom = null);
+    string? Request = null, int? RestoredFrom = null, int? Incoming = null);
 
 /// <summary>Where the data a revision wrote, kept aside when the application was put back from it, stands against the data now.</summary>
 public enum UndoneData
@@ -99,10 +100,26 @@ public enum UndoneData
     Imported,
 
     /// <summary>
-    /// Something was written since going back, or the code in use does not read the kept data's keys:
-    /// taking it back in would lose or misread data, so it stays a file in the application's folder.
+    /// Something was written since going back that cannot be merged with the kept data — both changed the same value
+    /// differently — or the code in use does not read the kept data's keys: taking it back in would lose or misread
+    /// data, so it stays a file in the application's folder.
     /// </summary>
     Diverged,
+
+    /// <summary>
+    /// Something was written since going back, and the kept data merges with it without a conflict (each side
+    /// changed different things — typically both added records): merging takes the kept changes in and loses nothing.
+    /// </summary>
+    Mergeable,
+
+    /// <summary>The data now is what merging made, unchanged since. Undoing that restores the data merging started from.</summary>
+    Merged,
+
+    /// <summary>
+    /// Everything the kept data has is in the data now (it was merged or taken in, and written on since): nothing is
+    /// left only in the file, and there is nothing to merge.
+    /// </summary>
+    Included,
 }
 
 /// <summary>How an earlier adoption matches a file about to be adopted.</summary>

@@ -49,6 +49,7 @@ public sealed partial class AdoptionCatalog
     private const string RevisionFile = "revision.json";
     private const string DataBeforeFile = "data-before.json";
     private const string DataUndoneFile = "data-undone.json";
+    private const string DataPremergeFile = "data-premerge.json";
     private const string RemovedDirectory = "removed";
     private const string RemovedFile = "removed.json";
     private const string RemovingPrefix = ".removing-";
@@ -711,14 +712,17 @@ public sealed partial class AdoptionCatalog
                 var folder = RevisionFolder(id, number);
                 if (await ReadRevisionAsync(folder, cancellationToken).ConfigureAwait(false) is not { } record) continue;
                 UndoneData? undone = null;
+                int? incoming = null;
                 if (File.Exists(Path.Combine(folder, DataUndoneFile)))
                 {
                     now ??= await KeyValueStore.PeekAsync(Path.Combine(AppDirectory(id), StorageDirectory), AppStorageFormat.Options(), cancellationToken).ConfigureAwait(false);
-                    undone = await UndoneStateAsync(app, number, now, cancellationToken).ConfigureAwait(false);
+                    var standing = await UndoneStateAsync(app, number, now, cancellationToken).ConfigureAwait(false);
+                    undone = standing.State;
+                    incoming = standing.Merge?.Incoming;
                 }
 
                 revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source, record.Revision == app.Revision, undone,
-                    record.Request, record.RestoredFrom));
+                    record.Request, record.RestoredFrom, incoming));
             }
         }
 
@@ -758,34 +762,84 @@ public sealed partial class AdoptionCatalog
         return app;
     }
 
-    private async Task<AdoptedApp> UndoneAppAsync(string id, int revision, KeyValueStore storage, UndoneData required, CancellationToken cancellationToken)
+    /// <summary>
+    /// Merges the data revision <paramref name="revision"/> wrote — kept aside when the application was put back from
+    /// it — into the data written since (<see cref="UndoneData.Mergeable"/>): what each side changed, the other did not, so
+    /// nothing is lost. The data it starts from is kept as <c>data-premerge.json</c> in the revision's folder and is what
+    /// <see cref="UndoMergeAsync"/> restores; only the keys merging changes are written, in one write.
+    /// </summary>
+    /// <remarks><paramref name="storage"/> must be this application's open storage — the one writer of its files.</remarks>
+    /// <exception cref="InvalidOperationException">The kept data is not <see cref="UndoneData.Mergeable"/>.</exception>
+    public async Task<AdoptedApp> MergeUndoneAsync(string id, int revision, KeyValueStore storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        var now = storage.GetItems();
+        var (app, standing) = await UndoneAppAsync(id, revision, now, UndoneData.Mergeable, cancellationToken).ConfigureAwait(false);
+        var merged = standing.Merge!.Items;
+        await storage.SaveSnapshotAsync(Path.Combine(RevisionFolder(id, revision), DataPremergeFile), cancellationToken).ConfigureAwait(false);
+        var writes = merged.Where(p => !now.TryGetValue(p.Key, out var v) || !string.Equals(v, p.Value, StringComparison.Ordinal))
+            .Select(p => KeyValueOperation.Set(p.Key, p.Value))
+            .Concat(now.Keys.Where(k => !merged.ContainsKey(k)).Select(KeyValueOperation.Remove))
+            .ToList();
+        await storage.ApplyAsync(writes, cancellationToken).ConfigureAwait(false);
+        return app;
+    }
+
+    /// <summary>
+    /// Undoes <see cref="MergeUndoneAsync"/>: while the data is still exactly what merging made, puts back the data
+    /// merging started from.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The data is not <see cref="UndoneData.Merged"/> (it changed since, or was never merged).</exception>
+    public async Task<AdoptedApp> UndoMergeAsync(string id, int revision, KeyValueStore storage, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        var app = await UndoneAppAsync(id, revision, storage, UndoneData.Merged, cancellationToken).ConfigureAwait(false);
+        await storage.RestoreAsync(Path.Combine(RevisionFolder(id, revision), DataPremergeFile), cancellationToken).ConfigureAwait(false);
+        return app;
+    }
+
+    private async Task<AdoptedApp> UndoneAppAsync(string id, int revision, KeyValueStore storage, UndoneData required, CancellationToken cancellationToken) =>
+        (await UndoneAppAsync(id, revision, storage.GetItems(), required, cancellationToken).ConfigureAwait(false)).App;
+
+    private async Task<(AdoptedApp App, UndoneStanding Standing)> UndoneAppAsync(string id, int revision, IReadOnlyDictionary<string, string> now, UndoneData required,
+        CancellationToken cancellationToken)
     {
         RequireValidId(id);
         var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
         if (revision <= 0 || !File.Exists(Path.Combine(RevisionFolder(id, revision), DataUndoneFile)))
             throw new InvalidOperationException("No data was kept aside for this revision.");
-        var state = await UndoneStateAsync(app, revision, storage.GetItems(), cancellationToken).ConfigureAwait(false);
-        return state == required ? app : throw new InvalidOperationException($"The kept data is {state}, not {required}.");
+        var standing = await UndoneStateAsync(app, revision, now, cancellationToken).ConfigureAwait(false);
+        return standing.State == required ? (app, standing) : throw new InvalidOperationException($"The kept data is {standing.State}, not {required}.");
     }
+
+    /// <summary>Where kept data stands, and — when it is <see cref="UndoneData.Mergeable"/> — the merge.</summary>
+    private sealed record UndoneStanding(UndoneData State, UndoneMerge.Result? Merge = null);
 
     /// <summary>
     /// Where the data revision <paramref name="revision"/> kept aside stands against <paramref name="now"/>.
     /// Going back from it restored <c>data-before.json</c>; data still equal to that means nothing was
     /// written since. The code in use reads a key when the restored data had it or its source names it as
-    /// a quoted literal (<see cref="UsesStoredKeys"/>). A kept file that cannot be read counts as diverged.
+    /// a quoted literal (<see cref="UsesStoredKeys"/>) — checked before anything is taken in or merged. Data written
+    /// since is merged with the kept data over <c>data-before.json</c> (<see cref="UndoneMerge"/>); data equal to what
+    /// merging gives over <c>data-premerge.json</c> is what the last merge made. A kept file that cannot be read counts as diverged.
     /// </summary>
-    private async Task<UndoneData> UndoneStateAsync(AdoptedApp app, int revision, IReadOnlyDictionary<string, string> now, CancellationToken cancellationToken)
+    private async Task<UndoneStanding> UndoneStateAsync(AdoptedApp app, int revision, IReadOnlyDictionary<string, string> now, CancellationToken cancellationToken)
     {
         var folder = RevisionFolder(app.Id, revision);
         if (await ReadSnapshotAsync(Path.Combine(folder, DataUndoneFile), cancellationToken).ConfigureAwait(false) is not { } undone
             || await ReadSnapshotAsync(Path.Combine(folder, DataBeforeFile), cancellationToken).ConfigureAwait(false) is not { } before)
-            return UndoneData.Diverged;
-        if (SameItems(now, undone)) return UndoneData.Imported;
-        if (!SameItems(now, before)) return UndoneData.Diverged;
+            return new UndoneStanding(UndoneData.Diverged);
+        if (SameItems(now, undone)) return new UndoneStanding(UndoneData.Imported);
         var unread = new SortedSet<string>(undone.Keys.Where(k => !before.ContainsKey(k)), StringComparer.Ordinal);
-        if (unread.Count == 0) return UndoneData.Importable;
-        var source = Encoding.UTF8.GetString(await ReadHtmlAsync(app.Id, cancellationToken).ConfigureAwait(false));
-        return UsesStoredKeys(source, unread) ? UndoneData.Importable : UndoneData.Diverged;
+        if (unread.Count > 0 && !UsesStoredKeys(Encoding.UTF8.GetString(await ReadHtmlAsync(app.Id, cancellationToken).ConfigureAwait(false)), unread))
+            return new UndoneStanding(UndoneData.Diverged);
+        if (SameItems(now, before)) return new UndoneStanding(UndoneData.Importable);
+
+        if (await ReadSnapshotAsync(Path.Combine(folder, DataPremergeFile), cancellationToken).ConfigureAwait(false) is { } premerge
+            && UndoneMerge.Merge(before, undone, premerge) is { } last && SameItems(now, last.Items))
+            return new UndoneStanding(UndoneData.Merged);
+        if (UndoneMerge.Merge(before, undone, now) is not { } merge) return new UndoneStanding(UndoneData.Diverged);
+        return merge.Incoming == 0 ? new UndoneStanding(UndoneData.Included) : new UndoneStanding(UndoneData.Mergeable, merge);
 
         static bool SameItems(IReadOnlyDictionary<string, string> a, IReadOnlyDictionary<string, string> b) =>
             a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var v) && string.Equals(v, p.Value, StringComparison.Ordinal));

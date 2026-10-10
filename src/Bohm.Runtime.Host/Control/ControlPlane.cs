@@ -52,7 +52,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
-/// <item><term><c>POST /__control/apps/{id}/revisions/{n}/import</c></term><description>Takes the data revision <c>n</c> wrote back in, replacing the data now — only while nothing was written since going back and the code in use reads its keys; 409 otherwise. <c>…/undo-import</c> puts back the data it replaced, while the data is still what was taken in.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions/{n}/import</c></term><description>Takes the data revision <c>n</c> wrote back in, replacing the data now — only while nothing was written since going back and the code in use reads its keys; 409 otherwise. <c>…/undo-import</c> puts back the data it replaced, while the data is still what was taken in. <c>…/merge</c> merges it with the data written since going back, while neither changed what the other did (<c>mergeable</c>); <c>…/undo-merge</c> puts back the data merging started from, while the data is still what merging made.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/imports</c></term><description>What a table file could be imported into — <c>{ collections: [{ collection, records, fields: [{ name, kind }], identity }], imports: [{ number, file, collection, added, replaced, skipped, invalid, takenAt, undone }], fileTypes: [extension | "*"] }</c>: every stored key holding a list of records, with the fields and kinds the records show (a list with no records yet is not one) and the field earlier imports told the same record apart by; the imports so far, oldest first; and the file extensions the application's own file inputs take ("*" for one that takes any — see <see cref="TableImports.AppFileInputs"/>). Headers the person put into a field of another name in an earlier import match that field again.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/imports/preview</c></term><description>What importing a table file would do, from <c>{ file: { name, content, codePage? }, collection, identity?, sameRecord?, columns? }</c> (see <see cref="Adoption.TableImportEndpoints"/>; <c>codePage</c> — the code page the person chose for a file that is not UTF-8, else this computer's double-byte one is tried): <c>{ columns: [{ column, field }], unfilled, added, replaced, skipped, invalid: [{ row, field, cell }], sample, generated, codePage }</c> — <c>codePage</c> the file was read in, null for UTF-8 — <c>cell</c> is the cell that is not its field's kind, null for a required field left empty; <c>generated</c> is the application's own key the runtime fills for new records (none: null) — a column whose field is null is left out. Nothing is written. 400 <c>{ problem }</c> — the file's (<c>not-utf8</c>, <c>empty</c>, <c>unclosed-quote</c>, <c>too-large</c>, <c>too-many-rows</c>, <c>duplicate-header</c>) or the choice's (<c>unknown-collection</c>, <c>unknown-identity</c>, <c>unknown-field</c>, <c>unknown-same-record</c>).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/imports</c></term><description>Does it, with the same body: the data before and after are kept aside, the rows go in as one write, and pages loaded before reload (201 with the import's record). 409 when no row would go in.</description></item>
@@ -454,7 +454,7 @@ internal static partial class ControlPlane
                     storage => catalog.RevertAsync(revertedId, storage, cancel), app => app.Usage.RecordRevision(reverted: true)).ConfigureAwait(false);
                 break;
 
-            case ("POST", ["apps", var importedTo, "revisions", var keptBy, "import" or "undo-import"]):
+            case ("POST", ["apps", var importedTo, "revisions", var keptBy, "import" or "undo-import" or "merge" or "undo-merge"]):
                 if (await catalog.GetAsync(importedTo, cancel).ConfigureAwait(false) is null
                     || !int.TryParse(keptBy, NumberStyles.None, CultureInfo.InvariantCulture, out var keptRevision))
                 {
@@ -463,9 +463,13 @@ internal static partial class ControlPlane
                 }
 
                 // The same lossless order as a revision change: the code stays, the data is replaced, pages reload.
-                await ChangeRevisionAsync(context, importedTo, StatusCodes.Status200OK, segments[4] == "import"
-                    ? storage => catalog.ImportUndoneAsync(importedTo, keptRevision, storage, cancel)
-                    : storage => catalog.UndoImportAsync(importedTo, keptRevision, storage, cancel), record: null).ConfigureAwait(false);
+                await ChangeRevisionAsync(context, importedTo, StatusCodes.Status200OK, segments[4] switch
+                {
+                    "import" => storage => catalog.ImportUndoneAsync(importedTo, keptRevision, storage, cancel),
+                    "undo-import" => storage => catalog.UndoImportAsync(importedTo, keptRevision, storage, cancel),
+                    "merge" => storage => catalog.MergeUndoneAsync(importedTo, keptRevision, storage, cancel),
+                    _ => storage => catalog.UndoMergeAsync(importedTo, keptRevision, storage, cancel),
+                }, record: null).ConfigureAwait(false);
                 break;
 
             case ("GET" or "POST", ["apps", var importsOf, "imports", ..]):
@@ -675,8 +679,11 @@ internal static partial class ControlPlane
                         UndoneData.Importable => "importable",
                         UndoneData.Imported => "imported",
                         UndoneData.Diverged => "diverged",
+                        UndoneData.Mergeable => "mergeable",
+                        UndoneData.Merged => "merged",
+                        UndoneData.Included => "included",
                         _ => null,
-                    }, r.Request, r.RestoredFrom, r.Source.Sha256))
+                    }, r.Request, r.RestoredFrom, r.Source.Sha256, r.Incoming))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -1329,10 +1336,11 @@ internal static partial class ControlPlane
     /// <summary>
     /// One revision in an application's history: <c>file</c> is the name of the file it came from, <see langword="null"/> for an applied change.
     /// <c>undone</c>, for a revision the application was put back from, is where the data it wrote stands: <c>"importable"</c>,
-    /// <c>"imported"</c> or <c>"diverged"</c> (see <see cref="UndoneData"/>).
+    /// <c>"imported"</c>, <c>"mergeable"</c>, <c>"merged"</c>, <c>"included"</c> or <c>"diverged"</c> (see <see cref="UndoneData"/>);
+    /// <c>incoming</c>, for <c>"mergeable"</c>, how many changes merging would take in.
     /// </summary>
     internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone, string? Request, int? RestoredFrom,
-        string Sha256);
+        string Sha256, int? Incoming);
 
     internal sealed record ExportedView(string Id, string Path);
 
