@@ -177,20 +177,19 @@ internal static class WebAgent
         var written = new System.Text.StringBuilder();
         var cutShort = false;
         var sent = conversation;
-        AgentLoop loop;
-        int before;
+        IList<ChatMessage> produced;
         try
         {
-            (loop, before, conversation) = await StreamAsync(sent).ConfigureAwait(false);
+            (produced, conversation) = await StreamAsync(sent).ConfigureAwait(false);
         }
         catch (ContextOverflowException refused) when (written.Length == 0 && Shortened(sent, refused) is { } shorter)
         {
             // Too long for the model's context because of the pages read: the same turn once more with
             // their text cut by as much as did not fit. A second refusal stands.
-            (loop, before, conversation) = await StreamAsync(shorter).ConfigureAwait(false);
+            (produced, conversation) = await StreamAsync(shorter).ConfigureAwait(false);
         }
 
-        async Task<(AgentLoop Loop, int Before, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
+        async Task<(IList<ChatMessage> Produced, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
         {
             var guarded = await GuardToolResultsAsync(raw, cancellationToken).ConfigureAwait(false);
             var history = new List<ChatMessage> { new(ChatRole.System, systemPrompt) };
@@ -202,8 +201,8 @@ internal static class WebAgent
             var turn = new AgentLoop(client, new AgentOptions { Tools = [.. HostTools], SystemPrompt = systemPrompt });
             // Streamed either way: one path to the model, and the text is there to pass on as it comes.
             IAsyncEnumerable<AgentResponseChunk> chunks;
-            var from = 0;
-            if (last.Role == ChatRole.User)
+            var asked = last.Role == ChatRole.User;
+            if (asked)
             {
                 turn.InitializeHistory(history.Skip(1));
                 chunks = turn.RunStreamingAsync(last, cancellationToken);   // the whole message — a picture with the question goes too
@@ -211,26 +210,27 @@ internal static class WebAgent
             else
             {
                 turn.InitializeHistory(history.Skip(1).Append(last));
-                from = turn.History.Count;
                 chunks = turn.ContinueStreamingAsync(cancellationToken);
             }
 
+            // The last chunk carries the turn's record: why the model stopped, and what the turn added to the
+            // conversation — the question that started it (none for a continuation), then the model's messages.
+            IReadOnlyList<ChatMessage> added = [];
             await foreach (var chunk in chunks.ConfigureAwait(false))
             {
-                // The last chunk carries the turn's record, and with it why the model stopped.
-                if (chunk.Turn is { } record) cutShort = record.StopReason == TurnStopReason.OutputLimit;
+                if (chunk.Turn is { } record)
+                {
+                    cutShort = record.StopReason == TurnStopReason.OutputLimit;
+                    added = record.Messages;
+                }
                 if (chunk.TextDelta is not { Length: > 0 } delta) continue;
                 written.Append(delta);
                 if (onText is not null) await onText(delta, cancellationToken).ConfigureAwait(false);
             }
 
-            return (turn, from, guarded);
+            return ([.. added.Skip(asked ? 1 : 0)], guarded);
         }
 
-        // What this turn added: after the question the loop took in, or after the results it was given.
-        var after = loop.History.ToList();
-        if (conversation[^1].Role == ChatRole.User) before = after.FindLastIndex(m => m.Role == ChatRole.User) + 1;
-        IList<ChatMessage> produced = after.Skip(before).ToList();
         string? text = written.ToString();
 
         var answered = produced.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.CallId).ToHashSet(StringComparer.Ordinal);
