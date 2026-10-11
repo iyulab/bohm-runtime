@@ -28,6 +28,9 @@ using TauriKit.Sidecar.Loopback;
 // together with --company-models.
 // --no-mcp turns MCP servers off for this run (an administrator's policy): none is listed, connected or
 // offered to the AI, and the person cannot add one.
+// BOHM_LLM_ENDPOINTS sends a provider's traffic to a gateway that speaks the same API instead of the provider
+// itself: `host=address` pairs separated by `;` (https, or http on this computer) — see LlmEndpointsVariable.
+// Pairs that cannot be used are left out and named on standard error.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
@@ -38,6 +41,9 @@ string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
 string? llamaServer = null;
+var (llmEndpoints, unusableEndpoints) = Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Parse(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name));
+foreach (var pair in unusableEndpoints)
+    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name}: «{pair}» is not a known provider host with an https address (or http on this computer); left out.");
 string? companyEndpoint = null;
 string? companyModelName = null;
 string? companyModelsJson = null;
@@ -90,6 +96,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,
     McpAllowed = !args.Contains("--no-mcp"),
+    LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,
