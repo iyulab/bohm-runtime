@@ -64,7 +64,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/{id}/status</c></term><description>Today's usage signals, load failures, blocked resources, missing files, calls to a server the application expected (method and path) and keys needed.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/assets</c></term><description>Fetches (again) the code the application loads from other hosts; answers what was and was not cached.</description></item>
 /// <item><term><c>GET /__control/web/robots?url=</c></term><description>Whether the browser's agent may open the web address <c>url</c> on its own, by the site's robots.txt (RFC 9309, product token <c>Bohm-Agent</c>, else the <c>*</c> rules): <c>{ allowed, reason, rule, robotsUrl, crawlDelay }</c> — <c>reason</c> is <c>disallowed</c>, <c>server-error</c> or <c>unreachable</c> when it may not (a missing file allows everything; a server error or no answer allows nothing), <c>rule</c> the line that decided it. Read once a day per origin (a failure for five minutes), without cookies, counted as fetched from the site's host. What a person opens is not asked here. 400 for an address that is not http(s).</description></item>
-/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill). <c>POST …/extensions/skill</c> with <c>{ name, description, instructions }</c> adds the person's own skill — written as its <c>SKILL.md</c> and checked as skills are read before it lands (201 with the item; 409 when a skill has that name; 400 <c>{ reason }</c> — <c>name</c> · <c>description</c> · <c>instructions</c> · <c>format</c>). Only after the person approved it. Beside the skills, the MCP servers the person listed in <c>mcp.json</c> in the data root (<c>kind</c> <c>mcp</c>, with <c>state</c> — <c>off</c> · <c>connecting</c> · <c>connected</c> and its <c>tools</c> · <c>failed</c> · <c>refused</c> — and <c>detail</c>, the command or address without secret values): <c>GET …/extensions/mcp</c> answers the document <c>{ path, text }</c>; <c>PUT …/extensions/mcp</c> replaces it with the body, read first the way it will be read — 400 <c>{ reason: json | refused, notes }</c> when it is not JSON or an entry would be left out, otherwise <c>{ notes }</c> with the keys the reader ignored; an empty body removes it. Connections start when the list is read and close when the document changes. <c>PUT …/extensions/mcp/{name}/enabled</c> turns a server on or off.</description></item>
+/// <item><term><c>GET /__control/extensions</c></term><description>What the AI that makes and changes applications can read beyond itself: <c>{ skillsFolder, items: [{ kind, name, description, builtin, enabled, problem }] }</c> — the built-in skills and the person's own (a folder each under <c>skillsFolder</c>, with its <c>SKILL.md</c>); <c>problem</c> (<c>shadowed</c> · <c>invalid</c>) marks one that is not used. <c>PUT …/extensions/skill/{name}/enabled</c> with <c>true</c> or <c>false</c> turns one on or off (204; 404 for no such skill). <c>POST …/extensions/skill</c> with <c>{ name, description, instructions }</c> adds the person's own skill — written as its <c>SKILL.md</c> and checked as skills are read before it lands (201 with the item; 409 when a skill has that name; 400 <c>{ reason }</c> — <c>name</c> · <c>description</c> · <c>instructions</c> · <c>format</c>). Only after the person approved it. Beside the skills, the MCP servers the person listed in <c>mcp.json</c> in the data root (<c>kind</c> <c>mcp</c>, with <c>state</c> — <c>off</c> · <c>connecting</c> · <c>connected</c> and its <c>tools</c> · <c>failed</c> · <c>refused</c> — and <c>detail</c>, the command or address without secret values): <c>GET …/extensions/mcp</c> answers the document <c>{ path, text }</c>; <c>PUT …/extensions/mcp</c> replaces it with the body, read first the way it will be read — 400 <c>{ reason: json | refused, notes }</c> when it is not JSON or an entry would be left out, otherwise <c>{ notes }</c> with the keys the reader ignored; an empty body removes it. <c>POST …/extensions/mcp</c> with <c>{ name, server }</c> adds one server — its entry as the server's documentation writes it — to the document and saves it the same way (201 <c>{ notes }</c>; 409 when a server has that name; 400 <c>{ reason: name | json | refused, notes }</c>). Only after the person approved it. Connections start when the list is read and close when the document changes. <c>PUT …/extensions/mcp/{name}/enabled</c> turns a server on or off.</description></item>
 /// <item><term><c>GET /__control/egress</c></term><description>What left this computer since the runtime started: sent, fetched and blocked, by host.</description></item>
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
@@ -813,6 +813,38 @@ internal static partial class ControlPlane
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     await WriteAsync(response, new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues)), cancel).ConfigureAwait(false);
+                }
+
+                break;
+
+            case ("POST", ["extensions", "mcp"]):
+                try
+                {
+                    using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    var name = body.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()! : "";
+                    var entry = body.RootElement.TryGetProperty("server", out var s) ? s : default;
+                    var added = await context.RequestServices.GetRequiredService<Promotion.AppMcp>().AddAsync(name, entry, cancel).ConfigureAwait(false);
+                    response.StatusCode = StatusCodes.Status201Created;
+                    await WriteAsync(response, new McpSaveView(null, Notes(added)), cancel).ConfigureAwait(false);
+                }
+                catch (Promotion.McpServerExistsException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                }
+                catch (Promotion.InvalidMcpDocumentException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues)), cancel).ConfigureAwait(false);
+                }
+                catch (ArgumentException e)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new McpSaveView(e.ParamName == "name" ? "name" : "json", []), cancel).ConfigureAwait(false);
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    await WriteAsync(response, new McpSaveView("json", []), cancel).ConfigureAwait(false);
                 }
 
                 break;

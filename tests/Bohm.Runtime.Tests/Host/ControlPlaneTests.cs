@@ -247,6 +247,64 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal("unreachable", problems.GetValueOrDefault("nobody"));
     }
 
+    private static readonly string[] QuietArgs = ["--quiet"];
+
+    [Fact]
+    public async Task An_mcp_server_the_person_approved_is_added_to_the_document_beside_what_is_there()
+    {
+        using var client = _host.ControlClient();
+        var file = Path.Combine(_host.DataRoot, "mcp.json");
+        Task<HttpResponseMessage> AddAsync(object body) => client.PostAsync("/__control/extensions/mcp", new StringContent(JsonSerializer.Serialize(body)));
+        string? Reason(HttpResponseMessage r) => JsonDocument.Parse(r.Content.ReadAsStringAsync().Result).RootElement.GetProperty("reason").GetString();
+
+        // No document yet: one is made with mcpServers; a name in Korean stays readable.
+        using (var added = await AddAsync(new { name = "파일", server = new { command = McpStubPath(), args = QuietArgs } }))
+            HttpAssert.Status(HttpStatusCode.Created, added);
+        var first = JsonDocument.Parse(File.ReadAllText(file)).RootElement;
+        Assert.Equal("--quiet", first.GetProperty("mcpServers").GetProperty("파일").GetProperty("args")[0].GetString());
+        Assert.Contains("\"파일\"", File.ReadAllText(file), StringComparison.Ordinal);
+
+        // A second server goes beside the first; the same name again is a conflict and changes nothing.
+        using (var second = await AddAsync(new { name = "remote", server = new { url = "http://127.0.0.1:9/mcp", headers = new { Authorization = "Bearer k" } } }))
+            HttpAssert.Status(HttpStatusCode.Created, second);
+        using (var again = await AddAsync(new { name = "파일", server = new { command = "other" } }))
+            HttpAssert.Status(HttpStatusCode.Conflict, again);
+        var both = JsonDocument.Parse(File.ReadAllText(file)).RootElement.GetProperty("mcpServers");
+        Assert.Equal(["remote", "파일"], both.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(McpStubPath(), both.GetProperty("파일").GetProperty("command").GetString());
+
+        // An entry that would not be used, no name, or no object: refused, nothing written.
+        var before = File.ReadAllText(file);
+        using (var refused = await AddAsync(new { name = "both", server = new { command = "x", url = "http://127.0.0.1:9/mcp" } }))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+            Assert.Equal("refused", Reason(refused));
+        }
+        using (var nameless = await AddAsync(new { name = " ", server = new { command = "x" } }))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, nameless);
+            Assert.Equal("name", Reason(nameless));
+        }
+        using (var notObject = await AddAsync(new { name = "x", server = "npx x" }))
+        {
+            HttpAssert.Status(HttpStatusCode.BadRequest, notObject);
+            Assert.Equal("json", Reason(notObject));
+        }
+        Assert.Equal(before, File.ReadAllText(file));
+
+        // A document that keeps its servers under VS Code's «servers» gets the new one there.
+        using (var replaced = await client.PutAsync("/__control/extensions/mcp", new StringContent("""{ "servers": { "a": { "command": "x" } } }""")))
+            HttpAssert.Status(HttpStatusCode.OK, replaced);
+        using (var beside = await AddAsync(new { name = "b", server = new { command = "y" } }))
+            HttpAssert.Status(HttpStatusCode.Created, beside);
+        var vsCode = JsonDocument.Parse(File.ReadAllText(file)).RootElement;
+        Assert.False(vsCode.TryGetProperty("mcpServers", out _));
+        Assert.Equal(["a", "b"], vsCode.GetProperty("servers").EnumerateObject().Select(p => p.Name));
+
+        using (var cleared = await client.PutAsync("/__control/extensions/mcp", new StringContent("")))
+            HttpAssert.Status(HttpStatusCode.OK, cleared);
+    }
+
     [Fact]
     public void A_failure_without_a_known_cause_keeps_its_own_message()
     {
