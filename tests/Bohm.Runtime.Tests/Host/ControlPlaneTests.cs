@@ -1,6 +1,7 @@
 using LocalOrigin.Storage;
 using Bohm.Runtime;
 using Bohm.Runtime.Host.Promotion;
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -303,6 +304,29 @@ public sealed class ControlPlaneTests : IAsyncLifetime
 
         using (var cleared = await client.PutAsync("/__control/extensions/mcp", new StringContent("")))
             HttpAssert.Status(HttpStatusCode.OK, cleared);
+    }
+
+    [Fact]
+    public async Task With_mcp_turned_off_by_policy_no_server_is_listed_or_offered_and_nothing_can_change_the_document()
+    {
+        await using var host = await RunningHost.StartAsync(configure: o => o with { McpAllowed = false });
+        File.WriteAllText(Path.Combine(host.DataRoot, "mcp.json"), JsonSerializer.Serialize(new { mcpServers = new { stub = new { command = McpStubPath() } } }));
+        using var client = host.ControlClient();
+
+        var items = JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement.GetProperty("items");
+        Assert.DoesNotContain(items.EnumerateArray(), i => i.GetProperty("kind").GetString() == "mcp");
+        Assert.Empty(await host.Services.GetRequiredService<AppMcp>().ToolsAsync(CancellationToken.None));
+
+        using (var replaced = await client.PutAsync("/__control/extensions/mcp", new StringContent("")))
+        {
+            HttpAssert.Status(HttpStatusCode.Forbidden, replaced);
+            Assert.Equal("policy", JsonDocument.Parse(await replaced.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        }
+        using (var added = await client.PostAsync("/__control/extensions/mcp", new StringContent(JsonSerializer.Serialize(new { name = "x", server = new { command = "x" } }))))
+            HttpAssert.Status(HttpStatusCode.Forbidden, added);
+        using (var on = await client.PutAsync("/__control/extensions/mcp/stub/enabled", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.Forbidden, on);
+        Assert.True(File.Exists(Path.Combine(host.DataRoot, "mcp.json")));   // the person's document is left as it is
     }
 
     [Fact]

@@ -5,7 +5,7 @@ using Bohm.Runtime.Host;
 using TauriKit.Sidecar.Loopback;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
-//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>]
+//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]
 // The control API is enabled by passing a per-launch secret (32 characters or more) in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -26,12 +26,14 @@ using TauriKit.Sidecar.Loopback;
 // --company-model-endpoint and --company-model are the older way to list one server and one model —
 // its OpenAI-compatible base address and the model's name. Given together or not at all, and not
 // together with --company-models.
+// --no-mcp turns MCP servers off for this run (an administrator's policy): none is listed, connected or
+// offered to the AI, and the person cannot add one.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
 // Manager instead of Bohm/, so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>]";
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]";
 string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
@@ -87,6 +89,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     LlamaServerPath = llamaServer,
     SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,
+    McpAllowed = !args.Contains("--no-mcp"),
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,

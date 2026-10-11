@@ -80,6 +80,13 @@ public sealed record RuntimeHostOptions
     public Llm.CompanyModelList? CompanyModels { get; init; }
 
     /// <summary>
+    /// Whether the person may give the AI MCP servers — programs on this computer the runtime starts, or addresses it reaches.
+    /// <see langword="false"/> is an administrator's policy passed on by whoever starts the runtime: no server is listed,
+    /// connected or offered to the AI, and the document cannot be changed. <see langword="true"/> by default.
+    /// </summary>
+    public bool McpAllowed { get; init; } = true;
+
+    /// <summary>
     /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).
     /// Nothing is looked up or downloaded; <see langword="null"/>: a chosen model cannot be loaded (its
     /// state says why). Not used when <see cref="LocalModel"/> fixes the model.
