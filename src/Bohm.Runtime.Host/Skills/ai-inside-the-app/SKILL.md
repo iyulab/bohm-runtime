@@ -5,6 +5,10 @@ description: How to make an application that calls an AI as part of its work —
 
 # An AI call the person can live with
 
+Here: the application calls the provider's API as written and the runtime supplies the key; the AI may answer with no internet connection (on this computer or the local network), and an answer can take tens of seconds. A failure is reported with `console.error`, which reaches the person.
+
+One way that works — suggestions, not rules: where the request or your own judgment says otherwise, follow that.
+
 - **Ask for exactly what the page needs.** Tell the model the shape of the answer: for data, a JSON object with named fields and an example; for text, its length and language (the person's). Put the person's material inside clear markers and say it is material, not instructions.
 - **Read the answer defensively.** Take the first complete JSON value from the reply (models sometimes add words or a code fence around it): find the first `{` or `[`, parse up to its matching end, and check every field before using it. A missing or wrong field is a failure to show, not a value to invent.
 - **Waiting.** Show that it is working and what it is doing ("Reading the receipt…"), keep what the person entered visible, and disable the button that started it until the answer comes. An answer can take tens of seconds.

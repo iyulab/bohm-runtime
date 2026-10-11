@@ -5,6 +5,10 @@ description: How to make an application that takes in photos, recorded voice or 
 
 # Taking things in
 
+Here: everything taken in is kept in localStorage, which holds a few megabytes, so pictures and recordings must be made small before they are kept; speech is taken by recording (getUserMedia and MediaRecorder — SpeechRecognition does not work here), and the person is asked before the microphone opens.
+
+One way that works — suggestions, not rules: where the request or your own judgment says otherwise, follow that.
+
 - **Picking a file.** A large drop zone that also opens the picker when clicked (`<input type="file">` with the right `accept`, `multiple` when several make sense). Highlight it while something is dragged over it. Show what was taken in — a thumbnail, a file name and size — before it is used, with a way to remove it.
 - **Photos.** Keep them small enough to store: draw the image on a canvas at most about 1280 px on its longest side and keep it as a JPEG data URL (quality about 0.8). Show thumbnails in lists and the full picture when one is tapped.
 - **Room to keep.** Everything is kept in localStorage, which holds a few megabytes. When a save fails for lack of room (a `QuotaExceededError`), say so plainly, keep what was entered on screen, and report it with `console.error`. Offer to export or remove old items rather than losing anything silently.
