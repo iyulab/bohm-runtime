@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using IronHive.Agent.Mcp;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -155,6 +156,71 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// <exception cref="InvalidMcpDocumentException">The text is not a document, or an entry in it would not be used.</exception>
     public async Task<IReadOnlyList<McpConfigIssue>> SaveAsync(string text, CancellationToken cancellationToken)
     {
+        var config = Checked(text);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ReplaceAsync(text, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        return [.. config.Issues];
+    }
+
+    /// <summary>
+    /// Adds one server to the document — <paramref name="server"/> is its entry as an MCP server's documentation writes it
+    /// (<c>command</c> · <c>args</c> · <c>env</c>, or <c>url</c> · <c>headers</c>) — under the document's <c>mcpServers</c> (or the
+    /// <c>servers</c> or <c>plugins</c> object it already has), and saves it as <see cref="SaveAsync"/> does. Only after the person
+    /// approved it. The rest of the document is kept; it is written back indented.
+    /// </summary>
+    /// <exception cref="ArgumentException">The name is empty, or the entry is not a JSON object.</exception>
+    /// <exception cref="McpServerExistsException">The document has a server of that name.</exception>
+    /// <exception cref="InvalidMcpDocumentException">The document is not JSON, or the entry (or another) would not be used.</exception>
+    public async Task<IReadOnlyList<McpConfigIssue>> AddAsync(string name, JsonElement server, CancellationToken cancellationToken)
+    {
+        name = name.Trim();
+        if (name.Length == 0 || name.Any(char.IsControl)) throw new ArgumentException("An MCP server needs a name.", nameof(name));
+        if (server.ValueKind != JsonValueKind.Object) throw new ArgumentException("An MCP server's entry is a JSON object.", nameof(server));
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            JsonObject document;
+            try
+            {
+                var current = Text();
+                document = string.IsNullOrWhiteSpace(current) ? [] : JsonNode.Parse(current) as JsonObject ?? throw new InvalidMcpDocumentException([]);
+            }
+            catch (JsonException)
+            {
+                throw new InvalidMcpDocumentException([]);
+            }
+
+            var servers = ServerKeys.Select(key => document[key] as JsonObject).FirstOrDefault(o => o is not null);
+            if (servers is null) document["mcpServers"] = servers = [];
+            if (servers.ContainsKey(name)) throw new McpServerExistsException(name);
+            servers[name] = JsonNode.Parse(server.GetRawText());
+            var text = document.ToJsonString(Indented);
+            var config = Checked(text);
+            await ReplaceAsync(text, cancellationToken).ConfigureAwait(false);
+            return [.. config.Issues];
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Where a document keeps its servers, in the order a new one is added to the first present.</summary>
+    private static readonly string[] ServerKeys = ["mcpServers", "servers", "plugins"];
+
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    /// <summary>The document read the way it will be read — refused when it is not JSON or an entry in it would be left out.</summary>
+    private static McpPluginsConfig Checked(string text)
+    {
         McpPluginsConfig config;
         try
         {
@@ -167,21 +233,17 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
 
         if (config.Issues.Any(i => i.Kind == McpConfigIssueKind.Refused))
             throw new InvalidMcpDocumentException([.. config.Issues.Where(i => i.Kind == McpConfigIssueKind.Refused)]);
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                File.Delete(FilePath);
-            else
-                await WriteAsync(FilePath, text.EndsWith('\n') ? text : text + "\n", cancellationToken).ConfigureAwait(false);
-            RetireConnections();
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        return config;
+    }
 
-        return [.. config.Issues];
+    /// <summary>Writes (or, for empty text, removes) the document and starts the connections over. Under the gate.</summary>
+    private async Task ReplaceAsync(string text, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            File.Delete(FilePath);
+        else
+            await WriteAsync(FilePath, text.EndsWith('\n') ? text : text + "\n", cancellationToken).ConfigureAwait(false);
+        RetireConnections();
     }
 
     /// <summary>Turns server <paramref name="name"/> on or off; off closes its connection.</summary>
@@ -386,6 +448,9 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
 /// <paramref name="Problem"/> says why); <paramref name="Detail"/> is the command or the address, with no secret values.
 /// </summary>
 internal sealed record McpEntry(string Name, bool Enabled, string State, string? Detail, int? Tools, string? Problem);
+
+/// <summary>The MCP document already has a server of that name.</summary>
+internal sealed class McpServerExistsException(string name) : Exception($"An MCP server named '{name}' exists already.");
 
 /// <summary>A server's command is not a file that can be started — not on the path, or not at the path written.</summary>
 internal sealed class McpCommandNotFoundException(string command) : Exception($"The command '{command}' was not found.");
