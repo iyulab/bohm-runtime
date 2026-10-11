@@ -291,7 +291,7 @@ public static partial class TableImport
     }
 
     /// <summary>The records in a stored value — a JSON array of objects — or <see langword="null"/> when it is not one.</summary>
-    private static List<JsonObject>? Records(string value)
+    internal static List<JsonObject>? Records(string value)
     {
         try
         {

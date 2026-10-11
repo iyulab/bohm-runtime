@@ -32,6 +32,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/left</c></term><description>The person left an unsaved result (closed its tab): its retention counts from now, and serving its page again ends it. Nothing changes for a saved application.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export</c></term><description>Copies the application's folder, as it is, to the new folder whose full path is the body — the exchange format is the folder itself. The data is checkpointed first; the original is unchanged. 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/export?data=leave</c></term><description>Copies only what makes the application — its record, its code in every revision, the code it loads from other hosts and its sources' rules — leaving out its data, what its sources read, its usage record and the permissions to read. Whoever takes it in starts with none of them.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/tables</c></term><description>Writes the application's records out as tables a spreadsheet opens, into the new folder whose full path is the body: each collection in its data — a key holding a JSON array of objects — as one CSV, a column per field (UTF-8). Answers <c>{ path, tables: [{ collection, file, records, fields }] }</c>; with no collection, <c>tables</c> is empty and no folder is made. The application and its data are only read. 400 for a path that is not full; 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/package?data=none|all</c></term><description>Writes the application into a package (<c>.bohm</c>) at the full path in the body: a zip of <c>manifest.json</c> and the folder an export with the same data makes, each recorded original path shortened to its file name. <c>data</c> is required. Answers <c>{ id, path, version, contentSha256, data, includes, permissions }</c> — <c>version</c> goes up by one when the current code differs from the last package's. 400 for a path that is not full or does not end in <c>.bohm</c>, or a missing <c>data</c>; 409 when something with that name is already there or its folder is missing.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
@@ -564,6 +565,37 @@ internal static partial class ControlPlane
                 }
 
                 await WriteAsync(response, new ExportedView(exported.Id, Path.GetFullPath(target)), cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["apps", var tablesId, "tables"]):
+                var tablesTarget = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                if (!Path.IsPathFullyQualified(tablesTarget))
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                IReadOnlyList<TableExportRecord>? tables;
+                try
+                {
+                    var openForTables = await catalog.GetAsync(tablesId, cancel).ConfigureAwait(false) is { ArchivedAt: null }
+                        ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(tablesId).ConfigureAwait(false)
+                        : null;
+                    tables = await catalog.ExportTablesAsync(tablesId, tablesTarget, openForTables?.Storage, cancel).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                if (tables is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, new TablesView(Path.GetFullPath(tablesTarget), tables), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var packId, "package"]):
@@ -1506,6 +1538,9 @@ internal static partial class ControlPlane
 
     internal sealed record ExportedView(string Id, string Path);
 
+    /// <summary>The tables an application's records were written out as: the folder, and each collection's file.</summary>
+    internal sealed record TablesView(string Path, IReadOnlyList<TableExportRecord> Tables);
+
     /// <summary>
     /// What the AI that makes and changes applications can be given beyond itself: <c>skillsFolder</c> is where the person's own
     /// skills go (a folder each, with its <c>SKILL.md</c>); each item is one of them or a built-in one — <c>kind</c> <c>"skill"</c>,
@@ -1973,6 +2008,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RemovedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.RevisionView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TablesView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackageRefusal))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(PackageInspection))]
