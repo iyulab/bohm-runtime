@@ -522,7 +522,7 @@ internal static partial class EditProposals
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;
         var loop = new AgentLoop(client, new AgentOptions
         {
-            Tools = [readSource, replace, .. loader is null ? [] : new[] { loader.LoadTool }, .. mcp?.Functions ?? []],
+            Tools = [readSource, replace, .. loader is null ? [] : new[] { ToldSkillLoad.Of(loader.LoadTool, onProgress) }, .. mcp?.Functions ?? []],
             SystemPrompt = systemPrompt,
             StreamToolArguments = onProgress is not null,
         });

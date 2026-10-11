@@ -229,7 +229,7 @@ internal static partial class AppProposals
         Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
             new AgentLoop(client, new AgentOptions
             {
-                Tools = [propose, .. request.FromInstruction ? new[] { oneTime } : [], loader.LoadTool, .. mcp?.Functions ?? []],
+                Tools = [propose, .. request.FromInstruction ? new[] { oneTime } : [], Edit.ToldSkillLoad.Of(loader.LoadTool, onProgress), .. mcp?.Functions ?? []],
                 SystemPrompt = system,
                 StreamToolArguments = onProgress is not null,
             }),

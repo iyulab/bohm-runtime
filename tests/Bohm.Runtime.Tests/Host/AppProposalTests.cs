@@ -86,6 +86,27 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task Each_skill_the_model_reads_is_told_on_the_requests_lines()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new FunctionCallContent("s1", IronHive.Agent.Skills.SkillsLoader.LoadToolName, new Dictionary<string, object?> { ["name"] = "printable-page" }));
+        model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+        model.Script.Enqueue(new TextContent("Done."));
+        var skills = new List<string>();
+        Task OnProgress(Bohm.Runtime.Host.Edit.ProposalProgress progress, CancellationToken _)
+        {
+            if (progress.Skill is { } name) skills.Add(name);
+            return Task.CompletedTask;
+        }
+
+        Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken, onProgress: OnProgress));
+
+        Assert.Equal(["printable-page"], skills);
+        var read = model.Calls[1].Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Single(r => r.CallId == "s1");
+        Assert.Contains("print", read.Result?.ToString(), StringComparison.OrdinalIgnoreCase);   // the skill's body still reached the model
+    }
+
+    [Fact]
     public async Task A_server_allowed_for_the_request_is_not_asked_about_again_in_it_and_each_use_is_still_told()
     {
         var model = new FakeChatModel();

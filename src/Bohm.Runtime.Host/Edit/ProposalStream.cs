@@ -9,7 +9,8 @@ namespace Bohm.Runtime.Host.Edit;
 /// writes (a model that thinks), a piece of the text a tool call is writing — <see cref="Start"/> on the first
 /// piece of a call — a proposal the runtime refused, and why (the model is told and writes again) — or a question for the
 /// person: may the AI use an MCP server's tool (<see cref="Approval"/> — answered through <c>POST /__control/approvals/{id}</c>) — or a
-/// tool of a server the person allowed for this request, used without asking (<see cref="Used"/>).
+/// tool of a server the person allowed for this request, used without asking (<see cref="Used"/>) — or a skill the model read
+/// (<see cref="Skill"/>, its name).
 /// </summary>
 /// <remarks>Sent as one line of an answer made as it goes, so what a line does not carry is left out of it.</remarks>
 internal sealed record ProposalProgress(
@@ -18,7 +19,8 @@ internal sealed record ProposalProgress(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Start = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Refused = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Promotion.ApprovalAsk? Approval = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Promotion.McpUsed? Used = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Promotion.McpUsed? Used = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Skill = null);
 
 /// <summary>
 /// A proposal's turn, streamed so what it writes can be shown while it is written. Passed on: the model's
