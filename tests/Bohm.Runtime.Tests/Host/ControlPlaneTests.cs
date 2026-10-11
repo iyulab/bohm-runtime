@@ -224,6 +224,16 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_answer_to_a_question_nobody_asked_is_not_found_and_a_non_answer_is_refused()
+    {
+        using var client = _host.ControlClient();
+        using (var unknown = await client.PostAsync("/__control/approvals/0123456789abcdef0123456789abcdef", new StringContent("true")))
+            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+        using (var bad = await client.PostAsync("/__control/approvals/0123456789abcdef0123456789abcdef", new StringContent("\"yes\"")))
+            HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+    }
+
+    [Fact]
     public async Task A_skill_the_person_approved_is_written_checked_and_listed_and_one_that_would_not_be_used_never_lands()
     {
         using var client = _host.ControlClient();
