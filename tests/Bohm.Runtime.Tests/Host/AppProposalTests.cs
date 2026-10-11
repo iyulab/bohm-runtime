@@ -86,6 +86,55 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task A_server_allowed_for_the_request_is_not_asked_about_again_in_it_and_each_use_is_still_told()
+    {
+        var model = new FakeChatModel();
+        var read = McpTool.NameOf("files", "read");
+        var list = McpTool.NameOf("files", "list");
+        model.Script.Enqueue(new FunctionCallContent("m1", list, new Dictionary<string, object?> { ["path"] = "." }));
+        model.Script.Enqueue(new FunctionCallContent("m2", read, new Dictionary<string, object?> { ["path"] = "a.csv" }));
+        model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+        model.Script.Enqueue(new TextContent("Done."));
+        McpTool[] tools =
+        [
+            new("files", "list", Remote: false, AIFunctionFactory.Create((string path) => "a.csv", list, "List a folder.\nReturns one name per line.")),
+            new("files", "read", Remote: false, AIFunctionFactory.Create((string path) => "Item,Price", read)),
+        ];
+        var book = new ApprovalBook();
+        var asked = new List<ApprovalAsk>();
+        var used = new List<McpUsed>();
+        Task OnProgress(Bohm.Runtime.Host.Edit.ProposalProgress progress, CancellationToken _)
+        {
+            if (progress.Approval is { } ask)
+            {
+                asked.Add(ask);
+                Assert.True(book.Answer(ask.Id, ApprovalAnswer.YesForServer));
+            }
+
+            if (progress.Used is { } u) used.Add(u);
+            return Task.CompletedTask;
+        }
+
+        Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken,
+            onProgress: OnProgress, mcp: new McpUse(tools, new ProgressApprover(book, tools, OnProgress))));
+
+        var question = Assert.Single(asked);   // the second tool of the same server was not asked about
+        Assert.Equal("list", question.Tool);
+        Assert.Equal("List a folder.", question.Description);   // the first line of what the server says
+        var told = Assert.Single(used);
+        Assert.Equal(("files", "read"), (told.Server, told.Tool));
+        Assert.Contains("a.csv", told.Arguments, StringComparison.Ordinal);
+        var results = model.Calls[2].Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().ToList();
+        Assert.Contains(results, r => r.CallId == "m2" && r.Result?.ToString()?.Contains("Item,Price", StringComparison.Ordinal) == true);
+
+        // The next request asks again.
+        var next = new ProgressApprover(book, tools, OnProgress);
+        _ = next.RequestApprovalAsync(new IronHive.Agent.Mode.ApprovalRequest { ToolName = read, RiskAssessment = new McpAsks(null!).Evaluate(read, null) }, TestContext.Current.CancellationToken);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        Assert.Equal(2, asked.Count);
+    }
+
+    [Fact]
     public async Task Table_numbers_become_rules_that_read_the_pages_site_again()
     {
         var model = new FakeChatModel();
