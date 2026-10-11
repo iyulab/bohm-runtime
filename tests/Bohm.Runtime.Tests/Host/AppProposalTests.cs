@@ -44,6 +44,47 @@ public sealed class AppProposalTests
 
     private static object[] PricesFrom(int table, params string[] columns) => [new { name = "prices", page = 1, table, columns }];
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task An_mcp_tool_runs_only_when_the_person_allows_it_and_built_in_tools_are_not_asked_about(bool allow)
+    {
+        var model = new FakeChatModel();
+        var name = McpTool.NameOf("files", "echo");
+        model.Script.Enqueue(new FunctionCallContent("m1", name, new Dictionary<string, object?> { ["text"] = "hello" }));
+        model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+        model.Script.Enqueue(new TextContent("Done."));
+        var called = new List<string>();
+        var echo = AIFunctionFactory.Create((string text) => { called.Add(text); return "echo: " + text; }, name);
+        McpTool[] tools = [new("files", "echo", Remote: false, echo)];
+        var book = new ApprovalBook();
+        var asked = new List<ApprovalAsk>();
+        Task OnProgress(Bohm.Runtime.Host.Edit.ProposalProgress progress, CancellationToken _)
+        {
+            if (progress.Approval is { } ask)
+            {
+                asked.Add(ask);
+                Assert.True(book.Answer(ask.Id, allow));   // the shell's answer, as POST /__control/approvals/{id} gives it
+            }
+
+            return Task.CompletedTask;
+        }
+
+        var outcome = await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken,
+            onProgress: OnProgress, mcp: new McpUse(tools, new ProgressApprover(book, tools, OnProgress)));
+
+        Assert.IsType<AppProposal>(outcome);
+        Assert.Contains(model.Calls[0].Options!.Tools!, t => t.Name == name);
+        var question = Assert.Single(asked);   // propose_app was not asked about
+        Assert.Equal(("files", "echo", false), (question.Server, question.Tool, question.Remote));
+        Assert.Contains("hello", question.Arguments, StringComparison.Ordinal);
+        Assert.Equal(allow ? ["hello"] : [], called);
+        var result = model.Calls[1].Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Single(r => r.CallId == "m1");
+        if (allow) Assert.Contains("echo: hello", result.Result?.ToString(), StringComparison.Ordinal);
+        else Assert.Contains("did not allow", result.Result?.ToString(), StringComparison.Ordinal);
+        Assert.False(book.Answer(question.Id, allow));   // answered once; the question is gone
+    }
+
     [Fact]
     public async Task Table_numbers_become_rules_that_read_the_pages_site_again()
     {

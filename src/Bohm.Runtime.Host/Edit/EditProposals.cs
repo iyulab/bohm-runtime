@@ -162,23 +162,25 @@ internal static partial class EditProposals
     /// <param name="attachments">What the model is shown with the request — a picture of the application as it looks, say.</param>
     public static async Task<EditProposal> ProposeAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, EditTarget target, string instruction, IReadOnlyList<string>? problems,
         CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
-        SkillsConfig? skills = null)
+        SkillsConfig? skills = null, Promotion.McpUse? mcp = null)
     {
         var text = SourceText.Of(source);
         var read = onThisComputer ? null : skills ?? Promotion.AppSkills.Builtin;
+        // MCP tools as the skills: not for the model on this computer, whose short rounds they would only crowd.
+        var use = onThisComputer ? null : mcp;
         var lines = text.Lf.Split('\n');
         var whole = ShowsWholeSource(text.Lf, lines.Length, onThisComputer, ModelLimits.Of(model, limits));
         EditProposal proposal;
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, read).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, read, use).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, read).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, read, use).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -465,7 +467,7 @@ internal static partial class EditProposals
     /// </param>
     private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt,
         CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
-        SkillsConfig? skills = null)
+        SkillsConfig? skills = null, Promotion.McpUse? mcp = null)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -504,7 +506,9 @@ internal static partial class EditProposals
         // Inside the tool loop, so each round's request is configured: thinking seen in this task's
         // first answer turns it off for the rest.
         var pipeline = new ToolInvocationPipeline(
-            [new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)],
+            [mcp is null
+                ? new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)
+                : new ApprovalGateMiddleware(Promotion.McpUse.Policy(new ToolCallPolicy(permissions)), mcp.Approver)],
             [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
@@ -518,7 +522,7 @@ internal static partial class EditProposals
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;
         var loop = new AgentLoop(client, new AgentOptions
         {
-            Tools = loader is null ? [readSource, replace] : [readSource, replace, loader.LoadTool],
+            Tools = [readSource, replace, .. loader is null ? [] : new[] { loader.LoadTool }, .. mcp?.Functions ?? []],
             SystemPrompt = systemPrompt,
             StreamToolArguments = onProgress is not null,
         });

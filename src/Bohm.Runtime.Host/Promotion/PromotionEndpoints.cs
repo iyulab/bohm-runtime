@@ -97,7 +97,7 @@ internal static class PromotionEndpoints
                 ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
-                    onProgress, skills).ConfigureAwait(false);
+                    onProgress, skills, await McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false)).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {

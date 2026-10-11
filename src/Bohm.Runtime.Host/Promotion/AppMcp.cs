@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using IronHive.Agent.Mcp;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Bohm.Runtime.Host.Promotion;
@@ -88,6 +89,63 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
         foreach (var issue in config.Issues.Where(i => i.Kind == McpConfigIssueKind.Refused && i.Entry is not null))
             entries.Add(new McpEntry(issue.Entry!, false, "refused", null, null, issue.Message));
         return entries;
+    }
+
+    /// <summary>
+    /// The tools of the servers turned on, for the AI that makes or changes an application: connections are started as the list
+    /// starts them, and one still connecting is waited for briefly (<see cref="ToolsWait"/>) — a server that is not up by then is
+    /// left out of this request rather than holding it. Each tool is named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<McpTool>> ToolsAsync(CancellationToken cancellationToken)
+    {
+        McpPluginsConfig config;
+        try
+        {
+            config = Read(Text());
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+
+        List();   // starts what is turned on and not yet connecting
+        var tools = new List<McpTool>();
+        foreach (var (name, server) in config.Plugins)
+        {
+            Task<int>? connecting;
+            McpPluginManager manager;
+            lock (_sync)
+            {
+                if (!_connections.TryGetValue(name, out connecting)) continue;   // turned off
+                manager = _manager;
+            }
+
+            try
+            {
+                await connecting.WaitAsync(ToolsWait, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is TimeoutException or not OperationCanceledException)
+            {
+                continue;   // not up in time, or failed: the list says why
+            }
+
+            foreach (var tool in await manager.GetToolsAsync(name, cancellationToken).ConfigureAwait(false))
+            {
+                if (tool is AIFunction function)
+                    tools.Add(new McpTool(name, function.Name, server.Url is { Length: > 0 }, new Named(function, McpTool.NameOf(name, function.Name))));
+            }
+        }
+
+        return tools;
+    }
+
+    /// <summary>How long a request waits for a server still connecting.</summary>
+    internal static readonly TimeSpan ToolsWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>A server's tool under the name the model sees.</summary>
+    private sealed class Named(AIFunction inner, string name) : DelegatingAIFunction(inner)
+    {
+        public override string Name => name;
     }
 
     /// <summary>

@@ -782,6 +782,21 @@ internal static partial class ControlPlane
                 ]), cancel).ConfigureAwait(false);
                 break;
 
+            case ("POST", ["approvals", var approvalId]):
+                try
+                {
+                    using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    response.StatusCode = context.RequestServices.GetRequiredService<Promotion.ApprovalBook>().Answer(approvalId, body.RootElement.GetBoolean())
+                        ? StatusCodes.Status204NoContent
+                        : StatusCodes.Status404NotFound;
+                }
+                catch (Exception e) when (e is JsonException or InvalidOperationException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                }
+
+                break;
+
             case ("GET", ["extensions", "mcp"]):
                 var mcpDocument = context.RequestServices.GetRequiredService<Promotion.AppMcp>();
                 await WriteAsync(response, new McpDocumentView(mcpDocument.FilePath, mcpDocument.Text()), cancel).ConfigureAwait(false);
@@ -1749,7 +1764,8 @@ internal static partial class ControlPlane
             proposal = await (target is null
                 ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
                 : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel, onProgress,
-                    skills: context.RequestServices.GetRequiredService<Promotion.AppSkills>().Config())).ConfigureAwait(false);
+                    skills: context.RequestServices.GetRequiredService<Promotion.AppSkills>().Config(),
+                    mcp: await Promotion.McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false))).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {

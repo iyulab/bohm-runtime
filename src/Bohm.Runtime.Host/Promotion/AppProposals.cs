@@ -197,8 +197,9 @@ internal static partial class AppProposals
     /// <param name="limits">What is known of the model: one known to think is asked to think briefly — writing an application needs some, a long thinking step only time.</param>
     /// <param name="appAi">For an application made from an instruction, which AI answers its calls here (<see cref="AppAi"/>) — said to the model as one more line of how it runs.</param>
     /// <param name="onProgress">Told the application's HTML as the model writes it, and each refused proposal — when the provider sends a call while it is written.</param>
+    /// <param name="mcp">The tools of the MCP servers the person connected, each call asked of them first — none when null.</param>
     public static async Task<ProposalOutcome> ProposeAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken, string? appAi = null,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null, McpUse? mcp = null)
     {
         AppProposal? accepted = null;
         OneTimeTask? task = null;
@@ -231,7 +232,10 @@ internal static partial class AppProposals
             "Says that what the person asked is one thing to do now about the pages open in front of them, not a tool to keep — with a short reason. No application is made.");
 
         var permissions = new PermissionConfig { DefaultAction = PermissionAction.Allow };
-        var pipeline = new ToolInvocationPipeline([new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)], []);
+        var pipeline = new ToolInvocationPipeline(
+            [mcp is null
+                ? new ApprovalGateMiddleware(new ToolCallPolicy(permissions), approvalService: null)
+                : new ApprovalGateMiddleware(McpUse.Policy(new ToolCallPolicy(permissions)), mcp.Approver)], []);
         // Inside the tool loop, so a round after a refused proposal is asked to think briefly once the model showed it thinks.
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
@@ -247,7 +251,12 @@ internal static partial class AppProposals
         var loader = SkillsLoader.Create(skills ?? AppSkills.Builtin);
         if (loader.Contributor.GetInstructions() is { Length: > 0 } catalog) system += "\n\n" + catalog;
         Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
-            new AgentLoop(client, new AgentOptions { Tools = request.FromInstruction ? [propose, oneTime, loader.LoadTool] : [propose, loader.LoadTool], SystemPrompt = system, StreamToolArguments = onProgress is not null }),
+            new AgentLoop(client, new AgentOptions
+            {
+                Tools = [propose, .. request.FromInstruction ? new[] { oneTime } : [], loader.LoadTool, .. mcp?.Functions ?? []],
+                SystemPrompt = system,
+                StreamToolArguments = onProgress is not null,
+            }),
             Prompt(request), WrittenFields, refusals, onProgress, cancellationToken);
         var response = await RunAsync().ConfigureAwait(false);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
