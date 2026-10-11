@@ -34,7 +34,8 @@ internal sealed record SourceEdit(string Old, string New);
 /// </param>
 /// <param name="Left">For a named fix that did not finish, what is left — so the person, and a measurement, can see why.</param>
 /// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, <c>step-limit</c> when it used all its rounds, otherwise <see langword="null"/>.</param>
-internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null);
+/// <param name="Usage">What the model calls behind the proposal came to, as the provider reported — <see langword="null"/> when it reported nothing.</param>
+internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null, Llm.ModelUse? Usage = null);
 
 /// <summary>What a storage move left: lines that still load or call the online database, and names still used whose declaration it removed.</summary>
 /// <param name="OnlineLines">1-based line numbers in the proposed source.</param>
@@ -199,6 +200,7 @@ internal static partial class EditProposals
         var edits = new List<SourceEdit>();
         var summary = "";
         string? stopped = null;
+        Llm.ModelUse? use = null;
         // A model may stop after a few places, saying what it will do next, or remove a declaration that
         // other code still uses. Each pass shows it what is left: the database, and the names it took away.
         IReadOnlyList<string> dangling = [];
@@ -208,6 +210,7 @@ internal static partial class EditProposals
                 onThisComputer ? MaxStorageOutputTokensHere : MaxStorageOutputTokensProvider,
                 StoragePrompt(draft.Split('\n'), again: pass > 0, dangling), cancellationToken).ConfigureAwait(false);
             stopped = step.Stopped;
+            use = Llm.ModelUse.Add(use, step.Usage);
             if (step.Edits.Count == 0) break;
             draft = step.Html;
             edits.AddRange(step.Edits);
@@ -217,7 +220,7 @@ internal static partial class EditProposals
 
         var online = draft.Split('\n').Select((line, i) => (line, number: i + 1)).Where(x => OnlineUse().IsMatch(x.line)).Select(x => x.number).ToList();
         var complete = online.Count == 0 && dangling.Count == 0;
-        var proposal = new EditProposal(text.Restore(draft), summary, edits, complete, complete ? null : new StorageLeft(online, dangling), complete ? null : stopped);
+        var proposal = new EditProposal(text.Restore(draft), summary, edits, complete, complete ? null : new StorageLeft(online, dangling), complete ? null : stopped, use);
         StoppedBeforeAnyChange(proposal);
         return proposal;
     }
@@ -529,7 +532,7 @@ internal static partial class EditProposals
 
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
-            Stopped: ProposalFailedException.StoppedBy(response.StopReason));
+            Stopped: ProposalFailedException.StoppedBy(response.StopReason), Usage: Llm.ModelUse.Of(response));
     }
 
     /// <summary>

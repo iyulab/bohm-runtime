@@ -19,7 +19,9 @@ internal sealed record HostToolCall(string Id, string Name, JsonElement Argument
 /// (<c>requires_action</c>) — with any text the model wrote before them.
 /// </summary>
 /// <param name="Stopped"><c>output-limit</c> when the answer reached the model's length limit before it finished, so it may be cut short; otherwise <see langword="null"/>.</param>
-internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model, string? Stopped = null)
+/// <param name="Usage">The tokens the turn's model calls came to, as the provider reported — left out when it reported none.</param>
+internal sealed record TurnResult(string Status, string? Text, IReadOnlyList<HostToolCall> ToolCalls, string Model, string? Stopped = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage = null)
 {
     /// <summary>The text as HTML to show (<see cref="Adoption.AnswerMarkdown"/>) — nothing in it runs or loads.</summary>
     public string? Html => Text is { Length: > 0 } text ? Adoption.AnswerMarkdown.ToHtml(text) : null;
@@ -176,6 +178,7 @@ internal static class WebAgent
             .Build();
         var written = new System.Text.StringBuilder();
         var cutShort = false;
+        Llm.ModelUse? use = null;
         var sent = conversation;
         IList<ChatMessage> produced;
         try
@@ -222,6 +225,7 @@ internal static class WebAgent
                 {
                     cutShort = record.StopReason == TurnStopReason.OutputLimit;
                     added = record.Messages;
+                    use = Llm.ModelUse.Of(record);
                 }
                 if (chunk.TextDelta is not { Length: > 0 } delta) continue;
                 written.Append(delta);
@@ -242,8 +246,8 @@ internal static class WebAgent
             .Select(call => new HostToolCall(FreeId(call.CallId, taken), call.Name, JsonSerializer.SerializeToElement(call.Arguments ?? new Dictionary<string, object?>(), AgentJson.Default.IDictionaryStringObject)))
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-        return pending.Count > 0 ? new("requires_action", text, pending, modelName)
-            : new("done", text ?? "", [], modelName, cutShort ? Edit.ProposalFailedException.OutputLimit : null);
+        return pending.Count > 0 ? new("requires_action", text, pending, modelName, Usage: use)
+            : new("done", text ?? "", [], modelName, cutShort ? Edit.ProposalFailedException.OutputLimit : null, use);
     }
 
     /// <summary>A page text shorter than this is not worth cutting.</summary>

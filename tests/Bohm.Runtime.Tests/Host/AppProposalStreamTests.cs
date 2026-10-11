@@ -61,6 +61,23 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
         Assert.Equal("done", done.GetProperty("status").GetString());
         Assert.Equal(Html, done.GetProperty("html").GetString());
         Assert.Equal("Reading log", done.GetProperty("title").GetString());
+        Assert.False(done.TryGetProperty("usage", out _));   // the provider reported none
+    }
+
+    [Fact]
+    public async Task The_proposal_says_what_all_its_model_calls_came_to_as_the_provider_reported_them()
+    {
+        _server.StreamedUsage = (100, 40);
+        _server.StreamedCalls.Enqueue(("propose_app", ProposeApp("Reading log", Html)));
+
+        using var response = await ProposalLinesAsync(Instruction);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var usage = (await LinesAsync(response))[^1].GetProperty("usage");
+        // Two calls: the one that proposed, and the one after «Accepted.» that ends the turn — what an answer costs is both.
+        Assert.Equal(2, _server.Asked.Count);
+        Assert.Equal(200, usage.GetProperty("input").GetInt64());
+        Assert.Equal(80, usage.GetProperty("output").GetInt64());
     }
 
     [Fact]
@@ -180,6 +197,26 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
         Assert.Equal("done", done.GetProperty("status").GetString());
         Assert.Contains("My reading log", done.GetProperty("html").GetString(), StringComparison.Ordinal);
         Assert.Single(done.GetProperty("edits").EnumerateArray());
+        Assert.False(done.TryGetProperty("usage", out _));
+    }
+
+    [Fact]
+    public async Task A_change_says_what_its_model_calls_came_to()
+    {
+        var id = await _host.AdoptAsync("""<!doctype html><title>Log</title><h1 id="t">Reading log</h1>""");
+        _server.StreamedUsage = (300, 25);
+        _server.StreamedCalls.Enqueue(("replace", JsonSerializer.Serialize(new { old_text = "Reading log", new_text = "My reading log" })));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/__control/apps/{id}/proposals")
+        {
+            Content = new StringContent("""{"instruction":"Call it my reading log","target":{"html":"<h1 id=\"t\">Reading log</h1>","text":"Reading log"}}""", Encoding.UTF8, "application/json"),
+        };
+        using var response = await _host.ControlClient().SendAsync(request);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var usage = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("usage");
+        Assert.Equal(300L * _server.Asked.Count, usage.GetProperty("input").GetInt64());
+        Assert.Equal(25L * _server.Asked.Count, usage.GetProperty("output").GetInt64());
     }
 
     [Fact]

@@ -128,6 +128,7 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal("The page says **hello**.", turn.GetProperty("text").GetString());
         Assert.Equal("<p>The page says <strong>hello</strong>.</p>\n", turn.GetProperty("html").GetString()); // shown formatted, as the answer page is
         Assert.Empty(turn.GetProperty("toolCalls").EnumerateArray());
+        Assert.False(turn.TryGetProperty("usage", out _));   // the model reported none
 
         var messages = Assert.Single(_model.Calls).Messages;
         Assert.Equal([ChatRole.System, ChatRole.User, ChatRole.Assistant, ChatRole.Tool], messages.Select(m => m.Role));
@@ -215,6 +216,21 @@ public sealed class WebAgentTests : IDisposable
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("stopped").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_turn_says_what_its_model_call_came_to_as_the_model_reported_it()
+    {
+        _model.Usage = new UsageDetails { InputTokenCount = 30, OutputTokenCount = 7 };
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hello?"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var usage = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("usage");
+        Assert.Equal(30, usage.GetProperty("input").GetInt64());
+        Assert.Equal(7, usage.GetProperty("output").GetInt64());
+        Assert.Equal(0, usage.GetProperty("cachedInput").GetInt64());
     }
 
     [Fact]

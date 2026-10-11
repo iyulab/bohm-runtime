@@ -51,15 +51,15 @@ internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 /// <summary>What asking for a new application comes to: an application, or — for what was asked alone — a thing to do now instead.</summary>
 internal abstract record ProposalOutcome;
 
-/// <summary>A proposed application: nothing is kept until the person takes it in.</summary>
-internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused, string Keeps = "") : ProposalOutcome;
+/// <summary>A proposed application: nothing is kept until the person takes it in. <paramref name="Usage"/> is what the model calls behind it came to, as the provider reported.</summary>
+internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused, string Keeps = "", Llm.ModelUse? Usage = null) : ProposalOutcome;
 
 /// <summary>
 /// No application: what the person asked is one thing to do now about what is in front of them — the pages open now — which
 /// an application, seeing none of them, could not do. The caller does it the way such a request is done (a web question,
 /// whose result is a page); <paramref name="Reason"/> is the model's one line on why.
 /// </summary>
-internal sealed record OneTimeTask(string Reason) : ProposalOutcome;
+internal sealed record OneTimeTask(string Reason, Llm.ModelUse? Usage = null) : ProposalOutcome;
 
 /// <summary>
 /// Proposes a new application. From what the person asked alone, the model writes the application the
@@ -235,6 +235,7 @@ internal static partial class AppProposals
             }),
             Prompt(request), WrittenFields, refusals, onProgress, cancellationToken);
         var response = await RunAsync().ConfigureAwait(false);
+        var use = Llm.ModelUse.Of(response);
         // A model nobody described as one that thinks can spend its whole answer thinking the first time it
         // is asked. That answer taught it does, so the same request goes once more, asked to think briefly —
         // before the person is told it failed.
@@ -242,11 +243,12 @@ internal static partial class AppProposals
             && !knewItThinks && ModelLimits.Of(model, limits).Reasoning == true)
         {
             response = await RunAsync().ConfigureAwait(false);
+            use = Llm.ModelUse.Add(use, Llm.ModelUse.Of(response));
         }
 
         var closing = response.Content?.Trim() ?? "";
         // An application written after all wins — the model changed its mind, and the person asked to make one.
-        if (accepted is null && task is not null) return task;
+        if (accepted is null && task is not null) return task with { Usage = use };
         if (accepted is null)
         {
             if (refusals.Count > 0) throw new ProposalFailedException("The model proposed no application that could be kept: " + refusals[^1]);
@@ -257,7 +259,7 @@ internal static partial class AppProposals
 
         // The summary travels with the accepted proposal: the closing text may tell how the model got there (a refused
         // proposal, then a corrected one), which is not for the person. Only a proposal without one falls back to it.
-        return accepted.Summary.Length > 0 ? accepted : accepted with { Summary = closing };
+        return (accepted.Summary.Length > 0 ? accepted : accepted with { Summary = closing }) with { Usage = use };
     }
 
     /// <summary>A table the model chose: a source name, the page and table numbers (1-based) and the header names to keep.</summary>
@@ -286,7 +288,7 @@ internal static partial class AppProposals
         var title = TitleOf().Match(fixedVersion.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Broken = null }, title, null, fixedVersion.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The fixed version cannot be kept: " + string.Join(" ", problems));
-        return new AppProposal(title, fixedVersion.Html, [], fixedVersion.Summary, []);
+        return new AppProposal(title, fixedVersion.Html, [], fixedVersion.Summary, [], Usage: fixedVersion.Usage);
     }
 
     /// <summary>
@@ -306,7 +308,7 @@ internal static partial class AppProposals
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
-        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, []);
+        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, [], Usage: reviewed.Usage);
     }
 
     /// <summary>A <c>data:</c> URL of a PNG, JPEG or WebP picture, in base64.</summary>
