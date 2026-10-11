@@ -361,6 +361,8 @@ public sealed class ControlPlaneTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.NotFound, unknown);
         using (var bad = await client.PostAsync("/__control/approvals/0123456789abcdef0123456789abcdef", new StringContent("\"yes\"")))
             HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+        using (var forServer = await client.PostAsync("/__control/approvals/0123456789abcdef0123456789abcdef", new StringContent("\"server\"")))
+            HttpAssert.Status(HttpStatusCode.NotFound, forServer);   // an answer — for a question nobody asked
     }
 
     [Fact]

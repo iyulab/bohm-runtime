@@ -786,7 +786,14 @@ internal static partial class ControlPlane
                 try
                 {
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                    response.StatusCode = context.RequestServices.GetRequiredService<Promotion.ApprovalBook>().Answer(approvalId, body.RootElement.GetBoolean())
+                    var answer = body.RootElement.ValueKind switch
+                    {
+                        JsonValueKind.True => Promotion.ApprovalAnswer.Yes,
+                        JsonValueKind.False => Promotion.ApprovalAnswer.No,
+                        JsonValueKind.String when body.RootElement.GetString() == "server" => Promotion.ApprovalAnswer.YesForServer,
+                        _ => throw new InvalidOperationException("An answer is true, false or \"server\"."),
+                    };
+                    response.StatusCode = context.RequestServices.GetRequiredService<Promotion.ApprovalBook>().Answer(approvalId, answer)
                         ? StatusCodes.Status204NoContent
                         : StatusCodes.Status404NotFound;
                 }
