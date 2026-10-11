@@ -1,5 +1,6 @@
 using LocalOrigin.Storage;
 using Bohm.Runtime;
+using Bohm.Runtime.Host.Promotion;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -221,6 +222,53 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.True(clearing.Elapsed < TimeSpan.FromSeconds(2), $"clearing took {clearing.Elapsed}");
         Assert.False(File.Exists(Path.Combine(_host.DataRoot, "mcp.json")));
         Assert.Empty(await McpItemsAsync());
+    }
+
+    [Fact]
+    public async Task An_mcp_server_that_cannot_connect_says_why_in_a_code_a_person_can_act_on()
+    {
+        using var client = _host.ControlClient();
+        var snippet = """{ "mcpServers": { "missing": { "command": "bohm-no-such-command-6f1d" }, "nobody": { "url": "http://127.0.0.1:9/mcp" } } }""";
+        using (var saved = await client.PutAsync("/__control/extensions/mcp", new StringContent(snippet)))
+            HttpAssert.Status(HttpStatusCode.OK, saved);
+
+        var problems = new Dictionary<string, string?>();
+        for (var tries = 0; problems.Count < 2 && tries < 300; tries++)
+        {
+            foreach (var item in JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement.GetProperty("items").EnumerateArray())
+            {
+                if (item.GetProperty("kind").GetString() == "mcp" && item.GetProperty("state").GetString() == "failed")
+                    problems[item.GetProperty("name").GetString()!] = item.GetProperty("problem").GetString();
+            }
+            if (problems.Count < 2) await Task.Delay(100);
+        }
+
+        Assert.Equal("command-not-found", problems.GetValueOrDefault("missing"));
+        Assert.Equal("unreachable", problems.GetValueOrDefault("nobody"));
+    }
+
+    [Fact]
+    public void A_failure_without_a_known_cause_keeps_its_own_message()
+    {
+        Assert.Equal("timed-out", AppMcp.Why(null));
+        Assert.Equal("timed-out", AppMcp.Why(new AggregateException(new TaskCanceledException())));
+        Assert.Equal("unauthorized", AppMcp.Why(new InvalidOperationException("wrap", new HttpRequestException("no", null, HttpStatusCode.Forbidden))));
+        Assert.Equal("The server closed the stream.", AppMcp.Why(new AggregateException(new IOException("The server closed the stream."))));
+    }
+
+    [Fact]
+    public void A_command_is_found_by_its_path_by_the_working_directory_or_on_the_path()
+    {
+        var stub = McpStubPath();
+        Assert.True(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = stub }));
+        Assert.True(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = Path.Combine(".", Path.GetFileName(stub)), WorkingDirectory = Path.GetDirectoryName(stub) }));
+        Assert.True(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig
+        {
+            Command = Path.GetFileNameWithoutExtension(stub),
+            Environment = new Dictionary<string, string> { ["PATH"] = Path.GetDirectoryName(stub)! },
+        }));
+        Assert.False(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = "bohm-no-such-command-6f1d" }));
+        Assert.False(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = Path.Combine(Path.GetTempPath(), "bohm-no-such-command-6f1d.exe") }));
     }
 
     [Fact]

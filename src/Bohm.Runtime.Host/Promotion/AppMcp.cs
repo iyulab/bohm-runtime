@@ -80,8 +80,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
             entries.Add(connecting.Status switch
             {
                 TaskStatus.RanToCompletion => new McpEntry(name, true, "connected", Detail(server), connecting.Result, null),
-                TaskStatus.Faulted or TaskStatus.Canceled => new McpEntry(name, true, "failed", Detail(server), null,
-                    connecting.Exception?.InnerException?.Message ?? "timed-out"),
+                TaskStatus.Faulted or TaskStatus.Canceled => new McpEntry(name, true, "failed", Detail(server), null, Why(connecting.Exception)),
                 _ => new McpEntry(name, true, "connecting", Detail(server), null, null),
             });
         }
@@ -257,6 +256,11 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
             }
         }
 
+        // A command that is not there fails now, by name: the SDK starts a local command through the system shell on Windows,
+        // so a missing one would otherwise start «successfully» and surface as a closed stream or the connect timeout.
+        if (server.Command is { Length: > 0 } command && !CommandExists(server))
+            throw new McpCommandNotFoundException(command);
+
         // The reader already gave an entry without its own timeout the document's default.
         var timeout = server.TimeoutMs > 0 ? TimeSpan.FromMilliseconds(server.TimeoutMs) : DefaultConnectTimeout;
         using var within = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -294,6 +298,66 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
         return line.ToString();
     }
 
+    /// <summary>
+    /// Why a connection failed, as a code for the causes a person fixes themselves — <c>command-not-found</c> (the command is
+    /// not installed or not on the path), <c>timed-out</c>, <c>unreachable</c> (nothing answers at the address) and
+    /// <c>unauthorized</c> (the server refused the credentials) — and otherwise the failure's own message.
+    /// </summary>
+    internal static string Why(Exception? failure)
+    {
+        if (failure is null) return "timed-out";   // cancelled by the connect timeout
+        string? message = null;
+        for (var e = failure; e is not null; e = e.InnerException)
+        {
+            switch (e)
+            {
+                case McpCommandNotFoundException:
+                case System.ComponentModel.Win32Exception { NativeErrorCode: 2 or 3 }:   // file or path not found
+                    return "command-not-found";
+                case OperationCanceledException or TimeoutException:
+                    return "timed-out";
+                case System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionRefused or System.Net.Sockets.SocketError.HostNotFound or System.Net.Sockets.SocketError.HostUnreachable or System.Net.Sockets.SocketError.NetworkUnreachable }:
+                    return "unreachable";
+                case HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden }:
+                    return "unauthorized";
+                case AggregateException:
+                    break;
+                default:
+                    message ??= e.Message;
+                    break;
+            }
+        }
+
+        return message ?? failure.Message;
+    }
+
+    /// <summary>
+    /// Whether the server's command names a file that can be started: a path (with a directory in it) as it is — relative to the
+    /// entry's working directory when it gives one — or a bare name looked up on <c>PATH</c> (the entry's own <c>PATH</c> if it
+    /// sets one) and, on Windows, also with each <c>PATHEXT</c> extension (<c>npx</c> is <c>npx.cmd</c>).
+    /// </summary>
+    internal static bool CommandExists(McpPluginConfig server)
+    {
+        var command = server.Command ?? "";
+        // On Windows a name without one of the PATHEXT extensions is tried as written and with each of them — a dot alone does
+        // not make an extension that starts (python3.11, My.Server).
+        var pathExt = OperatingSystem.IsWindows()
+            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").Split(';', StringSplitOptions.RemoveEmptyEntries)
+            : [];
+        string[] extensions = pathExt.Any(x => command.EndsWith(x, StringComparison.OrdinalIgnoreCase)) ? [""] : ["", .. pathExt];
+        bool Exists(string path) => extensions.Any(x => File.Exists(path + x));
+
+        if (command.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0 || Path.IsPathRooted(command))
+            return Exists(Path.IsPathRooted(command) || server.WorkingDirectory is not { Length: > 0 } at ? command : Path.Combine(at, command));
+
+        var path = server.Environment?.FirstOrDefault(p => string.Equals(p.Key, "PATH",
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)).Value;
+
+        return (path ?? Environment.GetEnvironmentVariable("PATH") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(directory => Exists(Path.Combine(directory, command)));
+    }
+
     private HashSet<string> Off()
     {
         try
@@ -322,6 +386,9 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
 /// <paramref name="Problem"/> says why); <paramref name="Detail"/> is the command or the address, with no secret values.
 /// </summary>
 internal sealed record McpEntry(string Name, bool Enabled, string State, string? Detail, int? Tools, string? Problem);
+
+/// <summary>A server's command is not a file that can be started — not on the path, or not at the path written.</summary>
+internal sealed class McpCommandNotFoundException(string command) : Exception($"The command '{command}' was not found.");
 
 /// <summary>An MCP document that would not be read as written: not JSON (no <see cref="Issues"/>), or entries left out.</summary>
 internal sealed class InvalidMcpDocumentException(IReadOnlyList<McpConfigIssue> issues) : Exception("The MCP document would not be read as written.")
