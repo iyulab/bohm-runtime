@@ -69,6 +69,13 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>The model's thinking (<c>reasoning_content</c>) streamed in pieces before each of <see cref="StreamedCalls"/>, as a model that thinks first does.</summary>
     public string? StreamedThinking { get; set; }
 
+    /// <summary>Tokens each streamed answer reports at its end (an OpenAI <c>usage</c> chunk, as with <c>stream_options.include_usage</c>) — none when null.</summary>
+    public (int Input, int Output)? StreamedUsage { get; set; }
+
+    private string? UsageChunk => StreamedUsage is var (input, output)
+        ? $$$"""data: {"choices":[],"usage":{"prompt_tokens":{{{input}}},"completion_tokens":{{{output}}},"total_tokens":{{{input + output}}}}}""" + "\n\n"
+        : null;
+
     /// <summary>How many characters of a streamed call's arguments go in one piece.</summary>
     public const int ArgumentPiece = 9;
 
@@ -212,6 +219,7 @@ public sealed class FakeProvider : IAsyncDisposable
                     await context.Response.Body.FlushAsync();
                 }
 
+                if (self.UsageChunk is { } usage) await context.Response.WriteAsync(usage);
                 await context.Response.WriteAsync("data: [DONE]\n\n");
                 return;
             }
@@ -228,6 +236,7 @@ public sealed class FakeProvider : IAsyncDisposable
 
                 if (self.FinishReason is { } streamedFinish)
                     await context.Response.WriteAsync($"data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{streamedFinish}\"}}]}}\n\n");
+                if (self.UsageChunk is { } usage) await context.Response.WriteAsync(usage);
                 await context.Response.WriteAsync("data: [DONE]\n\n");
                 return;
             }
