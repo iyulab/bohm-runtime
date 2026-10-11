@@ -55,6 +55,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// </summary>
     public IReadOnlyList<McpEntry> List()
     {
+        if (!options.McpAllowed) return [];
         McpPluginsConfig config;
         try
         {
@@ -98,6 +99,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// </summary>
     public async Task<IReadOnlyList<McpTool>> ToolsAsync(CancellationToken cancellationToken)
     {
+        if (!options.McpAllowed) return [];
         McpPluginsConfig config;
         try
         {
@@ -156,6 +158,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// <exception cref="InvalidMcpDocumentException">The text is not a document, or an entry in it would not be used.</exception>
     public async Task<IReadOnlyList<McpConfigIssue>> SaveAsync(string text, CancellationToken cancellationToken)
     {
+        TurnedOn();
         var config = Checked(text);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -181,6 +184,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// <exception cref="InvalidMcpDocumentException">The document is not JSON, or the entry (or another) would not be used.</exception>
     public async Task<IReadOnlyList<McpConfigIssue>> AddAsync(string name, JsonElement server, CancellationToken cancellationToken)
     {
+        TurnedOn();
         name = name.Trim();
         if (name.Length == 0 || name.Any(char.IsControl)) throw new ArgumentException("An MCP server needs a name.", nameof(name));
         if (server.ValueKind != JsonValueKind.Object) throw new ArgumentException("An MCP server's entry is a JSON object.", nameof(server));
@@ -250,6 +254,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     /// <exception cref="KeyNotFoundException">The document has no server of that name.</exception>
     public async Task SetEnabledAsync(string name, bool enabled, CancellationToken cancellationToken)
     {
+        TurnedOn();
         McpPluginsConfig config;
         try
         {
@@ -297,6 +302,12 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
         await _manager.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         _gate.Dispose();
+    }
+
+    /// <exception cref="McpTurnedOffException">An administrator turned MCP servers off for this run.</exception>
+    private void TurnedOn()
+    {
+        if (!options.McpAllowed) throw new McpTurnedOffException();
     }
 
     private static McpPluginsConfig Read(string text) =>
@@ -448,6 +459,9 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
 /// <paramref name="Problem"/> says why); <paramref name="Detail"/> is the command or the address, with no secret values.
 /// </summary>
 internal sealed record McpEntry(string Name, bool Enabled, string State, string? Detail, int? Tools, string? Problem);
+
+/// <summary>An administrator turned MCP servers off for this run (<see cref="RuntimeHostOptions.McpAllowed"/>).</summary>
+internal sealed class McpTurnedOffException() : Exception("MCP servers are turned off by policy.");
 
 /// <summary>The MCP document already has a server of that name.</summary>
 internal sealed class McpServerExistsException(string name) : Exception($"An MCP server named '{name}' exists already.");
