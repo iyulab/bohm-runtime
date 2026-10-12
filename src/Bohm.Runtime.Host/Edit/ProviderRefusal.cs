@@ -54,11 +54,11 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
                 return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
             // A billing refusal, whichever provider sent it: the outermost word, before the SDK exception it may wrap
             // (whose status alone would read as a rate limit or a bad request). Inside a stream it carries no status.
-            // Its message may be the provider's whole answer, which says it in the provider's shape.
+            // Its message is the provider's sentence; the provider's whole answer, with a gateway's own fields, is its response body.
             if (e is IronHive.Abstractions.Exceptions.BillingException billing)
             {
-                var told = FromBody((int?)billing.StatusCode ?? 402, e.Message, billing: true);
-                return told with { Message = told.Message ?? Bounded(e.Message), Code = told.Code ?? billing.ErrorCode };
+                var told = FromBody((int?)billing.StatusCode ?? 402, billing.ResponseBody, billing: true);
+                return told with { Message = SaidBy(told, billing.ResponseBody, e), Code = told.Code ?? billing.ErrorCode };
             }
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
             if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
@@ -69,14 +69,26 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
             // failed its response (502) — a passing failure, asking again usually works. With the provider's code and message.
             if (e is IronHive.Abstractions.Exceptions.ProviderResponseException failed)
                 return new ProviderRefusal((int?)failed.EquivalentStatusCode ?? 502, Bounded(failed.ErrorCode is { Length: > 0 } code && !e.Message.Contains(code, StringComparison.Ordinal) ? $"{code}: {e.Message}" : e.Message));
+            // Any other refusal from an IronHive provider: its status, its sentence, and the code its answer carries.
+            if (e is IronHive.Abstractions.Exceptions.ProviderHttpException { StatusCode: { } providerStatus } http)
+            {
+                var told = FromBody((int)providerStatus, http.ResponseBody, Seconds(http.RetryAfter));
+                return told with { Message = SaidBy(told, http.ResponseBody, e), Code = told.Code ?? http.ErrorCode };
+            }
+
             // Any other refusal: its status, and its own message already read out of the body.
             if (e is HttpRequestException { StatusCode: { } status })
-                return new ProviderRefusal((int)status, Bounded(e.Message),
-                    Seconds((e as IronHive.Abstractions.Exceptions.ProviderHttpException)?.RetryAfter));
+                return new ProviderRefusal((int)status, Bounded(e.Message));
         }
 
         return null;
     }
+
+    /// <summary>
+    /// The provider's message: the one its answer carried, else — when the provider keeps no answer to read — the exception's sentence.
+    /// An answer with no message of its own (a gateway's plain-text or HTML error page) tells none: it is not the provider's word to show.
+    /// </summary>
+    private static string? SaidBy(ProviderRefusal told, string? body, Exception e) => body is null ? Bounded(e.Message) : told.Message;
 
     /// <summary><c>retry-after-ms</c> or <c>Retry-After</c> (seconds or an HTTP date) of a raw response.</summary>
     internal static int? RetryAfterOf(PipelineResponse? response)
