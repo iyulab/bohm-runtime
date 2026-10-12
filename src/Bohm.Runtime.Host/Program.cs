@@ -44,12 +44,13 @@ int? port = null;
 int? parentPid = null;
 string? llamaServer = null;
 var (llmEndpoints, unusableEndpoints) = Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Parse(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name));
+// Named by its provider host only: an address that was refused may carry a user name and password.
 foreach (var pair in unusableEndpoints)
-    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name}: «{pair}» is not a known provider host with an https address (or http on this computer); left out.");
+    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name}: the pair for «{pair.Split('=', 2)[0].Trim()}» is not a known provider host with an https address (or http on this computer); left out.");
 var cloudVariable = Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
 var cloudEndpoint = Bohm.Runtime.Host.Llm.CloudAccount.EndpointOf(cloudVariable);
 if (cloudEndpoint is null && !string.IsNullOrWhiteSpace(cloudVariable))
-    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable}: «{cloudVariable}» is not an https address (or http on this computer); no Bohm account this run.");
+    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is not an https address (or http on this computer) without a user name, query or fragment; no Bohm account this run.");
 string? companyEndpoint = null;
 string? companyModelName = null;
 string? companyModelsJson = null;
