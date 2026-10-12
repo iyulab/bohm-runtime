@@ -58,7 +58,7 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
             if (e is IronHive.Abstractions.Exceptions.BillingException billing)
             {
                 var told = FromBody((int?)billing.StatusCode ?? 402, e.Message, billing: true);
-                return told.Message is null ? told with { Message = Bounded(e.Message) } : told;
+                return told with { Message = told.Message ?? Bounded(e.Message), Code = told.Code ?? billing.ErrorCode };
             }
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
             if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
