@@ -138,7 +138,9 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         var key = vault.Read(provider.VaultName);
         if (string.IsNullOrEmpty(key)) return null;
 
-        return new(Kept(chosen, key, () => new CountedAsSent(ClientOf(provider, chosen.Model, key), egress, provider.Host)),
+        // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
+        var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
+        return new(Kept(chosen, key, () => new CountedAsSent(ClientOf(provider, root, chosen.Model, key), egress, root.Authority)),
             $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
     }
 
@@ -156,11 +158,9 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         return client;
     }
 
-    /// <summary>A client for <paramref name="model"/> of <paramref name="provider"/>, asked with <paramref name="key"/>.</summary>
-    private IChatClient ClientOf(LlmProvider provider, string model, string key)
-    {
-        var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        return provider.Id switch
+    /// <summary>A client for <paramref name="model"/> of <paramref name="provider"/> at <paramref name="root"/>, asked with <paramref name="key"/>.</summary>
+    private static IChatClient ClientOf(LlmProvider provider, Uri root, string model, string key) =>
+        provider.Id switch
         {
             // Gemini through its own API: its models sign each tool call and refuse the next turn without
             // the signature, which the OpenAI-compatible base drops on the way back. IronHive's Gemini
@@ -180,7 +180,6 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             _ => new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = new Uri(root, provider.OpenAICompatiblePath).AbsoluteUri, Path = "", ApiKey = key })
                 .AsChatClient(model, "openai-compatible"),
         };
-    }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
     private EditModelChoice? Read()

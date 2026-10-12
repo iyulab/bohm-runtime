@@ -93,7 +93,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.False(body.RootElement.TryGetProperty("max_tokens", out _));
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal(LlmProviders.ById(providerId)!.Host, sent.GetProperty("host").GetString());
+        Assert.Equal(_provider.Address.Authority, sent.GetProperty("host").GetString());   // where it went: the stand-in in front of the provider
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
     }
 
@@ -121,7 +121,7 @@ public sealed class EditModelTests : IAsyncLifetime
             .SelectMany(t => t.GetProperty("functionDeclarations").EnumerateArray()).Select(f => f.GetProperty("name").GetString()).Order());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal("generativelanguage.googleapis.com", sent.GetProperty("host").GetString());
+        Assert.Equal(_provider.Address.Authority, sent.GetProperty("host").GetString());
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
     }
 
@@ -166,7 +166,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.False(store.GetBoolean());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal("api.openai.com", sent.GetProperty("host").GetString());
+        Assert.Equal(_provider.Address.Authority, sent.GetProperty("host").GetString());
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
     }
 
@@ -194,7 +194,7 @@ public sealed class EditModelTests : IAsyncLifetime
         Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal("api.anthropic.com", sent.GetProperty("host").GetString());
+        Assert.Equal(_provider.Address.Authority, sent.GetProperty("host").GetString());
         Assert.Equal(1, sent.GetProperty("count").GetInt32());
     }
 

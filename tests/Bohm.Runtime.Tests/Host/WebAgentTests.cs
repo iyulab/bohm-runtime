@@ -456,7 +456,7 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal(FakeProvider.Reply, answered.GetProperty("text").GetString());
         Assert.Equal("for-pages", JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("model").GetString());
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal("api.openai.com", sent.GetProperty("host").GetString());
+        Assert.Equal(provider.Address.Authority, sent.GetProperty("host").GetString());
         Assert.Equal("for-edits", JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement.GetProperty("model").GetString());
 
         using (var disconnected = await host.ControlClient().DeleteAsync("/__control/llm/openai/key")) HttpAssert.Status(HttpStatusCode.OK, disconnected);
