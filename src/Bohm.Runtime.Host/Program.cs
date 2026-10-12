@@ -31,6 +31,9 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_LLM_ENDPOINTS sends a provider's traffic to a gateway that speaks the same API instead of the provider
 // itself: `host=address` pairs separated by `;` (https, or http on this computer) — see LlmEndpointsVariable.
 // Pairs that cannot be used are left out and named on standard error.
+// BOHM_REVIEW_MODEL (verification — the setting that offers it comes later) names a model, `<provider>/<model>`, that
+// reads a newly written application once before it is polished; its review goes to the model that polishes it.
+// The provider's key is the one connected in the vault; without it, or when the review cannot be had, no review.
 // BOHM_CLOUD is the Bohm cloud's base address (https, or http on this computer): with it the person may choose a model
 // their Bohm account pays for — see CloudAccount. Without it (the default) nothing is ever sent there.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
@@ -47,6 +50,13 @@ var (llmEndpoints, unusableEndpoints) = Bohm.Runtime.Host.Llm.LlmEndpointsVariab
 // Named by its provider host only: an address that was refused may carry a user name and password.
 foreach (var pair in unusableEndpoints)
     await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name}: the pair for «{pair.Split('=', 2)[0].Trim()}» is not a known provider host with an https address (or http on this computer); left out.");
+var reviewVariable = Environment.GetEnvironmentVariable("BOHM_REVIEW_MODEL");
+var reviewModel = reviewVariable?.Split('/', 2) is [var reviewProvider, var reviewName]
+    && Bohm.Runtime.Host.Llm.LlmProviders.ById(reviewProvider.Trim()) is not null && reviewName.Trim().Length > 0
+    ? new Bohm.Runtime.Host.Edit.EditModelChoice(reviewProvider.Trim(), reviewName.Trim())
+    : null;
+if (reviewModel is null && !string.IsNullOrWhiteSpace(reviewVariable))
+    await Console.Error.WriteLineAsync("BOHM_REVIEW_MODEL is not <provider>/<model> with a known provider; no review this run.");
 var cloudVariable = Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
 var cloudEndpoint = Bohm.Runtime.Host.Llm.CloudAccount.EndpointOf(cloudVariable);
 if (cloudEndpoint is null && !string.IsNullOrWhiteSpace(cloudVariable))
@@ -104,6 +114,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     CompanyModels = companyModels,
     McpAllowed = !args.Contains("--no-mcp"),
     LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
+    ReviewModel = reviewModel,
     CloudEndpoint = cloudEndpoint,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
