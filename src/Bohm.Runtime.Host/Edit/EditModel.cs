@@ -150,6 +150,33 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
     }
 
+    /// <summary>
+    /// The model that reviews a newly written application once before it is polished (<see cref="RuntimeHostOptions.ReviewModel"/>),
+    /// ready to be asked with its name — or <see langword="null"/> when none is set or its provider's key is not connected.
+    /// </summary>
+    public (IChatClient Client, string Name)? Reviewer()
+    {
+        if (options.ReviewModel is not { } review || LlmProviders.ById(review.Provider) is not { } provider) return null;
+        var key = vault.Read(provider.VaultName);
+        if (string.IsNullOrEmpty(key)) return null;
+        lock (_clientLock)
+        {
+            if (_reviewer is { } kept && kept.Key == key) return (kept.Client, $"{provider.Id}/{review.Model}");
+        }
+
+        var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
+        var client = new CountedAsSent(ClientOf(provider, root, review.Model, key), egress, root.Authority);
+        lock (_clientLock)
+        {
+            _reviewer?.Client.Dispose();
+            _reviewer = (key, client);
+        }
+
+        return (client, $"{provider.Id}/{review.Model}");
+    }
+
+    private (string Key, IChatClient Client)? _reviewer;
+
     /// <summary>The client kept for <paramref name="choice"/> and <paramref name="key"/>, made by <paramref name="create"/> when they changed.</summary>
     private IChatClient Kept(EditModelChoice choice, string key, Func<IChatClient> create)
     {
@@ -212,6 +239,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     {
         _gate.Dispose();
         _client?.Client.Dispose();
+        _reviewer?.Client.Dispose();
     }
 
     internal sealed record Stored(string Format, string Provider, string Model);

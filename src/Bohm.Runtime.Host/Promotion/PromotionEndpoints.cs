@@ -94,7 +94,7 @@ internal static class PromotionEndpoints
             outcome = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : request.Review is not null
-                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
+                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills, editModel.Reviewer()?.Client).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
                     onProgress, skills, await McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false)).ConfigureAwait(false);
@@ -125,9 +125,9 @@ internal static class PromotionEndpoints
         var proposal = (AppProposal)outcome;
         if (lines)
             await Control.ControlPlane.WriteLineAsync(response,
-                new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
+                new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage, proposal.ReviewerUsage), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
         else
-            await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage, proposal.ReviewerUsage), cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, int port, CancellationToken cancel)
@@ -238,12 +238,15 @@ internal static class PromotionEndpoints
     /// <param name="Model">Which model proposed it.</param>
     /// <param name="Keeps">What the application remembers, in the person's words — a line per kind of record; empty when the model said nothing.</param>
     /// <param name="Usage">The tokens the model calls behind it came to, as the provider reported — left out when it reported none.</param>
+    /// <param name="ReviewerUsage">What a review by another model before it was polished came to — left out when there was none.</param>
     internal sealed record AppProposalView(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused, string Keeps,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? ReviewerUsage = null);
 
     /// <summary>The last line of a proposal made as it goes: <see cref="AppProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
     internal sealed record AppProposalLine(string Status, string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, string Model, IReadOnlyList<string> Refused, string Keeps,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? ReviewerUsage = null);
 
     /// <summary>No application — what was asked is one thing to do now (<see cref="OneTimeTask"/>): <c>{ task, model }</c>, <c>task</c> the model's reason.</summary>
     internal sealed record OneTimeTaskView(string Task, string Model, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);

@@ -527,6 +527,40 @@ public sealed class AppProposalTests
         Assert.Equal(LogHtml, proposal.Html);
     }
 
+    [Fact]
+    public async Task A_reviewer_reads_the_code_once_and_its_review_goes_to_the_model_that_polishes()
+    {
+        var reviewer = new FakeChatModel { Reply = "- No first-time hint: #books starts empty with nothing saying what to do.", Usage = new UsageDetails { InputTokenCount = 900, OutputTokenCount = 40 } };
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        var proposal = await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken, reviewer: reviewer);
+
+        var shown = Assert.Single(reviewer.Calls).Messages.Last(m => m.Role == ChatRole.User).Text;   // asked once, with the request and the code
+        Assert.Contains("A reading log for the books I borrow", shown, StringComparison.Ordinal);
+        Assert.Contains("<ul id=\"books\"></ul>", shown, StringComparison.Ordinal);
+        Assert.Null(reviewer.Calls[0].Options?.Tools);   // a reviewer is never given tools
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("No first-time hint: #books starts empty", asked, StringComparison.Ordinal);
+        Assert.Equal(new Bohm.Runtime.Host.Llm.ModelUse(900, 40, 0), proposal.ReviewerUsage);   // apart from the polishing model's own
+    }
+
+    [Fact]
+    public async Task A_review_that_cannot_be_had_leaves_the_polish_as_it_is_without_one()
+    {
+        var reviewer = new FakeChatModel { Failure = new HttpRequestException("No network.") };
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        var proposal = await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken, reviewer: reviewer);
+
+        Assert.Equal(LogHtml, proposal.Html);
+        Assert.Null(proposal.ReviewerUsage);
+        Assert.DoesNotContain("Another reviewer", model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("https://example.com/shot.png")]
     [InlineData("data:text/html;base64,PGgxPg==")]

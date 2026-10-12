@@ -45,6 +45,13 @@ public sealed record RuntimeHostOptions
     public IReadOnlyDictionary<string, Uri>? LlmEndpoints { get; init; }
 
     /// <summary>
+    /// A model that reads a newly written application once, before it is polished, and says what falls short — its
+    /// review goes to the model that polishes it. Asked with the provider's connected key; when the key is missing or
+    /// the review cannot be had, the application is polished without one. <see langword="null"/> (the default): no review.
+    /// </summary>
+    internal Edit.EditModelChoice? ReviewModel { get; init; }
+
+    /// <summary>
     /// The base address of the Bohm cloud, whose account pays for a model with its credits (<see cref="Llm.CloudAccount"/>).
     /// <see langword="null"/> (the default): no account can be chosen, and nothing is ever sent there.
     /// </summary>

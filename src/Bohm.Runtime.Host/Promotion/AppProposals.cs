@@ -6,11 +6,13 @@ using System.Text.RegularExpressions;
 using Bohm.Runtime.Host.Edit;
 using Bohm.Runtime.Host.Llm;
 using Bohm.Runtime.Sources;
+using IronHive.Agent.Delegation;
 using IronHive.Agent.Invocation;
 using IronHive.Agent.Loop;
 using IronHive.Agent.Mode;
 using IronHive.Agent.Permissions;
 using IronHive.Agent.Skills;
+using IronHive.Agent.Tracking;
 using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Host.Promotion;
@@ -51,8 +53,12 @@ internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
 /// <summary>What asking for a new application comes to: an application, or — for what was asked alone — a thing to do now instead.</summary>
 internal abstract record ProposalOutcome;
 
-/// <summary>A proposed application: nothing is kept until the person takes it in. <paramref name="Usage"/> is what the model calls behind it came to, as the provider reported.</summary>
-internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused, string Keeps = "", Llm.ModelUse? Usage = null) : ProposalOutcome;
+/// <summary>
+/// A proposed application: nothing is kept until the person takes it in. <paramref name="Usage"/> is what the model calls behind it came to, as the provider reported;
+/// <paramref name="ReviewerUsage"/> what a review by another model before it was polished came to (<see cref="AppProposals.ReviewAsync"/>), apart — it is another model's price.
+/// </summary>
+internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused, string Keeps = "", Llm.ModelUse? Usage = null,
+    Llm.ModelUse? ReviewerUsage = null) : ProposalOutcome;
 
 /// <summary>
 /// No application: what the person asked is one thing to do now about what is in front of them — the pages open now — which
@@ -299,17 +305,58 @@ internal static partial class AppProposals
     /// </summary>
     /// <exception cref="ArgumentException">There is no version to look at, or its picture is not a data URL of an image.</exception>
     public static async Task<AppProposal> ReviewAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null, IChatClient? reviewer = null)
     {
         var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
         if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
+        var (advice, reviewerUse) = reviewer is null ? (null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
+        var instruction = ReviewInstruction(request.Question)
+            + (advice is { Length: > 0 } ? "\n\nAnother reviewer read the application's code against the request and said:\n" + advice
+                + "\nWeigh what it says with what you see; change only what you agree falls short." : "");
         var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
-            ReviewInstruction(request.Question), null, cancellationToken, onProgress, [new DataContent(review.Image)], skills).ConfigureAwait(false);
+            instruction, null, cancellationToken, onProgress, [new DataContent(review.Image)], skills).ConfigureAwait(false);
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
-        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, [], Usage: reviewed.Usage);
+        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, [], Usage: reviewed.Usage, ReviewerUsage: reviewerUse);
     }
+
+    /// <summary>
+    /// One review of a newly written application by <paramref name="reviewer"/> — the upstream advisor, asked once from a point the host
+    /// chose (not a tool the writing model may or may not call): it reads the request and the code and says what falls short. A review
+    /// that cannot be had (no network, no credit, a refusal) is no review — the application is polished as it would be without one.
+    /// </summary>
+    internal static async Task<(string? Advice, Llm.ModelUse? Use)> AdviceAsync(IChatClient reviewer, string question, string html, CancellationToken cancellationToken)
+    {
+        var usage = new UsageTracker();
+        var advisor = AdvisorTool.Create(reviewer, new AdvisorOptions
+        {
+            MaxCalls = 1,
+            MaxToolResultChars = int.MaxValue,
+            Instructions = ReviewerInstructions,
+            Conversation = () => [new ChatMessage(ChatRole.User, "Write a single-file web application for this request: «" + question.Trim() + "»"), new ChatMessage(ChatRole.Assistant, html)],
+            ChatOptions = new ChatOptions { MaxOutputTokens = 1500 },
+            UsageTracker = usage,
+        });
+        try
+        {
+            var said = (await advisor.InvokeAsync(new AIFunctionArguments(), cancellationToken).ConfigureAwait(false))?.ToString()?.Trim();
+            var spent = usage.GetSessionUsage();
+            var use = spent.TotalInputTokens > 0 || spent.TotalOutputTokens > 0 ? new Llm.ModelUse(spent.TotalInputTokens, spent.TotalOutputTokens, spent.TotalCachedInputTokens) : null;
+            return (string.IsNullOrEmpty(said) ? null : said, use);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is not OutOfMemoryException)
+        {
+            return (null, null);
+        }
+    }
+
+    private const string ReviewerInstructions =
+        "You review a single-file web application another model just wrote for a person's request. Read the request and the code, "
+        + "and say in a short list what falls short for the person: a feature the request asked for that is missing or does not work, "
+        + "data that would not be kept, a first screen that does not tell a newcomer what to do, layout or wording that would confuse. "
+        + "Name the element or function. Do not rewrite the application, do not suggest new features beyond the request, and say "
+        + "«nothing falls short» when nothing does. At most ten lines.";
 
     /// <summary>A <c>data:</c> URL of a PNG, JPEG or WebP picture, in base64.</summary>
     internal static bool IsImageDataUrl(string? url) =>
