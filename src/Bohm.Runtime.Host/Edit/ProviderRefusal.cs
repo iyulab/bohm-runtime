@@ -27,15 +27,26 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
 {
     private const int MaxMessage = 500;
 
+    /// <summary>
+    /// The provider's own code for the refusal (<c>error.type</c> of Anthropic's shape, <c>error.code</c> of OpenAI's) — for the Bohm
+    /// cloud's account, which of its refusals it is: <c>balance_exhausted</c>, <c>hold_rejected</c> or <c>tag_limit_reached</c>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Code { get; init; }
+
+    /// <summary>The largest output limit the account's credits can hold now, when the Bohm cloud refused a request's (<c>hold_rejected</c>).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AffordableMaxTokens { get; init; }
+
     public static ProviderRefusal? Of(Exception exception)
     {
         for (var e = exception; e is not null; e = e.InnerException)
         {
             if (e is ClientResultException { Status: > 0 } refused)
-                return new ProviderRefusal(refused.Status, MessageOf(refused.GetRawResponse()?.Content?.ToString()), RetryAfterOf(refused.GetRawResponse()));
+                return FromBody(refused.Status, refused.GetRawResponse()?.Content?.ToString(), RetryAfterOf(refused.GetRawResponse()));
             // Anthropic through its own API: one exception type per status, all carrying the raw body.
             if (e is Anthropic.Exceptions.AnthropicApiException { StatusCode: > 0 } anthropic)
-                return new ProviderRefusal((int)anthropic.StatusCode, MessageOf(anthropic.ResponseBody));
+                return FromBody((int)anthropic.StatusCode, anthropic.ResponseBody);
             // Gemini through its own API: the SDK has already read the provider's message out of the body.
             if (e is Google.GenAI.ClientError { StatusCode: > 0 } client)
                 return new ProviderRefusal(client.StatusCode, Bounded(client.Message));
@@ -43,8 +54,12 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
                 return new ProviderRefusal(server.StatusCode, Bounded(server.Message));
             // A billing refusal, whichever provider sent it: the outermost word, before the SDK exception it may wrap
             // (whose status alone would read as a rate limit or a bad request). Inside a stream it carries no status.
+            // Its message may be the provider's whole answer, which says it in the provider's shape.
             if (e is IronHive.Abstractions.Exceptions.BillingException billing)
-                return new ProviderRefusal((int?)billing.StatusCode ?? 402, Bounded(e.Message), Billing: true);
+            {
+                var told = FromBody((int?)billing.StatusCode ?? 402, e.Message, billing: true);
+                return told.Message is null ? told with { Message = Bounded(e.Message) } : told;
+            }
             // An OpenAI-compatible server through IronHive: a rate limit comes as its own type, which has no status to carry — it is a 429.
             if (e is IronHive.Abstractions.Exceptions.RateLimitException limited)
                 return new ProviderRefusal(429, Bounded(e.Message), Seconds(limited.RetryAfter));
@@ -77,29 +92,49 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
     private static int? Seconds(TimeSpan? wait) =>
         wait is { } w && w >= TimeSpan.Zero ? (int)Math.Ceiling(Math.Min(w.TotalSeconds, int.MaxValue)) : null;
 
+    /// <summary>A refusal with <paramref name="status"/>, told by what the provider's answer <paramref name="body"/> says.</summary>
+    private static ProviderRefusal FromBody(int status, string? body, int? retryAfter = null, bool billing = false)
+    {
+        var (message, code, affordable) = Read(body);
+        return new ProviderRefusal(status, message, retryAfter, billing) { Code = code, AffordableMaxTokens = affordable };
+    }
+
     /// <summary>
     /// <c>error.message</c> of an object (OpenAI, Anthropic, most compatible bases) or of the first
     /// element of an array (Gemini's OpenAI-compatible base).
     /// </summary>
-    internal static string? MessageOf(string? body)
+    internal static string? MessageOf(string? body) => Read(body).Message;
+
+    /// <summary>
+    /// What the provider's <c>error</c> says: its message, its code — <c>type</c> in Anthropic's shape, else <c>code</c> when it
+    /// is a word — and the Bohm cloud's <c>affordable_max_tokens</c>.
+    /// </summary>
+    private static (string? Message, string? Code, long? AffordableMaxTokens) Read(string? body)
     {
-        if (string.IsNullOrWhiteSpace(body)) return null;
+        if (string.IsNullOrWhiteSpace(body)) return default;
         try
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
             if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0) root = root[0];
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var error)
-                && error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var message)
-                && message.ValueKind == JsonValueKind.String && message.GetString() is { Length: > 0 } text)
-                return Bounded(text);
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object)
+                return default;
+
+            var message = error.TryGetProperty("message", out var said) && said.ValueKind == JsonValueKind.String && said.GetString() is { Length: > 0 } text
+                ? Bounded(text) : null;
+            var code = (root.TryGetProperty("type", out var shape) && shape.ValueEquals("error") ? Word(error, "type") : null) ?? Word(error, "code");
+            var affordable = error.TryGetProperty("affordable_max_tokens", out var most) && most.ValueKind == JsonValueKind.Number && most.TryGetInt64(out var tokens) && tokens >= 0 ? tokens : (long?)null;
+            return (message, code, affordable);
         }
         catch (JsonException)
         {
             // Not the shape providers refuse in: the status alone is the fact.
         }
 
-        return null;
+        return default;
+
+        static string? Word(JsonElement error, string name) =>
+            error.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 and <= 64 } word ? word : null;
     }
 
     private static string? Bounded(string? text) =>

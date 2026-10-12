@@ -45,6 +45,12 @@ public sealed record RuntimeHostOptions
     public IReadOnlyDictionary<string, Uri>? LlmEndpoints { get; init; }
 
     /// <summary>
+    /// The base address of the Bohm cloud, whose account pays for a model with its credits (<see cref="Llm.CloudAccount"/>).
+    /// <see langword="null"/> (the default): no account can be chosen, and nothing is ever sent there.
+    /// </summary>
+    public Uri? CloudEndpoint { get; init; }
+
+    /// <summary>
     /// A model on this computer that answers applications' AI chat requests when no key is connected
     /// for the provider they call, fixed for this run. <see langword="null"/> (the default): the
     /// person chooses one, or none, through the control API.
@@ -177,6 +183,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.ModelDownloads>();
         builder.Services.AddSingleton<Llm.LocalSpeech>();
         builder.Services.AddSingleton<Llm.CompanyModel>();
+        builder.Services.AddSingleton<Llm.CloudAccount>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Promotion.AppSkills>();
         builder.Services.AddSingleton<Promotion.AppMcp>();

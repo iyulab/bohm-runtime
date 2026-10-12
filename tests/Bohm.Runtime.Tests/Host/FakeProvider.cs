@@ -28,6 +28,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>Refusals for the next requests, one each, before requests are answered as usual — a refusal that asking again gets past.</summary>
+    public ConcurrentQueue<(int Status, string Body)> RefusalsFirst { get; } = new();
+
     /// <summary>
     /// When set, a streamed request is accepted (200) and then failed inside the stream with this <c>data:</c> line — as a server
     /// that errs after it started answering (an OpenAI-compatible <c>data: {"error": …}</c>).
@@ -95,7 +98,7 @@ public sealed class FakeProvider : IAsyncDisposable
             self!.Received.Enqueue(new ReceivedRequest(context.Request.Method, context.Request.Path + context.Request.QueryString,
                 context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.ToString(), StringComparer.OrdinalIgnoreCase), body));
 
-            if (self.Refusal is { } refusal)
+            if ((self.Refusal ?? (self.RefusalsFirst.TryDequeue(out var next) ? next : null)) is { } refusal)
             {
                 context.Response.StatusCode = refusal.Status;
                 if (self.RetryAfter is { } retryAfter) context.Response.Headers.RetryAfter = retryAfter;

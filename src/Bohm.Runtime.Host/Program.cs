@@ -31,6 +31,8 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_LLM_ENDPOINTS sends a provider's traffic to a gateway that speaks the same API instead of the provider
 // itself: `host=address` pairs separated by `;` (https, or http on this computer) — see LlmEndpointsVariable.
 // Pairs that cannot be used are left out and named on standard error.
+// BOHM_CLOUD is the Bohm cloud's base address (https, or http on this computer): with it the person may choose a model
+// their Bohm account pays for — see CloudAccount. Without it (the default) nothing is ever sent there.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
@@ -44,6 +46,10 @@ string? llamaServer = null;
 var (llmEndpoints, unusableEndpoints) = Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Parse(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name));
 foreach (var pair in unusableEndpoints)
     await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.LlmEndpointsVariable.Name}: «{pair}» is not a known provider host with an https address (or http on this computer); left out.");
+var cloudVariable = Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
+var cloudEndpoint = Bohm.Runtime.Host.Llm.CloudAccount.EndpointOf(cloudVariable);
+if (cloudEndpoint is null && !string.IsNullOrWhiteSpace(cloudVariable))
+    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable}: «{cloudVariable}» is not an https address (or http on this computer); no Bohm account this run.");
 string? companyEndpoint = null;
 string? companyModelName = null;
 string? companyModelsJson = null;
@@ -97,6 +103,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     CompanyModels = companyModels,
     McpAllowed = !args.Contains("--no-mcp"),
     LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
+    CloudEndpoint = cloudEndpoint,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,

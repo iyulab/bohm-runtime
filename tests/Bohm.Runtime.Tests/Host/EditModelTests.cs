@@ -214,6 +214,22 @@ public sealed class EditModelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Anthropics_billing_refusal_reaches_the_person_as_its_own_message_not_its_whole_answer()
+    {
+        using (var connect = await _host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
+        using (var chose = await ChooseAsync("anthropic", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
+        _provider.Refusal = (400, """{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}""");
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
+        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
+        Assert.True(provider.GetProperty("billing").GetBoolean());
+        Assert.Equal("Your credit balance is too low to access the Anthropic API.", provider.GetProperty("message").GetString());
+        Assert.Equal("invalid_request_error", provider.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Geminis_refusal_reaches_the_person_as_its_status_and_its_own_message()
     {
         using (var connect = await _host.ControlClient().PutAsync("/__control/llm/google/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);

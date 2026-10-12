@@ -33,7 +33,7 @@ internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnT
 /// there, which is why it is the person's choice and never the default; every request is counted as sent.
 /// A provider's client owns its connections, so one is kept while the provider, model and key stay the same.
 /// </remarks>
-internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress) : IDisposable
+internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress) : IDisposable
 {
     /// <summary>The file at the data root the choice is remembered in.</summary>
     protected abstract string FileName { get; }
@@ -68,15 +68,23 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     public EditModelChoice? Chosen => Remembered;
 
     /// <summary>What is missing before a proposal can be made, or <see langword="null"/> when nothing is.</summary>
-    public EditModelMissing? Missing => Remembered is { } chosen
-        ? string.IsNullOrEmpty(vault.Read(LlmProviders.ById(chosen.Provider)!.VaultName)) ? new("key", chosen.Provider) : null
-        : company.Configured || local.Configured ? null : new("localModel", null);
+    /// <remarks>The Bohm account (<see cref="CloudAccount"/>) needs its access token — <c>account</c>.</remarks>
+    public EditModelMissing? Missing => Remembered switch
+    {
+        { Provider: CloudAccount.ProviderId } => account.Token is null ? new("account", CloudAccount.ProviderId) : null,
+        { } chosen => string.IsNullOrEmpty(vault.Read(LlmProviders.ById(chosen.Provider)!.VaultName)) ? new("key", chosen.Provider) : null,
+        null => company.Configured || local.Configured ? null : new("localModel", null),
+    };
+
+    /// <summary>Whether <paramref name="provider"/> can be chosen: a known provider, or the Bohm account when there is one.</summary>
+    private bool Choosable(string provider) =>
+        LlmProviders.ById(provider) is not null || (provider == CloudAccount.ProviderId && account.Configured);
 
     /// <summary>Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> goes back to the model on this computer.</summary>
     /// <exception cref="ArgumentException">No such provider, or no model name.</exception>
     public async Task ChooseAsync(EditModelChoice? choice, CancellationToken cancellationToken)
     {
-        if (choice is not null && (LlmProviders.ById(choice.Provider) is null || string.IsNullOrWhiteSpace(choice.Model)))
+        if (choice is not null && (!Choosable(choice.Provider) || string.IsNullOrWhiteSpace(choice.Model)))
             throw new ArgumentException("An AI provider and the name of one of its models.", nameof(choice));
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -120,41 +128,58 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits);
         }
 
+        if (chosen.Provider == CloudAccount.ProviderId)
+            return account.Token is { } token
+                ? new(Kept(chosen, token, () => new CountedAsSent(account.Client(chosen.Model, token), egress, account.Host!)),
+                    $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown)
+                : null;
+
         var provider = LlmProviders.ById(chosen.Provider)!;
         var key = vault.Read(provider.VaultName);
         if (string.IsNullOrEmpty(key)) return null;
 
+        return new(Kept(chosen, key, () => new CountedAsSent(ClientOf(provider, chosen.Model, key), egress, provider.Host)),
+            $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
+    }
+
+    /// <summary>The client kept for <paramref name="choice"/> and <paramref name="key"/>, made by <paramref name="create"/> when they changed.</summary>
+    private IChatClient Kept(EditModelChoice choice, string key, Func<IChatClient> create)
+    {
         lock (_clientLock)
         {
-            if (_client is { } kept && kept.Choice == chosen && kept.Key == key)
-                return new(kept.Client, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
+            if (_client is { } kept && kept.Choice == choice && kept.Key == key) return kept.Client;
         }
 
+        var client = create();
+        lock (_clientLock)
+            _client = (choice, key, client);
+        return client;
+    }
+
+    /// <summary>A client for <paramref name="model"/> of <paramref name="provider"/>, asked with <paramref name="key"/>.</summary>
+    private IChatClient ClientOf(LlmProvider provider, string model, string key)
+    {
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
-        var client = provider.Id switch
+        return provider.Id switch
         {
             // Gemini through its own API: its models sign each tool call and refuse the next turn without
             // the signature, which the OpenAI-compatible base drops on the way back. IronHive's Gemini
             // provider carries the signatures through the tool loop.
             "google" => new GoogleAIMessageGenerator(new GoogleAIConfig { ApiKey = key, HttpOptions = new Google.GenAI.Types.HttpOptions { BaseUrl = root.ToString().TrimEnd('/') } })
-                .AsChatClient(chosen.Model, "googleai"),
+                .AsChatClient(model, "googleai"),
             // Anthropic through its own Messages API: its OpenAI-compatible base is meant for trying
             // models out, not for real use, and leaves out what the Messages API carries.
             "anthropic" => new AnthropicMessageGenerator(new AnthropicConfig { ApiKey = key, BaseUrl = root.ToString().TrimEnd('/') })
-                .AsChatClient(chosen.Model, "anthropic"),
+                .AsChatClient(model, "anthropic"),
             // OpenAI through its own Responses API. Every request says store:false, so the application's
             // source is sent to be answered, not kept on OpenAI's side.
             "openai" => new OpenAIMessageGenerator(new OpenAIConfig { ApiKey = key, BaseUrl = new Uri(root, provider.OpenAICompatiblePath).ToString().TrimEnd('/') })
-                .AsChatClient(chosen.Model, "openai"),
+                .AsChatClient(model, "openai"),
             // The rest speak Chat Completions at an OpenAI-compatible base — the same provider as the
             // organization's server (a reasoning model's reasoning_content, a refusal's status).
             _ => new OpenAICompatibleMessageGenerator(new OpenAICompatibleConfig { BaseUrl = new Uri(root, provider.OpenAICompatiblePath).AbsoluteUri, Path = "", ApiKey = key })
-                .AsChatClient(chosen.Model, "openai-compatible"),
+                .AsChatClient(model, "openai-compatible"),
         };
-        var counted = new CountedAsSent(client, egress, provider.Host);
-        lock (_clientLock)
-            _client = (chosen, key, counted);
-        return new(counted, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
@@ -166,9 +191,9 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             var root = document.RootElement;
             if (root.ValueKind == JsonValueKind.Object
                 && root.TryGetProperty("format", out var format) && format.ValueEquals(Format)
-                && root.TryGetProperty("provider", out var provider) && LlmProviders.ById(provider.GetString() ?? "") is { } known
+                && root.TryGetProperty("provider", out var provider) && provider.GetString() is { } known && Choosable(known)
                 && root.TryGetProperty("model", out var model) && model.GetString() is { Length: > 0 } name)
-                return new EditModelChoice(known.Id, name);
+                return new EditModelChoice(known, name);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -188,8 +213,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 }
 
 /// <summary>The model the runtime's own agent proposes changes to an application with (<c>edit-model.json</c>).</summary>
-internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress)
-    : ProviderChoice(options, vault, local, company, egress)
+internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress)
+    : ProviderChoice(options, vault, local, company, account, egress)
 {
     protected override string FileName => "edit-model.json";
 
@@ -200,8 +225,8 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
 /// The model questions about the open web pages go to (<c>agent-model.json</c>). The pages may be the
 /// organization's own, so a provider is only ever the person's explicit choice.
 /// </summary>
-internal sealed class AgentModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, Egress egress)
-    : ProviderChoice(options, vault, local, company, egress)
+internal sealed class AgentModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress)
+    : ProviderChoice(options, vault, local, company, account, egress)
 {
     protected override string FileName => "agent-model.json";
 
