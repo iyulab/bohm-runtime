@@ -69,8 +69,19 @@ public static class AppRegistry
     {
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("The registry folder is not there.");
         var path = Path.Combine(root, IndexFile);
-        return File.Exists(path) ? File.ReadAllBytes(path) : null;
+        if (!File.Exists(path)) return null;
+        using var stream = OpenIndex(path, useAsync: false);
+        using var bytes = new MemoryStream();
+        stream.CopyTo(bytes);
+        return bytes.ToArray();
     }
+
+    /// <summary>
+    /// Opens an index for reading while letting a publisher replace it: a reader that does not share delete makes the
+    /// replace fail for as long as it holds the file, and a share may hold a closed file open a while longer.
+    /// </summary>
+    internal static FileStream OpenIndex(string path, bool useAsync) =>
+        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, useAsync);
 
     /// <summary>
     /// The version of <paramref name="app"/> to install: <paramref name="version"/> when given, otherwise the

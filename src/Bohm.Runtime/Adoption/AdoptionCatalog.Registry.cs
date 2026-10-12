@@ -154,7 +154,7 @@ public sealed partial class AdoptionCatalog
         {
             try
             {
-                current = JsonSerializer.Deserialize(await File.ReadAllBytesAsync(indexPath, cancellationToken).ConfigureAwait(false), RegistryJson.Default.RegistryIndex);
+                current = await ReadIndexAsync(indexPath, cancellationToken).ConfigureAwait(false);
             }
             catch (JsonException)
             {
@@ -175,13 +175,46 @@ public sealed partial class AdoptionCatalog
             apps.OrderBy(a => a.Id, StringComparer.Ordinal).ToList());
 
         var temporary = Path.Combine(root, ".index-" + Guid.NewGuid().ToString("n")[..8] + ".json");
-        await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(index, RegistryJson.Default.RegistryIndex), cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, indexPath, overwrite: true);
+        try
+        {
+            await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(index, RegistryJson.Default.RegistryIndex), cancellationToken).ConfigureAwait(false);
+            await ReplaceAsync(temporary, indexPath, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
 
         // Read back: what readers will see must list it.
-        var written = JsonSerializer.Deserialize(await File.ReadAllBytesAsync(indexPath, cancellationToken).ConfigureAwait(false), RegistryJson.Default.RegistryIndex);
+        var written = await ReadIndexAsync(indexPath, cancellationToken).ConfigureAwait(false);
         if (written?.Apps.FirstOrDefault(a => a.Id == entry.Id)?.Versions.Any(v => v.Version == version.Version && v.Sha256 == version.Sha256) != true)
             throw new IOException("The registry index did not keep what was written.");
+    }
+
+    private static async Task<RegistryIndex?> ReadIndexAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = AppRegistry.OpenIndex(path, useAsync: true);
+        return await JsonSerializer.DeserializeAsync(stream, RegistryJson.Default.RegistryIndex, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Puts <paramref name="source"/> in place of <paramref name="target"/>, waiting out a reader that holds the target
+    /// without sharing delete (another program, or a share that has not closed a handle yet) — about five seconds, then the error.
+    /// </summary>
+    private static async Task ReplaceAsync(string source, string target, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(source, target, overwrite: true);
+                return;
+            }
+            catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && attempt < 50)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>Creates the lock file — only one creator wins, on a local drive or a share — waiting for a holder, and taking over a stale one.</summary>
@@ -198,18 +231,19 @@ public sealed partial class AdoptionCatalog
             {
                 if (attempt >= 200) throw new RegistryRefusedException(RegistryRefusedException.Busy);
                 if (!File.Exists(path)) continue;   // released between the two looks
+                // The time is the share's clock against this computer's, so a share whose clock runs behind makes a held
+                // lock look stale: the delete then fails, and that is waited out like any held lock, not retried at once.
                 if (_clock.GetUtcNow() - File.GetLastWriteTimeUtc(path) > StaleLock)
                 {
                     try
                     {
                         File.Delete(path);
+                        continue;
                     }
                     catch (IOException)
                     {
                         // Still held open: not stale after all.
                     }
-
-                    continue;
                 }
 
                 await Task.Delay(50, cancellationToken).ConfigureAwait(false);
