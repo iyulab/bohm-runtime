@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Bohm.Runtime.Adoption;
 
 namespace Bohm.Runtime.Tests.Host;
 
@@ -21,7 +22,11 @@ public sealed class AppRegistryTests : IAsyncLifetime
     {
         _publisher = await RunningHost.StartAsync();
         _reader = await RunningHost.StartAsync();
-        _registry = Directory.CreateTempSubdirectory("bohm-registry-").FullName;
+        // BOHM_TEST_REGISTRY_ROOT runs the same tests on a network share (a UNC path) instead of the local temp folder.
+        var shared = Environment.GetEnvironmentVariable("BOHM_TEST_REGISTRY_ROOT");
+        _registry = string.IsNullOrEmpty(shared)
+            ? Directory.CreateTempSubdirectory("bohm-registry-").FullName
+            : Directory.CreateDirectory(Path.Combine(shared, $"bohm-registry-{Guid.NewGuid():n}")).FullName;
     }
 
     public async ValueTask DisposeAsync()
@@ -240,6 +245,56 @@ public sealed class AppRegistryTests : IAsyncLifetime
         Assert.Equal("""{"format":"someone.else/3"}""", File.ReadAllText(Path.Combine(foreign, "index.json")));
 
         using (var away = await PublishThroughApiAsync(_publisher, Path.Combine(_registry, "away"), id)) Assert.Equal("unreachable", await ReasonAsync(away));
+    }
+
+    [Fact]
+    public async Task A_reader_holding_the_index_is_waited_out_and_leaves_no_partial_index_behind()
+    {
+        var first = await _publisher.AdoptAsync("<p>first</p>");
+        var second = await _publisher.AdoptAsync("<p>second</p>");
+        var registry = Path.Combine(_registry, "read");
+        Directory.CreateDirectory(registry);
+        using (var published = await PublishThroughApiAsync(_publisher, registry, first)) HttpAssert.Status(HttpStatusCode.OK, published);
+
+        // Another program reads the index without sharing delete, as most readers do, for a second.
+        var reader = new FileStream(Path.Combine(registry, "index.json"), FileMode.Open, FileAccess.Read, FileShare.Read);
+        var publishing = PublishThroughApiAsync(_publisher, registry, second);
+        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        await reader.DisposeAsync();
+
+        using (var published = await publishing) HttpAssert.Status(HttpStatusCode.OK, published);
+        var listed = JsonNode.Parse(File.ReadAllText(Path.Combine(registry, "index.json")))!["apps"]!.AsArray().Select(a => a!["id"]!.GetValue<string>()).ToHashSet();
+        Assert.True(listed.SetEquals([first, second]));
+        Assert.Equal(["index.json"], Directory.GetFiles(registry).Select(Path.GetFileName).ToArray());
+    }
+
+    [Fact]
+    public async Task A_held_lock_that_looks_stale_by_a_skewed_clock_is_waited_for_not_given_up_on()
+    {
+        var data = Directory.CreateTempSubdirectory("bohm-skewed-").FullName;
+        try
+        {
+            // This computer's clock runs ten minutes ahead of the share's: every lock the share stamps looks stale.
+            var catalog = new AdoptionCatalog(data, new Storage.ManualClock(DateTimeOffset.UtcNow.AddMinutes(10)));
+            var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>held</p>"), cancellationToken: TestContext.Current.CancellationToken);
+            var registry = Path.Combine(_registry, "held");
+            Directory.CreateDirectory(registry);
+
+            var held = new FileStream(Path.Combine(registry, "index.lock"), FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+            var publishing = catalog.PublishToRegistryAsync(registry, app.Id, "Team apps", new Dictionary<string, string>(), TimeSpan.FromDays(7),
+                TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            Assert.False(publishing.IsCompleted, publishing.Exception?.ToString());
+
+            await held.DisposeAsync();
+            Assert.NotNull(await publishing);
+            var listed = JsonNode.Parse(File.ReadAllText(Path.Combine(registry, "index.json")))!["apps"]!.AsArray().Select(a => a!["id"]!.GetValue<string>());
+            Assert.Equal([app.Id], listed);
+        }
+        finally
+        {
+            Directory.Delete(data, recursive: true);
+        }
     }
 
     private static Task<HttpResponseMessage> PublishThroughApiAsync(RunningHost host, string registry, string id) =>
