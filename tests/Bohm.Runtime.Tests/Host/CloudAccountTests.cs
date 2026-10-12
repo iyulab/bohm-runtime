@@ -157,6 +157,78 @@ public sealed class CloudAccountTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.NotFound, none);
     }
 
+    [Fact]
+    public async Task The_accounts_links_are_told_on_the_clouds_host_and_not_counted_as_sent()
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":10}""";
+        _cloud.Answers["/me/links"] = """
+            [{"id":"new","url":"/l/new","createdAt":"2026-10-12T09:00:00+00:00","expiresAt":"2026-11-11T09:00:00+00:00","bytes":2048},
+             {"id":"old","url":"/l/old","createdAt":"2026-10-01T09:00:00+00:00","expiresAt":"2026-10-31T09:00:00+00:00","bytes":512},
+             {"id":"elsewhere","url":"https://example.com/l/elsewhere"},
+             {"url":"/l/no-id"}]
+            """;
+        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        var told = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/links"));
+
+        var links = told.GetProperty("links").EnumerateArray().ToList();
+        Assert.Equal(["new", "old"], links.Select(l => l.GetProperty("id").GetString()));
+        Assert.Equal(new Uri(_cloud.Address, "/l/new").AbsoluteUri, links[0].GetProperty("url").GetString());
+        Assert.Equal(2048, links[0].GetProperty("bytes").GetInt64());
+        Assert.Equal(JsonValueKind.Null, told.GetProperty("problem").ValueKind);
+        Assert.Equal("Bearer " + Token, _cloud.Received.Last().Headers["Authorization"]);
+        Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData(204)]
+    [InlineData(404)]   // already not live — it no longer opens either way
+    public async Task Taking_a_link_back_tells_the_links_left(int status)
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":10}""";
+        _cloud.Deleted["/me/links/old"] = status;
+        _cloud.Answers["/me/links"] = """[{"id":"new","url":"/l/new"}]""";
+        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        var left = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/links/old"));
+
+        Assert.Equal(["new"], left.GetProperty("links").EnumerateArray().Select(l => l.GetProperty("id").GetString()));
+        var taken = Assert.Single(_cloud.Received, r => r.Method == "DELETE");
+        Assert.Equal("/me/links/old", taken.PathAndQuery);
+        Assert.Equal("Bearer " + Token, taken.Headers["Authorization"]);
+    }
+
+    [Theory]
+    [InlineData(401, "unauthorized")]
+    [InlineData(500, "unreachable")]
+    public async Task A_link_the_cloud_does_not_take_back_says_why(int status, string problem)
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":10}""";
+        _cloud.Deleted["/me/links/old"] = status;
+        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        var refused = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/links/old"));
+
+        Assert.Equal(JsonValueKind.Null, refused.GetProperty("links").ValueKind);
+        Assert.Equal(problem, refused.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task Only_a_links_id_reaches_the_cloud_and_without_a_token_or_its_address_nothing_is_asked()
+    {
+        using (var odd = await _host.ControlClient().DeleteAsync("/__control/cloud/links/a.b"))
+            HttpAssert.Status(HttpStatusCode.BadRequest, odd);
+        using (var escaped = await _host.ControlClient().DeleteAsync("/__control/cloud/links/a%2Fb"))
+            HttpAssert.Status(HttpStatusCode.BadRequest, escaped);
+        var signedOut = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/links"));
+        Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
+        Assert.Empty(_cloud.Received);
+
+        await using var host = await RunningHost.StartAsync();
+        using var none = await host.ControlClient().GetAsync("/__control/cloud/links");
+        HttpAssert.Status(HttpStatusCode.NotFound, none);
+    }
+
     [Theory]
     [InlineData(401, "unauthorized")]
     [InlineData(503, "unreachable")]

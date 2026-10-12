@@ -1346,6 +1346,38 @@ internal static partial class ControlPlane
                 await WriteAsync(response, new CloudLinkView(link?.AbsoluteUri, expiresAt, refused), cancel).ConfigureAwait(false);
                 break;
 
+            // The account's live links — and taking one back, after which the links left are told (one round trip for the shell).
+            case ("GET", ["cloud", "links"]):
+            case ("DELETE", ["cloud", "links", _]):
+                var keeping = context.RequestServices.GetRequiredService<Llm.CloudAccount>();
+                if (!keeping.Configured)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var linksHttp = context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount));
+                if (request.Method == "DELETE")
+                {
+                    var linkId = segments[2];
+                    if (!Llm.CloudAccount.IsLinkId(linkId))
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+
+                    if (await keeping.TakeBackAsync(linksHttp, linkId, cancel).ConfigureAwait(false) is { } notTaken)
+                    {
+                        await WriteAsync(response, new CloudLinksView(null, notTaken), cancel).ConfigureAwait(false);
+                        break;
+                    }
+                }
+
+                var (keptLinks, keptProblem) = await keeping.LinksAsync(linksHttp, cancel).ConfigureAwait(false);
+                await WriteAsync(response, new CloudLinksView(
+                    keptLinks?.Select(l => new CloudLinkItem(l.Id, l.Url.AbsoluteUri, l.CreatedAt, l.ExpiresAt, l.Bytes)).ToList(), keptProblem), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["drain"]):
                 await WriteAsync(response, new DrainResult(await DrainAsync(context, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
                 break;
@@ -1983,6 +2015,12 @@ internal static partial class ControlPlane
     /// <summary>A saved screen kept as a link: its address and when it ends — or why it was not kept (<see cref="Llm.CloudAccount.ShareAsync"/>).</summary>
     internal sealed record CloudLinkView(string? Url, DateTimeOffset? ExpiresAt, string? Problem);
 
+    /// <summary>The account's live links, newest first — or why they could not be told (<see cref="Llm.CloudAccount.LinksAsync"/>, <see cref="Llm.CloudAccount.TakeBackAsync"/>).</summary>
+    internal sealed record CloudLinksView(IReadOnlyList<CloudLinkItem>? Links, string? Problem);
+
+    /// <summary>One live link: its id (to take it back with), address, when it was made and ends, and the page's size.</summary>
+    internal sealed record CloudLinkItem(string Id, string Url, DateTimeOffset? CreatedAt, DateTimeOffset? ExpiresAt, long? Bytes);
+
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
         new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
             company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
@@ -2063,6 +2101,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudAccountView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinkView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinksView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
