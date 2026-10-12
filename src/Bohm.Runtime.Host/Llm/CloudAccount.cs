@@ -134,6 +134,90 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// <summary>How long keeping a page with the cloud may take.</summary>
     public static readonly TimeSpan ShareTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>A link the account keeps with the cloud: its id, its address (on the cloud's host), when it was made and when it ends, and the page's size.</summary>
+    public sealed record Link(string Id, Uri Url, DateTimeOffset? CreatedAt, DateTimeOffset? ExpiresAt, long? Bytes);
+
+    /// <summary>
+    /// The account's live links, newest first, as the cloud keeps them — or why they could not be told: <c>signedOut</c>,
+    /// <c>unauthorized</c> or <c>unreachable</c>. An entry the cloud describes incompletely, or whose address is not on the
+    /// cloud's host, is left out. Like the balance it carries the token and nothing of an application's, so it is not counted as sent.
+    /// </summary>
+    public async Task<(IReadOnlyList<Link>? Links, string? Problem)> LinksAsync(HttpClient http, CancellationToken cancellationToken)
+    {
+        if (Token is not { } token) return (null, "signedOut");
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(BalanceTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Endpoint!, "me/links"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await http.SendAsync(request, limit.Token).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, "unauthorized");
+            if (!response.IsSuccessStatusCode) return (null, "unreachable");
+            using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
+            if (answer.RootElement.ValueKind != JsonValueKind.Array) return (null, "unreachable");
+            var links = new List<Link>();
+            foreach (var item in answer.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { Length: > 0 } name
+                    && item.TryGetProperty("url", out var url) && url.ValueKind == JsonValueKind.String && url.GetString() is { Length: > 0 } path
+                    && Uri.TryCreate(Endpoint, path, out var address) && address.Authority == Endpoint!.Authority)
+                {
+                    links.Add(new Link(name, address, DateOf(item, "createdAt"), DateOf(item, "expiresAt"),
+                        item.TryGetProperty("bytes", out var bytes) && bytes.ValueKind == JsonValueKind.Number && bytes.TryGetInt64(out var size) ? size : null));
+                }
+            }
+
+            return (links, null);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, "unreachable");
+        }
+
+        static DateTimeOffset? DateOf(JsonElement item, string name) =>
+            item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && value.TryGetDateTimeOffset(out var at) ? at : null;
+    }
+
+    /// <summary>
+    /// Takes the link <paramref name="id"/> back: it stops opening for everyone at once. <see langword="null"/> when it is gone —
+    /// taken back now, or already not live (the cloud does not tell an ended link from one that never was, and either way it no
+    /// longer opens) — or why not: <c>signedOut</c>, <c>unauthorized</c> or <c>unreachable</c>. Not counted as sent.
+    /// </summary>
+    public async Task<string?> TakeBackAsync(HttpClient http, string id, CancellationToken cancellationToken)
+    {
+        if (Token is not { } token) return "signedOut";
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(BalanceTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Delete, new Uri(Endpoint!, "me/links/" + Uri.EscapeDataString(id)));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await http.SendAsync(request, limit.Token).ConfigureAwait(false);
+            return response.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "unauthorized",
+                HttpStatusCode.NotFound => null,
+                _ when response.IsSuccessStatusCode => null,
+                _ => "unreachable",
+            };
+        }
+        catch (Exception exception) when (exception is HttpRequestException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return "unreachable";
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="id"/> can be a link's id as the cloud gives them: letters, digits, «-» and «_», at most 64 —
+    /// so what the shell passes on cannot reach another of the cloud's paths.
+    /// </summary>
+    public static bool IsLinkId(string id) =>
+        id.Length is > 0 and <= 64 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+
     /// <summary>
     /// A client for <paramref name="model"/> paid for by the account whose access token is <paramref name="token"/>: Anthropic's
     /// Messages API at the cloud's relay — the API that carries a model's thinking and the prompt cache.

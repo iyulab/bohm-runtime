@@ -34,6 +34,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>Answers to <c>POST</c> requests by path — a status and a JSON body — for a service's own routes.</summary>
     public ConcurrentDictionary<string, (int Status, string Body)> Posted { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Statuses for <c>DELETE</c> requests by path — a service's own routes (an empty body).</summary>
+    public ConcurrentDictionary<string, int> Deleted { get; } = new(StringComparer.Ordinal);
+
     /// <summary>Refusals for the next requests, one each, before requests are answered as usual — a refusal that asking again gets past.</summary>
     public ConcurrentQueue<(int Status, string Body)> RefusalsFirst { get; } = new();
 
@@ -118,6 +121,12 @@ public sealed class FakeProvider : IAsyncDisposable
                 context.Response.StatusCode = posted.Status;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(posted.Body);
+                return;
+            }
+
+            if (context.Request.Method == "DELETE" && self.Deleted.TryGetValue(context.Request.Path.Value ?? "", out var deleted))
+            {
+                context.Response.StatusCode = deleted;
                 return;
             }
 
