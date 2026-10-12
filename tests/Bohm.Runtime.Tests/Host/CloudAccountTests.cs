@@ -73,7 +73,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         Assert.Equal("bohm/model-x", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
-        var request = Assert.Single(_cloud.Received);
+        var request = Assert.Single(Messages);
         Assert.Equal("/anthropic/v1/messages", request.PathAndQuery);
         Assert.Equal(Token, request.Headers["x-api-key"]);
         Assert.Equal("model-x", JsonDocument.Parse(request.Body).RootElement.GetProperty("model").GetString());
@@ -88,6 +88,41 @@ public sealed class CloudAccountTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Looking_at_the_account_tells_its_credits_asked_of_the_cloud_with_its_token()
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":187,"lots":[]}""";
+
+        var kept = await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        Assert.True(kept.GetProperty("signedIn").GetBoolean());
+        Assert.Equal(187, kept.GetProperty("balance").GetInt64());
+        Assert.Equal(JsonValueKind.Null, kept.GetProperty("problem").ValueKind);
+
+        var looked = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"));
+        Assert.Equal(187, looked.GetProperty("balance").GetInt64());
+        Assert.All(_cloud.Received, r => Assert.Equal("Bearer " + Token, r.Headers["Authorization"]));
+        // Asking for its own balance carries nothing of an application's: not counted as data sent.
+        Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+
+        var signedOut = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/account/token"));
+        Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
+        Assert.Equal(2, _cloud.Received.Count);
+    }
+
+    [Theory]
+    [InlineData(401, "unauthorized")]
+    [InlineData(503, "unreachable")]
+    public async Task A_balance_the_cloud_does_not_tell_says_why(int status, string problem)
+    {
+        _cloud.Refusal = (status, """{"error":"no"}""");
+
+        var account = await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        Assert.True(account.GetProperty("signedIn").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, account.GetProperty("balance").ValueKind);
+        Assert.Equal(problem, account.GetProperty("problem").GetString());
+    }
+
+    [Fact]
     public async Task A_request_the_credits_cannot_hold_is_asked_once_more_with_the_output_limit_they_can()
     {
         await SignInAsync();
@@ -96,10 +131,10 @@ public sealed class CloudAccountTests : IAsyncLifetime
         using var response = await ProposeAsync(await _host.AdoptAsync(App));
 
         HttpAssert.Status(HttpStatusCode.OK, response);
-        Assert.Equal(2, _cloud.Received.Count);
+        Assert.Equal(2, Messages.Count);
         // Streamed both times: the refusal comes before anything streams, so the second ask repeats nothing already told.
-        Assert.All(_cloud.Received, r => Assert.True(JsonDocument.Parse(r.Body).RootElement.GetProperty("stream").GetBoolean()));
-        Assert.Equal(4000, JsonDocument.Parse(_cloud.Received.Last().Body).RootElement.GetProperty("max_tokens").GetInt32());
+        Assert.All(Messages, r => Assert.True(JsonDocument.Parse(r.Body).RootElement.GetProperty("stream").GetBoolean()));
+        Assert.Equal(4000, JsonDocument.Parse(Messages.Last().Body).RootElement.GetProperty("max_tokens").GetInt32());
     }
 
     [Fact]
@@ -110,7 +145,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
         var provider = await RefusedAsync();
 
-        Assert.Equal(2, _cloud.Received.Count);
+        Assert.Equal(2, Messages.Count);
         Assert.Equal(402, provider.GetProperty("status").GetInt32());
         Assert.True(provider.GetProperty("billing").GetBoolean());
         Assert.Equal("hold_rejected", provider.GetProperty("code").GetString());
@@ -129,7 +164,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
         var provider = await RefusedAsync();
 
-        Assert.Single(_cloud.Received);
+        Assert.Single(Messages);
         Assert.True(provider.GetProperty("billing").GetBoolean());
         Assert.Equal(code, provider.GetProperty("code").GetString());
     }
@@ -146,8 +181,20 @@ public sealed class CloudAccountTests : IAsyncLifetime
     public void The_clouds_address_is_https_or_http_on_this_computer_and_ends_in_a_slash(string value, string? expected) =>
         Assert.Equal(expected, CloudAccount.EndpointOf(value)?.AbsoluteUri);
 
+    /// <summary>The requests to the cloud's relay — not the balance asked when a token is kept.</summary>
+    private List<FakeProvider.ReceivedRequest> Messages => [.. _cloud.Received.Where(r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal))];
+
     private static string Refused(string code, int? affordableMaxTokens) =>
         JsonSerializer.Serialize(new { type = "error", error = new { type = code, message = "The account's credits cannot hold this answer.", affordable = 40, affordable_max_tokens = affordableMaxTokens } });
+
+    private static async Task<JsonElement> AccountAsync(HttpResponseMessage response)
+    {
+        using (response)
+        {
+            HttpAssert.Status(HttpStatusCode.OK, response);
+            return JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.Clone();
+        }
+    }
 
     private async Task SignInAsync()
     {

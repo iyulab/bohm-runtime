@@ -28,6 +28,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>JSON answers to <c>GET</c> requests by path — a service's own routes beside a model API's.</summary>
+    public ConcurrentDictionary<string, string> Answers { get; } = new(StringComparer.Ordinal);
+
     /// <summary>Refusals for the next requests, one each, before requests are answered as usual — a refusal that asking again gets past.</summary>
     public ConcurrentQueue<(int Status, string Body)> RefusalsFirst { get; } = new();
 
@@ -104,6 +107,13 @@ public sealed class FakeProvider : IAsyncDisposable
                 if (self.RetryAfter is { } retryAfter) context.Response.Headers.RetryAfter = retryAfter;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(refusal.Body);
+                return;
+            }
+
+            if (context.Request.Method == "GET" && self.Answers.TryGetValue(context.Request.Path.Value ?? "", out var answer))
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(answer);
                 return;
             }
 

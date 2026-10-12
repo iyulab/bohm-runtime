@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Edit;
 using IronHive.Extensions.AI;
@@ -50,6 +53,41 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
         && address.UserInfo.Length == 0 && string.IsNullOrEmpty(address.Query) && string.IsNullOrEmpty(address.Fragment)
             ? address.AbsoluteUri.EndsWith('/') ? address : new Uri(address.AbsoluteUri + "/")
             : null;
+
+    /// <summary>How long asking the cloud for the account's balance may take.</summary>
+    public static readonly TimeSpan BalanceTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The account's credits as the cloud keeps them, asked with its access token — or why they could not be told:
+    /// <c>signedOut</c> (no token kept), <c>unauthorized</c> (the cloud no longer takes the token: sign in again) or
+    /// <c>unreachable</c> (no answer, or not one that says it). Asked only when the person looks at the account;
+    /// it carries the token and nothing of an application's, so it is not counted as an application's data sent.
+    /// </summary>
+    public async Task<(long? Balance, string? Problem)> BalanceAsync(HttpClient http, CancellationToken cancellationToken)
+    {
+        if (Token is not { } token) return (null, "signedOut");
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(BalanceTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Endpoint!, "me/balance"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await http.SendAsync(request, limit.Token).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, "unauthorized");
+            if (!response.IsSuccessStatusCode) return (null, "unreachable");
+            using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
+            return answer.RootElement.ValueKind == JsonValueKind.Object
+                && answer.RootElement.TryGetProperty("balance", out var balance) && balance.ValueKind == JsonValueKind.Number
+                && balance.TryGetInt64(out var credits)
+                    ? (credits, null)
+                    : (null, "unreachable");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, "unreachable");
+        }
+    }
 
     /// <summary>
     /// A client for <paramref name="model"/> paid for by the account whose access token is <paramref name="token"/>: Anthropic's
