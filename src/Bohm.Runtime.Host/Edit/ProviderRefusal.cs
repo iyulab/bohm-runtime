@@ -28,13 +28,13 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
     private const int MaxMessage = 500;
 
     /// <summary>
-    /// The provider's own code for the refusal (<c>error.type</c> of Anthropic's shape, <c>error.code</c> of OpenAI's) — for the Bohm
-    /// cloud's account, which of its refusals it is: <c>balance_exhausted</c>, <c>hold_rejected</c> or <c>tag_limit_reached</c>.
+    /// The provider's own code for the refusal (<c>error.type</c> of Anthropic's shape, <c>error.code</c> of OpenAI's) — for an account
+    /// a metering gateway refused, the gateway's: <c>insufficient_balance</c>, <c>hold_rejected</c>, <c>cap_reached</c> or <c>wallet_suspended</c>.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Code { get; init; }
 
-    /// <summary>The largest output limit the account's credits can hold now, when the Bohm cloud refused a request's (<c>hold_rejected</c>).</summary>
+    /// <summary>The largest output limit the account's credits can hold now, when the gateway refused a request's (<c>hold_rejected</c> — <c>max_affordable_max_tokens</c>).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? AffordableMaxTokens { get; init; }
 
@@ -107,7 +107,8 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
 
     /// <summary>
     /// What the provider's <c>error</c> says: its message, its code — <c>type</c> in Anthropic's shape, else <c>code</c> when it
-    /// is a word — and the Bohm cloud's <c>affordable_max_tokens</c>.
+    /// is a word — and, when a metering gateway refused (a <c>tokenway</c> object beside the provider's own error), the
+    /// gateway's code instead and its <c>max_affordable_max_tokens</c>.
     /// </summary>
     private static (string? Message, string? Code, long? AffordableMaxTokens) Read(string? body)
     {
@@ -123,7 +124,13 @@ internal sealed record ProviderRefusal(int Status, string? Message, int? RetryAf
             var message = error.TryGetProperty("message", out var said) && said.ValueKind == JsonValueKind.String && said.GetString() is { Length: > 0 } text
                 ? Bounded(text) : null;
             var code = (root.TryGetProperty("type", out var shape) && shape.ValueEquals("error") ? Word(error, "type") : null) ?? Word(error, "code");
-            var affordable = error.TryGetProperty("affordable_max_tokens", out var most) && most.ValueKind == JsonValueKind.Number && most.TryGetInt64(out var tokens) && tokens >= 0 ? tokens : (long?)null;
+            long? affordable = null;
+            if (root.TryGetProperty("tokenway", out var gateway) && gateway.ValueKind == JsonValueKind.Object)
+            {
+                code = Word(gateway, "code") ?? code;
+                affordable = gateway.TryGetProperty("max_affordable_max_tokens", out var most) && most.ValueKind == JsonValueKind.Number && most.TryGetInt64(out var tokens) && tokens >= 0 ? tokens : null;
+            }
+
             return (message, code, affordable);
         }
         catch (JsonException)
