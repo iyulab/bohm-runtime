@@ -6,9 +6,10 @@ using Bohm.Runtime.Host.Llm;
 namespace Bohm.Runtime.Tests.Host;
 
 /// <summary>
-/// The Bohm account: chosen like a provider only when the runtime was given the cloud's address, asked through the cloud's
-/// relay in Anthropic's own API with the account's access token, counted as sent to the cloud — and its refusals told by
-/// their code, the one whose credits cannot hold the output limit asked once more with the limit they can.
+/// The Bohm account: chosen like a provider only when the runtime was given the cloud's address, asked in Anthropic's own
+/// API at the metering gateway the cloud names (<c>GET me</c>) with the account's access token, counted as sent to that
+/// gateway — and its refusals told by the gateway's code, the one whose credits cannot hold the output limit asked once
+/// more with the limit they can.
 /// </summary>
 public sealed class CloudAccountTests : IAsyncLifetime
 {
@@ -16,11 +17,14 @@ public sealed class CloudAccountTests : IAsyncLifetime
     private const string Token = "account-token-0123456789";
 
     private FakeProvider _cloud = null!;
+    private FakeProvider _gateway = null!;
     private RunningHost _host = null!;
 
     public async ValueTask InitializeAsync()
     {
         _cloud = await FakeProvider.StartAsync();
+        _gateway = await FakeProvider.StartAsync();
+        _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri } });
         _host = await RunningHost.StartAsync(configure: o => o with { CloudEndpoint = _cloud.Address });
     }
 
@@ -28,6 +32,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         await _host.DisposeAsync();
         await _cloud.DisposeAsync();
+        await _gateway.DisposeAsync();
     }
 
     [Fact]
@@ -65,7 +70,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task The_account_is_asked_through_the_clouds_relay_in_Anthropics_API_with_its_token_and_it_is_counted_as_sent()
+    public async Task The_account_is_asked_at_the_gateway_the_cloud_names_in_Anthropics_API_with_its_token_and_counted_as_sent_there()
     {
         await SignInAsync();
 
@@ -79,7 +84,8 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal("model-x", JsonDocument.Parse(request.Body).RootElement.GetProperty("model").GetString());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal(_cloud.Address.Authority, sent.GetProperty("host").GetString());
+        Assert.Equal(_gateway.Address.Authority, sent.GetProperty("host").GetString());
+        Assert.DoesNotContain(_cloud.Received, r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal));   // the cloud relays nothing
 
         // Signing out takes the token away: the account is missing again.
         using var signedOut = await _host.ControlClient().DeleteAsync("/__control/cloud/account/token");
@@ -247,7 +253,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     public async Task A_request_the_credits_cannot_hold_is_asked_once_more_with_the_output_limit_they_can()
     {
         await SignInAsync();
-        _cloud.RefusalsFirst.Enqueue((402, Refused("hold_rejected", affordableMaxTokens: 4000)));
+        _gateway.RefusalsFirst.Enqueue((402, Refused("hold_rejected", affordableMaxTokens: 4000)));
 
         using var response = await ProposeAsync(await _host.AdoptAsync(App));
 
@@ -262,7 +268,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     public async Task Refused_again_after_asking_with_a_smaller_limit_the_person_is_told_the_accounts_code_and_its_message()
     {
         await SignInAsync();
-        _cloud.Refusal = (402, Refused("hold_rejected", affordableMaxTokens: 4000));
+        _gateway.Refusal = (402, Refused("hold_rejected", affordableMaxTokens: 4000));
 
         var provider = await RefusedAsync();
 
@@ -276,18 +282,32 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
     [Theory]
     [InlineData("hold_rejected", 1000)]    // too small a limit to answer in — not worth asking
-    [InlineData("balance_exhausted", null)]
-    [InlineData("tag_limit_reached", null)]
+    [InlineData("insufficient_balance", null)]
+    [InlineData("cap_reached", null)]
+    [InlineData("wallet_suspended", null)]
     public async Task The_other_refusals_of_the_account_are_not_asked_again(string code, int? affordableMaxTokens)
     {
         await SignInAsync();
-        _cloud.Refusal = (402, Refused(code, affordableMaxTokens));
+        _gateway.Refusal = (402, Refused(code, affordableMaxTokens));
 
         var provider = await RefusedAsync();
 
         Assert.Single(Messages);
         Assert.True(provider.GetProperty("billing").GetBoolean());
         Assert.Equal(code, provider.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task When_the_cloud_cannot_tell_where_the_ai_goes_the_request_fails_as_unreachable_and_nothing_is_sent()
+    {
+        await SignInAsync();
+        _cloud.Answers.TryRemove("/me", out _);
+
+        using var response = await ProposeAsync(await _host.AdoptAsync(App));
+
+        Assert.False(response.IsSuccessStatusCode);
+        Assert.Empty(_gateway.Received);
+        Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
     }
 
     [Theory]
@@ -302,11 +322,17 @@ public sealed class CloudAccountTests : IAsyncLifetime
     public void The_clouds_address_is_https_or_http_on_this_computer_and_ends_in_a_slash(string value, string? expected) =>
         Assert.Equal(expected, CloudAccount.EndpointOf(value)?.AbsoluteUri);
 
-    /// <summary>The requests to the cloud's relay — not the balance asked when a token is kept.</summary>
-    private List<FakeProvider.ReceivedRequest> Messages => [.. _cloud.Received.Where(r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal))];
+    /// <summary>The requests to the gateway's Anthropic path.</summary>
+    private List<FakeProvider.ReceivedRequest> Messages => [.. _gateway.Received.Where(r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal))];
 
+    /// <summary>A gateway's refusal: the provider's own error shape, with the gateway's object beside it.</summary>
     private static string Refused(string code, int? affordableMaxTokens) =>
-        JsonSerializer.Serialize(new { type = "error", error = new { type = code, message = "The account's credits cannot hold this answer.", affordable = 40, affordable_max_tokens = affordableMaxTokens } });
+        JsonSerializer.Serialize(new
+        {
+            type = "error",
+            error = new { type = "invalid_request_error", message = "The account's credits cannot hold this answer." },
+            tokenway = new { code, required = 90000, available = 40000, held = 0, max_affordable_max_tokens = affordableMaxTokens, retryable = false },
+        });
 
     private static async Task<JsonElement> AccountAsync(HttpResponseMessage response)
     {

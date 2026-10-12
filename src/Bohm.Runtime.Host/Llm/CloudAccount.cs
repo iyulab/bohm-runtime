@@ -11,16 +11,17 @@ using Microsoft.Extensions.AI;
 namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
-/// The person's account with the Bohm cloud: models the account pays for with its credits, reached through the
-/// cloud's relay, which speaks each provider's own API, with the account's access token in place of a provider key.
-/// There is one only when the runtime was started with the cloud's address (<see cref="RuntimeHostOptions.CloudEndpoint"/>);
-/// without it nothing is ever sent there and the account cannot be chosen.
+/// The person's account with the Bohm cloud: models the account pays for with its credits. The cloud tells where the
+/// account's AI calls go — a metering gateway that speaks each provider's own API and takes the account's access token
+/// in place of a provider key — and the calls go there directly. There is one only when the runtime was started with
+/// the cloud's address (<see cref="RuntimeHostOptions.CloudEndpoint"/>); without it nothing is ever sent there and the
+/// account cannot be chosen.
 /// </summary>
 /// <remarks>
-/// Choosing the account sends what an agent works on to the cloud, and from there to the model's provider — so,
-/// like choosing a provider, it is only ever the person's choice, and every request is counted as sent to the cloud.
+/// Choosing the account sends what an agent works on to that gateway, and from there to the model's provider — so,
+/// like choosing a provider, it is only ever the person's choice, and every request is counted as sent to the gateway.
 /// </remarks>
-internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault vault)
+internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault vault, IHttpClientFactory clients)
 {
     /// <summary>The provider id a choice of the account is remembered with.</summary>
     public const string ProviderId = "bohm";
@@ -219,18 +220,51 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
         id.Length is > 0 and <= 64 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     /// <summary>
-    /// A client for <paramref name="model"/> paid for by the account whose access token is <paramref name="token"/>: Anthropic's
-    /// Messages API at the cloud's relay — the API that carries a model's thinking and the prompt cache.
+    /// Where the account's AI calls go — the Anthropic Messages path of the gateway the cloud names (<c>GET me</c> →
+    /// <c>ai.anthropic</c>) — or why it could not be told: <c>signedOut</c>, <c>unauthorized</c> or <c>unreachable</c>.
+    /// Only an https address, or http on this computer, is taken. Carries the token and nothing of an application's.
     /// </summary>
-    public IChatClient Client(string model, string token) =>
-        new CreditsChatClient(new AnthropicMessageGenerator(new AnthropicConfig { ApiKey = token, BaseUrl = new Uri(Endpoint!, "anthropic").AbsoluteUri })
+    public async Task<(Uri? Anthropic, string? Problem)> AiAsync(CancellationToken cancellationToken)
+    {
+        if (Token is not { } token) return (null, "signedOut");
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(BalanceTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Endpoint!, "me"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await clients.CreateClient(nameof(CloudAccount)).SendAsync(request, limit.Token).ConfigureAwait(false);
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, "unauthorized");
+            if (!response.IsSuccessStatusCode) return (null, "unreachable");
+            using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
+            return answer.RootElement.ValueKind == JsonValueKind.Object
+                && answer.RootElement.TryGetProperty("ai", out var ai) && ai.ValueKind == JsonValueKind.Object
+                && ai.TryGetProperty("anthropic", out var path) && path.ValueKind == JsonValueKind.String
+                && EndpointOf(path.GetString()) is { } anthropic
+                    ? (anthropic, null)
+                    : (null, "unreachable");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, "unreachable");
+        }
+    }
+
+    /// <summary>
+    /// A client for <paramref name="model"/> paid for by the account whose access token is <paramref name="token"/>: Anthropic's
+    /// Messages API at <paramref name="anthropic"/> (<see cref="AiAsync"/>) — the API that carries a model's thinking and the prompt cache.
+    /// </summary>
+    public static IChatClient Client(string model, string token, Uri anthropic) =>
+        new CreditsChatClient(new AnthropicMessageGenerator(new AnthropicConfig { ApiKey = token, BaseUrl = anthropic.AbsoluteUri.TrimEnd('/') })
             .AsChatClient(model, "anthropic"));
 }
 
 /// <summary>
 /// A request the account's credits cannot hold at its output limit (<c>hold_rejected</c>, which says the largest limit
-/// they can hold) is asked once more with that limit — a shorter answer rather than none. The other refusals of the
-/// account (its balance is spent, an application's monthly limit is reached) are not asked again: waiting does not help.
+/// they can hold — <c>max_affordable_max_tokens</c>) is asked once more with that limit — a shorter answer rather than
+/// none. The account's other refusals (<c>insufficient_balance</c>, <c>cap_reached</c>, <c>wallet_suspended</c>) are not
+/// asked again: waiting does not help.
 /// </summary>
 internal sealed class CreditsChatClient(IChatClient inner) : DelegatingChatClient(inner)
 {
@@ -289,5 +323,24 @@ internal sealed class CreditsChatClient(IChatClient inner) : DelegatingChatClien
         var smaller = options?.Clone() ?? new ChatOptions();
         smaller.MaxOutputTokens = (int)affordable;
         return smaller;
+    }
+}
+
+/// <summary>
+/// A client whose every request fails as an unreachable provider's does (no status) — for the account when the cloud
+/// could not tell where its AI calls go, so the person sees «could not reach» and tries again, as with any provider.
+/// </summary>
+internal sealed class UnreachableChatClient(string why) : IChatClient
+{
+    public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+        throw new HttpRequestException(why);
+
+    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+        throw new HttpRequestException(why);
+
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+    public void Dispose()
+    {
     }
 }

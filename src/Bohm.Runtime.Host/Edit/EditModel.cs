@@ -129,10 +129,16 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         }
 
         if (chosen.Provider == CloudAccount.ProviderId)
-            return account.Token is { } token
-                ? new(Kept(chosen, token, () => new CountedAsSent(account.Client(chosen.Model, token), egress, account.Host!)),
-                    $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown)
-                : null;
+        {
+            if (account.Token is not { } token) return null;
+            // The cloud names the gateway the account's calls go to; when it cannot be told, the request fails as an
+            // unreachable provider does — the same words, the same «try again».
+            var (anthropic, problem) = await account.AiAsync(cancellationToken).ConfigureAwait(false);
+            var client = anthropic is null
+                ? new UnreachableChatClient($"The Bohm account's AI address could not be told ({problem}).")
+                : Kept(chosen, token + "\n" + anthropic.AbsoluteUri, () => new CountedAsSent(CloudAccount.Client(chosen.Model, token, anthropic), egress, anthropic.Authority));
+            return new(client, $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
+        }
 
         var provider = LlmProviders.ById(chosen.Provider)!;
         var key = vault.Read(provider.VaultName);
