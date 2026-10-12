@@ -1291,6 +1291,35 @@ internal static partial class ControlPlane
                 await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices), cancel).ConfigureAwait(false);
                 break;
 
+            // The Bohm account's access token, while there is no sign-in yet: only when the runtime was given the cloud's address.
+            case ("GET", ["cloud", "account"]):
+            case ("PUT" or "DELETE", ["cloud", "account", "token"]):
+                var account = context.RequestServices.GetRequiredService<Llm.CloudAccount>();
+                if (!account.Configured)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                if (request.Method == "DELETE")
+                {
+                    context.RequestServices.GetRequiredService<ICredentialVault>().Delete(Llm.CloudAccount.VaultName);
+                }
+                else if (request.Method == "PUT")
+                {
+                    var token = System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
+                    if (token.Length == 0)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+
+                    context.RequestServices.GetRequiredService<ICredentialVault>().Write(Llm.CloudAccount.VaultName, token);
+                }
+
+                await WriteAsync(response, new CloudAccountView(account.Host!, account.Token is not null), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["drain"]):
                 await WriteAsync(response, new DrainResult(await DrainAsync(context, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
                 break;
@@ -1919,6 +1948,9 @@ internal static partial class ControlPlane
     /// <param name="AnsweredBy">What, with no key connected, answers this provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or <see langword="null"/> (nothing — the application is told to connect a key).</param>
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
 
+    /// <summary>The Bohm account: the cloud's host, and whether an access token is kept for it.</summary>
+    internal sealed record CloudAccountView(string Host, bool SignedIn);
+
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
         new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
             company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
@@ -1997,6 +2029,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(Edit.EditModelMissing))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudAccountView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
