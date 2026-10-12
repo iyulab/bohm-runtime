@@ -1324,6 +1324,28 @@ internal static partial class ControlPlane
                 await WriteAsync(response, new CloudAccountView(account.Host!, account.Token is not null, balance, problem), cancel).ConfigureAwait(false);
                 break;
 
+            // A saved screen kept as a read-only link under the Bohm account (the shell seals the page first).
+            case ("POST", ["cloud", "links"]):
+                var sharing = context.RequestServices.GetRequiredService<Llm.CloudAccount>();
+                if (!sharing.Configured)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                var screen = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                if (screen.Length == 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var (link, expiresAt, refused) = await sharing.ShareAsync(
+                    context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount)), screen,
+                    context.RequestServices.GetRequiredService<Egress>(), cancel).ConfigureAwait(false);
+                await WriteAsync(response, new CloudLinkView(link?.AbsoluteUri, expiresAt, refused), cancel).ConfigureAwait(false);
+                break;
+
             case ("POST", ["drain"]):
                 await WriteAsync(response, new DrainResult(await DrainAsync(context, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
                 break;
@@ -1958,6 +1980,9 @@ internal static partial class ControlPlane
     /// </summary>
     internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem);
 
+    /// <summary>A saved screen kept as a link: its address and when it ends — or why it was not kept (<see cref="Llm.CloudAccount.ShareAsync"/>).</summary>
+    internal sealed record CloudLinkView(string? Url, DateTimeOffset? ExpiresAt, string? Problem);
+
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
         new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
             company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
@@ -2037,6 +2062,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudAccountView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinkView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
