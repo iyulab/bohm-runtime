@@ -31,6 +31,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>JSON answers to <c>GET</c> requests by path — a service's own routes beside a model API's.</summary>
     public ConcurrentDictionary<string, string> Answers { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Answers to <c>POST</c> requests by path — a status and a JSON body — for a service's own routes.</summary>
+    public ConcurrentDictionary<string, (int Status, string Body)> Posted { get; } = new(StringComparer.Ordinal);
+
     /// <summary>Refusals for the next requests, one each, before requests are answered as usual — a refusal that asking again gets past.</summary>
     public ConcurrentQueue<(int Status, string Body)> RefusalsFirst { get; } = new();
 
@@ -107,6 +110,14 @@ public sealed class FakeProvider : IAsyncDisposable
                 if (self.RetryAfter is { } retryAfter) context.Response.Headers.RetryAfter = retryAfter;
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(refusal.Body);
+                return;
+            }
+
+            if (context.Request.Method == "POST" && self.Posted.TryGetValue(context.Request.Path.Value ?? "", out var posted))
+            {
+                context.Response.StatusCode = posted.Status;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(posted.Body);
                 return;
             }
 

@@ -90,6 +90,51 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     }
 
     /// <summary>
+    /// Keeps <paramref name="page"/> — a saved screen, already sealed by the shell — as a read-only link with the cloud, under the
+    /// account: its address and when it ends, or why not: <c>signedOut</c>, <c>unauthorized</c>, <c>tooLarge</c>,
+    /// <c>quotaReached</c> (the account's live links) or <c>unreachable</c>. The page leaves this computer, so it is counted as sent.
+    /// </summary>
+    public async Task<(Uri? Link, DateTimeOffset? ExpiresAt, string? Problem)> ShareAsync(HttpClient http, byte[] page, Egress egress, CancellationToken cancellationToken)
+    {
+        if (Token is not { } token) return (null, null, "signedOut");
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(ShareTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(Endpoint!, "me/links"))
+            {
+                Content = new ByteArrayContent(page) { Headers = { ContentType = new MediaTypeHeaderValue("text/html") { CharSet = "utf-8" } } },
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            egress.Sent(Host!);
+            using var response = await http.SendAsync(request, limit.Token).ConfigureAwait(false);
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden: return (null, null, "unauthorized");
+                case HttpStatusCode.RequestEntityTooLarge: return (null, null, "tooLarge");
+                case HttpStatusCode.Conflict: return (null, null, "quotaReached");
+                case HttpStatusCode.Created or HttpStatusCode.OK: break;
+                default: return (null, null, "unreachable");
+            }
+            using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
+            var root = answer.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("url", out var url) && url.GetString() is { Length: > 0 } path && Uri.TryCreate(Endpoint, path, out var link)
+                && link.Authority == Endpoint!.Authority
+                    ? (link, root.TryGetProperty("expiresAt", out var ends) && ends.TryGetDateTimeOffset(out var at) ? at : null, null)
+                    : (null, null, "unreachable");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, null, "unreachable");
+        }
+    }
+
+    /// <summary>How long keeping a page with the cloud may take.</summary>
+    public static readonly TimeSpan ShareTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// A client for <paramref name="model"/> paid for by the account whose access token is <paramref name="token"/>: Anthropic's
     /// Messages API at the cloud's relay — the API that carries a model's thinking and the prompt cache.
     /// </summary>

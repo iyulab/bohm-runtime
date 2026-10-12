@@ -108,6 +108,55 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal(2, _cloud.Received.Count);
     }
 
+    [Fact]
+    public async Task A_saved_screen_is_kept_as_a_link_under_the_account_and_counted_as_sent()
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":10}""";
+        _cloud.Posted["/me/links"] = (201, """{"id":"abc","url":"/l/abc","expiresAt":"2026-11-11T09:00:00+00:00"}""");
+        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        var kept = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>Stock</p>", Encoding.UTF8, "text/html")));
+
+        Assert.Equal(new Uri(_cloud.Address, "/l/abc").AbsoluteUri, kept.GetProperty("url").GetString());
+        Assert.Equal(JsonValueKind.Null, kept.GetProperty("problem").ValueKind);
+        var sent = _cloud.Received.Last();
+        Assert.Equal("/me/links", sent.PathAndQuery);
+        Assert.Equal("<p>Stock</p>", sent.Body);
+        Assert.Equal("Bearer " + Token, sent.Headers["Authorization"]);
+        Assert.StartsWith("text/html", sent.Headers["Content-Type"], StringComparison.Ordinal);
+        var counted = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
+        Assert.Equal(_cloud.Address.Authority, counted.GetProperty("host").GetString());
+    }
+
+    [Theory]
+    [InlineData(413, "tooLarge")]
+    [InlineData(409, "quotaReached")]
+    [InlineData(401, "unauthorized")]
+    [InlineData(500, "unreachable")]
+    public async Task A_screen_the_cloud_does_not_keep_says_why(int status, string problem)
+    {
+        _cloud.Answers["/me/balance"] = """{"balance":10}""";
+        _cloud.Posted["/me/links"] = (status, """{"error":{"code":"x"}}""");
+        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+
+        var refused = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html")));
+
+        Assert.Equal(JsonValueKind.Null, refused.GetProperty("url").ValueKind);
+        Assert.Equal(problem, refused.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task Without_a_token_or_the_clouds_address_no_screen_leaves()
+    {
+        var signedOut = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html")));
+        Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
+        Assert.Empty(_cloud.Received);
+
+        await using var host = await RunningHost.StartAsync();
+        using var none = await host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html"));
+        HttpAssert.Status(HttpStatusCode.NotFound, none);
+    }
+
     [Theory]
     [InlineData(401, "unauthorized")]
     [InlineData(503, "unreachable")]
