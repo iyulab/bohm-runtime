@@ -1317,7 +1317,11 @@ internal static partial class ControlPlane
                     context.RequestServices.GetRequiredService<ICredentialVault>().Write(Llm.CloudAccount.VaultName, token);
                 }
 
-                await WriteAsync(response, new CloudAccountView(account.Host!, account.Token is not null), cancel).ConfigureAwait(false);
+                // Looking at the account, or keeping a new token, tells its balance — and whether the cloud takes the token.
+                var (balance, problem) = request.Method == "DELETE"
+                    ? (null, "signedOut")
+                    : await account.BalanceAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount)), cancel).ConfigureAwait(false);
+                await WriteAsync(response, new CloudAccountView(account.Host!, account.Token is not null, balance, problem), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["drain"]):
@@ -1948,8 +1952,11 @@ internal static partial class ControlPlane
     /// <param name="AnsweredBy">What, with no key connected, answers this provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or <see langword="null"/> (nothing — the application is told to connect a key).</param>
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
 
-    /// <summary>The Bohm account: the cloud's host, and whether an access token is kept for it.</summary>
-    internal sealed record CloudAccountView(string Host, bool SignedIn);
+    /// <summary>
+    /// The Bohm account: the cloud's host, whether an access token is kept for it, and its credits — or why they could not be
+    /// told (<see cref="Llm.CloudAccount.BalanceAsync"/>).
+    /// </summary>
+    internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem);
 
     private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
         new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
