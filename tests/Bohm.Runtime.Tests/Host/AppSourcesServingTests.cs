@@ -239,4 +239,104 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
         Assert.Equal(JsonValueKind.Object, JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "sources.json"), TestContext.Current.CancellationToken))
             .RootElement.GetProperty("sources")[0].GetProperty("grant").ValueKind);
     }
+
+    private async Task<HttpResponseMessage> ScheduleAsync(string id, string everyMinutes) =>
+        await _host.ControlClient().PutAsync($"/__control/apps/{id}/sources/prices/schedule", Json($$"""{"everyMinutes":{{everyMinutes}}}"""));
+
+    private async Task<JsonElement> DueAsync() =>
+        JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/sources/due")).RootElement;
+
+    [Fact]
+    public async Task A_schedule_the_person_sets_makes_a_source_never_read_due_at_once_and_none_is_shorter_than_a_minute()
+    {
+        var id = await AppWithSourceAsync();
+
+        using var tooOften = await ScheduleAsync(id, "0");
+        using var set = await ScheduleAsync(id, "5");
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, tooOften);
+        Assert.Equal("too-often", JsonDocument.Parse(await tooOften.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+        HttpAssert.Status(HttpStatusCode.OK, set);
+        var source = JsonDocument.Parse(await set.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("00:05:00", source.GetProperty("grant").GetProperty("every").GetString());
+        Assert.False(source.GetProperty("watch").GetProperty("halted").GetBoolean());
+        var due = Assert.Single((await DueAsync()).EnumerateArray());
+        Assert.Equal(id, due.GetProperty("app").GetString());
+        Assert.Equal("prices", due.GetProperty("source").GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task A_source_without_permission_cannot_be_put_on_a_schedule()
+    {
+        var id = await AppWithSourceAsync(Rule.Replace("\"granted\":true", "\"granted\":false", StringComparison.Ordinal));
+
+        using var response = await ScheduleAsync(id, "5");
+
+        HttpAssert.Status(HttpStatusCode.Conflict, response);
+        Assert.Empty((await DueAsync()).EnumerateArray());
+    }
+
+    [Fact]
+    public async Task A_scheduled_reading_says_whether_the_rows_changed_and_keeps_nothing_when_they_did_not()
+    {
+        var id = await AppWithSourceAsync();
+        (await ScheduleAsync(id, "5")).Dispose();
+        var scheduled = Reading.Replace("{", "{\"scheduled\":true,", StringComparison.Ordinal);
+
+        using var first = await RecordAsync(id, scheduled);
+        using var again = await RecordAsync(id, scheduled);
+
+        Assert.True(JsonDocument.Parse(await first.Content.ReadAsStringAsync()).RootElement.GetProperty("changed").GetBoolean());
+        var unchanged = JsonDocument.Parse(await again.Content.ReadAsStringAsync()).RootElement;
+        Assert.False(unchanged.GetProperty("changed").GetBoolean());
+        Assert.Equal("Pen", unchanged.GetProperty("reading").GetProperty("rows")[0].GetProperty("Item").GetString());
+        var page = await _host.LoadAsync(id);
+        using var readings = await AppGetAsync(id, "/__bohm/sources/prices/readings", page.Cookie);
+        Assert.Single(JsonDocument.Parse(await readings.Content.ReadAsStringAsync()).RootElement.EnumerateArray());
+        Assert.Empty((await DueAsync()).EnumerateArray());
+    }
+
+    [Fact]
+    public async Task A_failure_that_wants_the_person_stops_the_schedule_and_a_reading_they_ask_for_starts_it_again()
+    {
+        var id = await AppWithSourceAsync();
+        (await ScheduleAsync(id, "5")).Dispose();
+
+        using var failed = await _host.ControlClient().PostAsync($"/__control/apps/{id}/sources/prices/failures", Json("""{"kind":"needs-person","reason":"sign-in"}"""));
+
+        HttpAssert.Status(HttpStatusCode.OK, failed);
+        var watch = JsonDocument.Parse(await failed.Content.ReadAsStringAsync()).RootElement.GetProperty("watch");
+        Assert.True(watch.GetProperty("halted").GetBoolean());
+        Assert.Equal("needs-person", watch.GetProperty("lastFailure").GetString());
+        Assert.Equal("sign-in", watch.GetProperty("reason").GetString());
+        Assert.Empty((await DueAsync()).EnumerateArray());
+
+        (await RecordAsync(id)).Dispose();
+        var list = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/sources")).RootElement;
+        Assert.False(list[0].GetProperty("watch").GetProperty("halted").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("""{"kind":"sometimes"}""")]
+    [InlineData("""{"reason":"x"}""")]
+    [InlineData("""{"kind":"transient","retryAfterSeconds":-1}""")]
+    public async Task A_failure_report_of_another_shape_is_refused(string body)
+    {
+        var id = await AppWithSourceAsync();
+        (await ScheduleAsync(id, "5")).Dispose();
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/sources/prices/failures", Json(body));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+    }
+
+    [Fact]
+    public async Task A_failure_of_a_source_not_on_a_schedule_is_not_found()
+    {
+        var id = await AppWithSourceAsync();
+
+        using var response = await _host.ControlClient().PostAsync($"/__control/apps/{id}/sources/prices/failures", Json("""{"kind":"transient"}"""));
+
+        HttpAssert.Status(HttpStatusCode.NotFound, response);
+    }
 }

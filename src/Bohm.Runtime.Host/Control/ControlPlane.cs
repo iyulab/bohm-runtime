@@ -36,8 +36,11 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/package?data=none|all</c></term><description>Writes the application into a package (<c>.bohm</c>) at the full path in the body: a zip of <c>manifest.json</c> and the folder an export with the same data makes, each recorded original path shortened to its file name. <c>data</c> is required. Answers <c>{ id, path, version, contentSha256, data, includes, permissions }</c> — <c>version</c> goes up by one when the current code differs from the last package's. 400 for a path that is not full or does not end in <c>.bohm</c>, or a missing <c>data</c>; 409 when something with that name is already there or its folder is missing.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
-/// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]] }</c>, and answers it as the application will read it. Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
-/// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]], scheduled? }</c>, and answers it as the application will read it — for a <c>scheduled</c> reading <c>{ changed, reading }</c>, where a reading that finds the rows last kept keeps nothing new (<c>changed: false</c>). Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
+/// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay — and its schedule ends.</description></item>
+/// <item><term><c>PUT /__control/apps/{id}/sources/{name}/schedule</c></term><description>Sets how often the person wants the source read on its own while the browser runs — <c>{ everyMinutes }</c>, at least 1, or <c>{ everyMinutes: null }</c> to stop — and answers the source, with <c>grant.every</c> and its <c>watch</c> (<c>{ nextAt, checkedAt, failures, lastFailure, reason, halted }</c>). Due at once when its last reading is older than the schedule. 400 <c>{ code: "too-often" }</c> under a minute; 409 <c>{ code: "not-granted" }</c> without permission; 404 for an unknown source.</description></item>
+/// <item><term><c>GET /__control/sources/due</c></term><description>The sources due to be read on their schedule now, across the applications that are not archived: <c>[{ app, source }]</c>. Stopped ones (they wait for the person) are not among them.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/sources/{name}/failures</c></term><description>A scheduled reading failed, <c>{ kind: "transient" | "needs-person" | "shape-changed" | "refused", reason?, retryAfterSeconds? }</c>: <c>transient</c> waits the schedule, doubling with each in a row up to an hour (at least what the site asked for); <c>shape-changed</c> tries once more, then stops; the others stop until the person reads the source once. Answers the source. 404 for an unknown source or one not on a schedule; 400 for another body.</description></item>
 /// <item><term><c>GET /__control/apps/page-targets</c></term><description>The applications a web page can be sent to — those whose manifest declares a <c>share_target</c> (GET) — in the catalog's order: <c>[{ id, params: { title, text, url } }]</c>, each param the query name the manifest gives it, or <c>null</c>. Archived applications are not among them.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/pages</c></term><description>Keeps a web page the person sent to the application, <c>{ url, title, text, html, lang, byline }</c> — the shell read it and cleaned its HTML — and answers <c>{ page: { id, receivedAt, url, title, lang, byline, excerpt }, withoutHtml }</c>; the HTML is left out when text and HTML together pass 2 MB. 400 without a web address or text; 413 when the text alone passes 2 MB. The application reads it at <c>/__bohm/pages/{id}</c> (see <see cref="PagesServing"/>).</description></item>
 /// <item><term><c>POST /__control/packages/inspect</c></term><description>Checks the package (<c>.bohm</c>) at the full path in the body exactly as taking it in would — and takes nothing in: <c>{ manifest, alreadyHere, sameCode, sameCodeInUse, compatibility }</c>, so the person can see what the application asks to do before it lands. <c>compatibility</c> lists what in its page will not work as written: <c>online-database</c>, <c>indexeddb</c>, <c>session-storage</c>, <c>cookies</c> (data kept where it does not stay) or <c>outside-data</c> (requests to an outside server other than an AI service). 400 for a path that is not full, or <c>{ reason }</c> as for taking it in.</description></item>
@@ -143,6 +146,26 @@ internal static partial class ControlPlane
                 }
 
                 await response.WriteAsJsonAsync(targets, PagesHttpJson.Default.ListPageTarget, cancellationToken: cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["sources", "due"]):
+                // Read from each application's sources file, without opening the application: most have none.
+                var due = new List<SourcesServing.DueSource>();
+                foreach (var listed in (await catalog.ReadListingAsync(cancel).ConfigureAwait(false)).Apps)
+                {
+                    if (listed.ArchivedAt is not null) continue;
+                    try
+                    {
+                        using var listedSources = catalog.OpenSources(listed.Id);
+                        due.AddRange((await listedSources.DueAsync(cancel).ConfigureAwait(false)).Select(s => new SourcesServing.DueSource(listed.Id, s)));
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or KeyNotFoundException)
+                    {
+                        // A source file that cannot be read now is not read on schedule; the application reports it when opened.
+                    }
+                }
+
+                await response.WriteAsJsonAsync(due, SourcesHttpJson.Default.ListDueSource, cancellationToken: cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["apps", "unreadable"]):
