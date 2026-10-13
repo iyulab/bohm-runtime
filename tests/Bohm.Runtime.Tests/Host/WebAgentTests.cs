@@ -546,6 +546,10 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType?.MediaType);
         var lines = await LinesAsync(response);
         Assert.Equal(["The page ", "says ", "**hello**."], lines.SkipLast(1).Select(l => l.GetProperty("text").GetString()));
+        // The first piece carries the text so far as HTML, so the answer can be shown formatted as it is written; the pieces
+        // that follow within a quarter second carry only their text.
+        Assert.Equal("<p>The page</p>\n", lines[0].GetProperty("html").GetString());
+        Assert.All(lines.Skip(1).SkipLast(1), l => Assert.False(l.TryGetProperty("html", out _)));
         var turn = lines[^1];
         Assert.Equal("done", turn.GetProperty("status").GetString());
         Assert.Equal("The page says **hello**.", turn.GetProperty("text").GetString());
