@@ -107,16 +107,21 @@ internal static class SourcesServing
                 return;
 
             case ("POST", [var name, "readings"]):
-                if (await ReadAsync(request, SourcesHttpJson.Default.ReadingRequest, cancel).ConfigureAwait(false) is not { Source: { } source, Columns: { } columns, Rows: { } rows }
+                if (await ReadAsync(request, SourcesHttpJson.Default.ReadingRequest, cancel).ConfigureAwait(false) is not { Source: { } source, Columns: { } columns, Rows: { } rows } read
                     || rows.Any(r => r is null))
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     return;
                 }
 
-                var (outcome, reading) = await sources.RecordAsync(name, source, columns, rows, cancel).ConfigureAwait(false);
+                var (outcome, reading) = read.Scheduled
+                    ? await sources.RecordScheduledAsync(name, source, columns, rows, cancel).ConfigureAwait(false)
+                    : await sources.RecordAsync(name, source, columns, rows, cancel).ConfigureAwait(false);
                 switch (outcome)
                 {
+                    case RecordOutcome.Recorded or RecordOutcome.Unchanged when read.Scheduled:
+                        await response.WriteAsJsonAsync(new ScheduledReadingView(outcome is RecordOutcome.Recorded, ViewOf(reading!)), SourcesHttpJson.Default.ScheduledReadingView, cancellationToken: cancel).ConfigureAwait(false);
+                        return;
                     case RecordOutcome.Recorded:
                         await response.WriteAsJsonAsync(ViewOf(reading!), SourcesHttpJson.Default.ReadingView, cancellationToken: cancel).ConfigureAwait(false);
                         return;
@@ -134,6 +139,47 @@ internal static class SourcesServing
                         await RefuseAsync(response, StatusCodes.Status409Conflict, new SourceRefusal("shape-mismatch", expected), cancel).ConfigureAwait(false);
                         return;
                 }
+
+            case ("PUT", [var name, "schedule"]):
+                if (await ReadAsync(request, SourcesHttpJson.Default.ScheduleRequest, cancel).ConfigureAwait(false) is not { } schedule)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                var (scheduled, scheduledSource) = await sources.ScheduleAsync(name, schedule.EveryMinutes is { } minutes ? TimeSpan.FromMinutes(minutes) : null, cancel).ConfigureAwait(false);
+                switch (scheduled)
+                {
+                    case ScheduleOutcome.Scheduled:
+                        await response.WriteAsJsonAsync(scheduledSource!, SourcesHttpJson.Default.AppSource, cancellationToken: cancel).ConfigureAwait(false);
+                        return;
+                    case ScheduleOutcome.TooOften:
+                        await RefuseAsync(response, StatusCodes.Status400BadRequest, new SourceRefusal("too-often", null), cancel).ConfigureAwait(false);
+                        return;
+                    case ScheduleOutcome.NotGranted:
+                        await RefuseAsync(response, StatusCodes.Status409Conflict, new SourceRefusal("not-granted", null), cancel).ConfigureAwait(false);
+                        return;
+                    default:
+                        response.StatusCode = StatusCodes.Status404NotFound;
+                        return;
+                }
+
+            case ("POST", [var name, "failures"]):
+                if (await ReadAsync(request, SourcesHttpJson.Default.FailureRequest, cancel).ConfigureAwait(false) is not { Kind: { } kind } failure
+                    || failure.RetryAfterSeconds is < 0)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    return;
+                }
+
+                if (await sources.ReportFailureAsync(name, kind, failure.Reason, failure.RetryAfterSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null, cancel).ConfigureAwait(false) is not { } failed)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                await response.WriteAsJsonAsync(failed, SourcesHttpJson.Default.AppSource, cancellationToken: cancel).ConfigureAwait(false);
+                return;
 
             case ("DELETE", [var name, "grant"]):
                 response.StatusCode = await sources.RevokeAsync(name, cancel).ConfigureAwait(false) ? StatusCodes.Status204NoContent : StatusCodes.Status404NotFound;
@@ -169,8 +215,20 @@ internal static class SourcesServing
     /// <summary>Declares a source: its rule, and whether the person has just allowed its site to be read.</summary>
     internal sealed record DeclareRequest(SourceRule? Rule, bool Granted);
 
-    /// <summary>What the shell read: the page, the columns it found and the rows, one cell per column.</summary>
-    internal sealed record ReadingRequest(string? Source, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<string>>? Rows);
+    /// <summary>What the shell read: the page, the columns it found and the rows, one cell per column — and whether it read on the source's schedule.</summary>
+    internal sealed record ReadingRequest(string? Source, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<string>>? Rows, bool Scheduled = false);
+
+    /// <summary>A scheduled reading as kept: whether the rows changed (nothing new is kept when they did not), and the reading.</summary>
+    internal sealed record ScheduledReadingView(bool Changed, ReadingView Reading);
+
+    /// <summary>How often the person wants a source read on its own, in minutes; <see langword="null"/> stops it.</summary>
+    internal sealed record ScheduleRequest(int? EveryMinutes);
+
+    /// <summary>A scheduled reading that failed: how, why, and the wait the site asked for, if any.</summary>
+    internal sealed record FailureRequest(SourceFailure? Kind, string? Reason, int? RetryAfterSeconds);
+
+    /// <summary>A source due to be read on its schedule, and its application.</summary>
+    internal sealed record DueSource(string App, AppSource Source);
 
     /// <summary>Why a reading was not kept; for a shape mismatch, the columns the rule expects.</summary>
     internal sealed record SourceRefusal(string Code, IReadOnlyList<string>? Columns);
@@ -184,4 +242,8 @@ internal static class SourcesServing
 [JsonSerializable(typeof(SourcesServing.SourceRefusal))]
 [JsonSerializable(typeof(AppSource))]
 [JsonSerializable(typeof(List<AppSource>))]
+[JsonSerializable(typeof(SourcesServing.ScheduledReadingView))]
+[JsonSerializable(typeof(SourcesServing.ScheduleRequest))]
+[JsonSerializable(typeof(SourcesServing.FailureRequest))]
+[JsonSerializable(typeof(List<SourcesServing.DueSource>))]
 internal sealed partial class SourcesHttpJson : JsonSerializerContext;
