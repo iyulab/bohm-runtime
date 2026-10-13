@@ -274,7 +274,7 @@ public sealed class UsageLog
         {
             File.AppendAllText(_path, line + "\n", Utf8NoBom);
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Best-effort by design: losing a usage line must never lose the person's data or block the application.
         }

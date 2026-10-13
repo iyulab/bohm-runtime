@@ -112,7 +112,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
             {
                 if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
             }
-            catch (IOException)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 // A folder left behind is harmless: it is not under a root the skills are read from.
             }
