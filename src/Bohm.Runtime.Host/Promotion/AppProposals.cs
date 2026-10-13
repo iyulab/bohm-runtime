@@ -55,10 +55,11 @@ internal abstract record ProposalOutcome;
 
 /// <summary>
 /// A proposed application: nothing is kept until the person takes it in. <paramref name="Usage"/> is what the model calls behind it came to, as the provider reported;
-/// <paramref name="ReviewerUsage"/> what a review by another model before it was polished came to (<see cref="AppProposals.ReviewAsync"/>), apart — it is another model's price.
+/// <paramref name="ReviewerUsage"/> what a review by another model before it was polished came to (<see cref="AppProposals.ReviewAsync"/>), apart — it is another model's price;
+/// <paramref name="ReviewerStopped"/> why that review ended short (<c>length</c> — its output limit), when it did.
 /// </summary>
 internal sealed record AppProposal(string Title, string Html, IReadOnlyList<ProposedSource> Sources, string Summary, IReadOnlyList<string> Refused, string Keeps = "", Llm.ModelUse? Usage = null,
-    Llm.ModelUse? ReviewerUsage = null) : ProposalOutcome;
+    Llm.ModelUse? ReviewerUsage = null, string? ReviewerStopped = null) : ProposalOutcome;
 
 /// <summary>
 /// No application: what the person asked is one thing to do now about what is in front of them — the pages open now — which
@@ -309,7 +310,7 @@ internal static partial class AppProposals
     {
         var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
         if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
-        var (advice, reviewerUse) = reviewer is null ? (null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
+        var (advice, reviewerUse, reviewerStopped) = reviewer is null ? (null, null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
         var instruction = ReviewInstruction(request.Question)
             + (advice is { Length: > 0 } ? "\n\nAnother reviewer read the application's code against the request and said:\n" + advice
                 + "\nWeigh what it says with what you see; change only what you agree falls short." : "");
@@ -318,7 +319,7 @@ internal static partial class AppProposals
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
-        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, [], Usage: reviewed.Usage, ReviewerUsage: reviewerUse);
+        return new AppProposal(title, reviewed.Html, [], reviewed.Summary, [], Usage: reviewed.Usage, ReviewerUsage: reviewerUse, ReviewerStopped: reviewerStopped);
     }
 
     /// <summary>
@@ -326,16 +327,18 @@ internal static partial class AppProposals
     /// chose (not a tool the writing model may or may not call): it reads the request and the code and says what falls short. A review
     /// that cannot be had (no network, no credit, a refusal) is no review — the application is polished as it would be without one.
     /// </summary>
-    internal static async Task<(string? Advice, Llm.ModelUse? Use)> AdviceAsync(IChatClient reviewer, string question, string html, CancellationToken cancellationToken)
+    internal static async Task<(string? Advice, Llm.ModelUse? Use, string? Stopped)> AdviceAsync(IChatClient reviewer, string question, string html, CancellationToken cancellationToken)
     {
         var usage = new UsageTracker();
-        var advisor = AdvisorTool.Create(reviewer, new AdvisorOptions
+        using var watched = new FinishWatch(reviewer);
+        var advisor = AdvisorTool.Create(watched, new AdvisorOptions
         {
             MaxCalls = 1,
             MaxToolResultChars = int.MaxValue,
             Instructions = ReviewerInstructions,
             Conversation = () => [new ChatMessage(ChatRole.User, "Write a single-file web application for this request: «" + question.Trim() + "»"), new ChatMessage(ChatRole.Assistant, html)],
-            ChatOptions = new ChatOptions { MaxOutputTokens = 1500 },
+            // Room to finish, with the reasoning asked for named: at 1,500 output tokens every review of a measured run was cut at its limit.
+            ChatOptions = new ChatOptions { MaxOutputTokens = 6000, Reasoning = new ReasoningOptions { Effort = ReasoningEffort.Low } },
             UsageTracker = usage,
         });
         try
@@ -343,11 +346,34 @@ internal static partial class AppProposals
             var said = (await advisor.InvokeAsync(new AIFunctionArguments(), cancellationToken).ConfigureAwait(false))?.ToString()?.Trim();
             var spent = usage.GetSessionUsage();
             var use = spent.TotalInputTokens > 0 || spent.TotalOutputTokens > 0 ? new Llm.ModelUse(spent.TotalInputTokens, spent.TotalOutputTokens, spent.TotalCachedInputTokens) : null;
-            return (string.IsNullOrEmpty(said) ? null : said, use);
+            return (string.IsNullOrEmpty(said) ? null : said, use, watched.Finish == ChatFinishReason.Length ? "length" : null);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is not OutOfMemoryException)
         {
-            return (null, null);
+            return (null, null, null);
+        }
+    }
+
+    /// <summary>Keeps why the reviewer's answer ended — a review cut at its output limit says less than it meant to.</summary>
+    private sealed class FinishWatch(IChatClient inner) : DelegatingChatClient(inner)
+    {
+        public ChatFinishReason? Finish { get; private set; }
+
+        public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            var response = await base.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            Finish = response.FinishReason;
+            return response;
+        }
+
+        public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await foreach (var update in base.GetStreamingResponseAsync(messages, options, cancellationToken).ConfigureAwait(false))
+            {
+                if (update.FinishReason is { } finish) Finish = finish;
+                yield return update;
+            }
         }
     }
 

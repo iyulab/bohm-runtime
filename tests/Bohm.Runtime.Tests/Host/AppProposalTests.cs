@@ -547,6 +547,19 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task A_review_cut_at_its_output_limit_says_so()
+    {
+        var reviewer = new FakeChatModel { Reply = "- The list", Finish = ChatFinishReason.Length };
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        var proposal = await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken, reviewer: reviewer);
+
+        Assert.Equal("length", proposal.ReviewerStopped);
+    }
+
+    [Fact]
     public async Task A_review_that_cannot_be_had_leaves_the_polish_as_it_is_without_one()
     {
         var reviewer = new FakeChatModel { Failure = new HttpRequestException("No network.") };
