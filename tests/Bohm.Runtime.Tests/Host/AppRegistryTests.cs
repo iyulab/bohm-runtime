@@ -297,6 +297,29 @@ public sealed class AppRegistryTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task A_lock_being_deleted_by_the_publisher_before_is_waited_for_not_an_error()
+    {
+        var id = await _publisher.AdoptAsync("<p>next</p>");
+        var registry = Path.Combine(_registry, "releasing");
+        Directory.CreateDirectory(registry);
+
+        // The publisher before has closed its lock, but the file is still on its way out (another handle keeps it from
+        // going): Windows refuses to create it again with "access denied" rather than "exists" until it is gone.
+        var path = Path.Combine(registry, "index.lock");
+        var closing = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.DeleteOnClose);
+        var lingering = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        await closing.DisposeAsync();
+
+        var publishing = PublishThroughApiAsync(_publisher, registry, id);
+        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        Assert.False(publishing.IsCompleted, publishing.IsCompleted ? $"answered {(int)(await publishing).StatusCode}" : null);
+        await lingering.DisposeAsync();
+
+        using (var published = await publishing) HttpAssert.Status(HttpStatusCode.OK, published);
+        Assert.Equal(["index.json"], Directory.GetFiles(registry).Select(Path.GetFileName).ToArray());
+    }
+
     private static Task<HttpResponseMessage> PublishThroughApiAsync(RunningHost host, string registry, string id) =>
         host.ControlClient().PostAsync("/__control/registries/publish", new StringContent(JsonSerializer.Serialize(new { registry, id }), Encoding.UTF8));
 

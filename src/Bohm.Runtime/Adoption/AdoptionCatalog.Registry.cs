@@ -227,7 +227,10 @@ public sealed partial class AdoptionCatalog
                 var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
                 return stream;
             }
-            catch (IOException)
+            // A lock its holder has just closed is on its way out, and until it is gone Windows refuses to create it again
+            // with "access denied", not "exists" — the same wait as a held lock. (Reaching here, this computer has already
+            // written the package to the folder, so a denial is not a folder it may not write to.)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 if (attempt >= 200) throw new RegistryRefusedException(RegistryRefusedException.Busy);
                 if (!File.Exists(path)) continue;   // released between the two looks
@@ -240,9 +243,9 @@ public sealed partial class AdoptionCatalog
                         File.Delete(path);
                         continue;
                     }
-                    catch (IOException)
+                    catch (Exception again) when (again is IOException or UnauthorizedAccessException)
                     {
-                        // Still held open: not stale after all.
+                        // Still held open, or already on its way out: not stale after all.
                     }
                 }
 
