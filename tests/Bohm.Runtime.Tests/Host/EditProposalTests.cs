@@ -57,6 +57,21 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_replacement_the_model_wrote_as_text_is_made_like_one_it_called()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new TextContent("""<tool_call>{"name": "replace", "arguments": {"old_text": "<button onclick=\"addTask()\">Add Task</button>", "new_text": "<button onclick=\"addTask()\">할 일 추가</button>"}}</tool_call>"""));
+        _model.Script.Enqueue(new TextContent("I changed the button text."));
+
+        using var response = await ProposeAsync(id, """<button onclick="addTask()">Add Task</button>""", "Add Task", "Change this text to 할 일 추가");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(App.Replace("Add Task</button>", "할 일 추가</button>", StringComparison.Ordinal), proposal.GetProperty("html").GetString());
+        Assert.Equal("I changed the button text.", proposal.GetProperty("summary").GetString());
+    }
+
+    [Fact]
     public async Task The_model_is_shown_the_source_around_the_element_with_line_numbers_not_the_whole_file()
     {
         var lines = Enumerable.Range(1, 300).Select(i => i == 200 ? """<button id="go">Go</button>""" : $"<p>line {i}</p>");

@@ -222,6 +222,7 @@ internal static partial class AppProposals
         // Inside the tool loop, so a round after a refused proposal is asked to think briefly once the model showed it thinks.
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
+            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant
             .ConfigureOptions(options =>
             {
                 options.MaxOutputTokens ??= request.FromInstruction ? MaxInstructionOutputTokens : MaxOutputTokens;

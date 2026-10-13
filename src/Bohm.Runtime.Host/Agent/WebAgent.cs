@@ -170,8 +170,13 @@ internal static class WebAgent
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
         // As for proposals, inside it: no thinking unless asked — read for each request, so thinking seen
         // in one turns it off for the next — and on this computer a bound on each answer.
-        var client = model.AsBuilder()
-            .UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
+        // A call the model wrote as text (an open model whose server's parser missed it) becomes the call it meant —
+        // otherwise the turn ends as answered with the markup for an answer and the work undone. Not on the last
+        // round: it offers no tool to call.
+        var builder = model.AsBuilder()
+            .UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds);
+        if (!last) builder.UseTextToolCallRecovery();
+        var client = builder
             .ConfigureOptions(options =>
             {
                 if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };

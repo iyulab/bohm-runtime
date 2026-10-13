@@ -515,6 +515,7 @@ internal static partial class EditProposals
             [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
+            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant
             .ConfigureOptions(options =>
             {
                 if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
