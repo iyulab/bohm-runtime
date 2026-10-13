@@ -515,12 +515,12 @@ internal static partial class EditProposals
             [new ToolResultGuardMiddleware(SourceIsMaterial.Instance)]);
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = maxRounds)
-            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant
             .ConfigureOptions(options =>
             {
                 if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
                 options.MaxOutputTokens ??= maxOutputTokens;
             })
+            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant — inside the options, so it sees them
             .Build();
         var loader = skills is null ? null : SkillsLoader.Create(skills);
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;

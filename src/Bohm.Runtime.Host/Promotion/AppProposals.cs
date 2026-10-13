@@ -223,12 +223,12 @@ internal static partial class AppProposals
         // Inside the tool loop, so a round after a refused proposal is asked to think briefly once the model showed it thinks.
         var client = model.AsBuilder()
             .UseToolInvocationPipeline(pipeline, invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
-            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant
             .ConfigureOptions(options =>
             {
                 options.MaxOutputTokens ??= request.FromInstruction ? MaxInstructionOutputTokens : MaxOutputTokens;
                 if (ModelLimits.Of(model, limits).Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
             })
+            .UseTextToolCallRecovery()   // a call written as text runs as the call it meant — inside the options, so it sees them
             .Build();
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
         var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;

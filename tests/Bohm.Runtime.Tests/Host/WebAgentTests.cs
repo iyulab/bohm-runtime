@@ -182,6 +182,29 @@ public sealed class WebAgentTests : IDisposable
         Assert.Contains("Call no tool", messages[^1].Text, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("Let me check one more time.<tool_call>\n<function=")]
+    [InlineData("Let me check one more time.<tool_call>\n<function=click>\n<")]
+    [InlineData("Let me check one more time.<tool_call>\n<function=read_page>\n<parameter=tab>\nweb-1\n</parameter>\n</function>\n</tool_call>")]
+    public async Task On_the_last_round_a_call_the_model_writes_anyway_is_left_out_of_the_answer(string reply)
+    {
+        // Told to call no tool, an open model still wrote one, cut off or whole, and the person's answer ended in its markup.
+        _model.Reply = reply;
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """
+            {"last":true,"messages":[
+              {"role":"user","text":"What is the password?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Title: Puzzle\nSolved."}
+            ]}
+            """);
+
+        var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("done", turn.GetProperty("status").GetString());
+        Assert.Equal("Let me check one more time.", turn.GetProperty("text").GetString());
+    }
+
     [Fact]
     public async Task A_page_too_long_for_the_models_context_is_cut_and_the_turn_asked_once_more()
     {
