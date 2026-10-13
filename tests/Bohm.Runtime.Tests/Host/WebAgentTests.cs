@@ -658,6 +658,80 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_real_organization_model_server_opens_each_bare_address_in_its_own_tab_and_says_what_it_is()
+    {
+        var endpoint = Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_ENDPOINT");
+        var name = Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_MODEL");
+        Assert.SkipWhen(string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(name), "BOHM_TEST_COMPANY_ENDPOINT and BOHM_TEST_COMPANY_MODEL are not set.");
+        Assert.True(CompanyModelOptions.TryCreate(endpoint, name, out var company));
+
+        await using var host = await StartWithCompanyServerAsync(company!);
+        await AssertOpensEachAddressAsync(host);
+    }
+
+    /// <summary>
+    /// The person, reading a page in one tab, pastes only addresses: each is opened in a tab of its own — none moved over
+    /// another this question opened (the shell already keeps the tab they were reading) — and the answer says what each is.
+    /// </summary>
+    private static async Task AssertOpensEachAddressAsync(RunningHost host)
+    {
+        var pages = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["harbor-ferries.example"] = "Harbor Ferries — timetable. Ferries to North Island leave at 08:10, 12:30 and 17:45. Tickets are sold at pier 2.",
+            ["green-kitchen.example"] = "Green Kitchen — a vegetarian cookbook site. This week's recipe: lentil soup with lemon and cumin.",
+            ["citylib.example"] = "City Library — opening hours. Monday to Friday 9:00–20:00, Saturday 10:00–17:00, closed on Sunday.",
+        };
+        using var client = host.ControlClient();
+        client.Timeout = TimeSpan.FromMinutes(10);
+        var messages = new List<object> { new { role = "user", text = "https://harbor-ferries.example/\nhttps://green-kitchen.example/\nhttps://citylib.example/" } };
+        JsonElement turn = default;
+        var opened = new List<(string Url, bool Over)>();
+        for (var round = 0; round < 6; round++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/__control/agent/turns") { Content = new StringContent(JsonSerializer.Serialize(new { messages }), Encoding.UTF8, "application/json") };
+            using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+            HttpAssert.Status(HttpStatusCode.OK, response);
+            turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement.Clone();
+            if (turn.GetProperty("status").GetString() == "done") break;
+            var toolCalls = turn.GetProperty("toolCalls").EnumerateArray().ToList();
+            messages.Add(new { role = "assistant", toolCalls = toolCalls.Select(c => new { id = c.GetProperty("id").GetString(), name = c.GetProperty("name").GetString(), arguments = c.GetProperty("arguments") }) });
+            foreach (var call in toolCalls)
+            {
+                var tool = call.GetProperty("name").GetString()!;
+                var arguments = call.GetProperty("arguments");
+                var url = arguments.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                var page = pages.FirstOrDefault(p => url.Contains(p.Key, StringComparison.OrdinalIgnoreCase));
+                var named = arguments.TryGetProperty("tab", out var tab) && tab.ValueKind == JsonValueKind.String ? tab.GetString() ?? "" : "";
+                // As the shell answers (chat.js): a tab this question opened is moved to the address (the page there is lost
+                // from view); the tab the person was reading (t0) is kept and a new tab opens instead, and the result says so.
+                // The runtime puts the page's text in <tab-material> itself.
+                var over = named.Length > 0 && named != "t0" && opened.Count > 0;
+                if (tool == "navigate") opened.Add((url, over));
+                var id = over ? named : $"t{opened.Count}";
+                var text = tool switch
+                {
+                    "navigate" when page.Key is not null => $"https://{page.Key}/\n{page.Value}\n"
+                        + (named == "t0" ? $"[This is tab {id}, a new tab — tab t0 was open before this question, so it stays as the person left it.]" : $"[This is tab {id}.]"),
+                    "list_tabs" => "t0 — Weekly sales report (intranet.example/reports/weekly)",
+                    "read_page" or "snapshot_page" when named == "t0" => "Weekly sales report. Region North: 1,240 units. Region South: 980 units.",
+                    _ => "There is no such tab. Call list_tabs to see them.",
+                };
+                messages.Add(new { role = "tool", toolCallId = call.GetProperty("id").GetString(), text, notice = (string?)null });
+            }
+        }
+
+        var answer = turn.GetProperty("text").GetString() ?? "";
+        TestContext.Current.SendDiagnosticMessage($"model={turn.GetProperty("model")} opened={string.Join(" , ", opened)} answer={answer}");
+        Assert.Equal("done", turn.GetProperty("status").GetString());
+        foreach (var site in pages.Keys)
+            Assert.True(opened.Any(o => o.Url.Contains(site, StringComparison.OrdinalIgnoreCase)), $"{site} not opened: {string.Join(" , ", opened)} — answer: {answer}");
+        Assert.DoesNotContain(opened, o => o.Over);
+        Assert.True(answer.Contains("Ferr", StringComparison.OrdinalIgnoreCase) || answer.Contains("페리", StringComparison.Ordinal) || answer.Contains("여객선", StringComparison.Ordinal) || answer.Contains("배 ", StringComparison.Ordinal), answer);
+        Assert.True(answer.Contains("Kitchen", StringComparison.OrdinalIgnoreCase) || answer.Contains("요리", StringComparison.Ordinal) || answer.Contains("레시피", StringComparison.Ordinal), answer);
+        Assert.True(answer.Contains("Librar", StringComparison.OrdinalIgnoreCase) || answer.Contains("도서관", StringComparison.Ordinal), answer);
+    }
+
+    [Fact]
     public async Task A_real_Anthropic_model_relays_a_robots_refusal_as_a_choice_made_to_protect_the_person()
     {
         var key = Environment.GetEnvironmentVariable("BOHM_TEST_ANTHROPIC_KEY");
