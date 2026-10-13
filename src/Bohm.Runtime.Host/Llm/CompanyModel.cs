@@ -453,10 +453,11 @@ internal sealed partial class CompanyModel : IDisposable
                 .ToList();
             return new(CheckResult.Answers, null, models);
         }
-        catch (System.ClientModel.ClientResultException e) when (e.Status > 0 && !cancellationToken.IsCancellationRequested)
+        catch (Exception e) when (!cancellationToken.IsCancellationRequested && Edit.ProviderRefusal.Of(e) is { Status: > 0 } refused)
         {
-            // The server answered with a refusal — the OpenAI wire client says so with the status it gave.
-            var status = e.Status;
+            // The server answered with a refusal — read the way every other refusal is, whatever the provider layer raised for it.
+            // Before «unreachable»: a listing refusal is an HttpRequestException too (the provider's own exception, with its status).
+            var status = refused.Status;
             return new(status is 401 or 403 ? CheckResult.KeyRefused : status == 404 ? CheckResult.NotFound : CheckResult.Refused, status, []);
         }
         catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
