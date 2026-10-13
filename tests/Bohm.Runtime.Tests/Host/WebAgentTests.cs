@@ -52,6 +52,26 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_call_the_model_wrote_as_text_comes_back_as_the_call_it_meant()
+    {
+        // An open model's server can miss a call in its parser and pass the markup on as text: the turn then ended
+        // as answered, with the markup for an answer and the page never read.
+        // Streamed in pieces that split the markup, as a server streams it.
+        _model.Chunks = ["I need to read the page.<tool", "_call>\n<function=read_page>\n<para", "meter=tab>\nweb-1\n</parameter>\n</function>\n</tool_call>"];
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnAsync(host, """{"messages":[{"role":"user","text":"Summarize tab 1."}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("requires_action", turn.GetProperty("status").GetString());
+        var call = Assert.Single(turn.GetProperty("toolCalls").EnumerateArray());
+        Assert.Equal("read_page", call.GetProperty("name").GetString());
+        Assert.Equal("web-1", call.GetProperty("arguments").GetProperty("tab").GetString());
+        Assert.DoesNotContain("tool_call", turn.GetProperty("text").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_model_is_told_the_date_and_time_on_this_computer()
     {
         // A model on the organization's server or on this computer is told the date by nothing else: asked to enter
