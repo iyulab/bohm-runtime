@@ -170,8 +170,9 @@ internal static partial class AppProposals
 
         If a proposal is refused, the reason comes back; correct it and call propose_app again. Give
         propose_app a summary: one sentence for the person, in the application's language, saying what
-        the application does — and keeps: what it remembers, in the person's words, one short line for each
-        kind of record with its fields ("Books — title, author, shelf"), so they can see it before saving.
+        the application does for them, without listing its fields — and keeps: what it remembers, in the
+        person's words, one short line for each kind of record with its fields ("Books — title, author,
+        shelf"), so they can see it before saving.
 
         How the application runs:
 
@@ -203,7 +204,7 @@ internal static partial class AppProposals
                 return "Accepted.";
             },
             "propose_app",
-            "Proposes the application: its title, the tables it reads, if any (by page and table number, with the header names of the columns to keep), its whole HTML, a summary — one sentence for the person saying what it does — and keeps: what it remembers, one short line per kind of record with its fields, in the person's words.");
+            "Proposes the application: its title, the tables it reads, if any (by page and table number, with the header names of the columns to keep), its whole HTML, a summary — one sentence for the person saying what it does for them, without its fields — and keeps: what it remembers, one short line per kind of record with its fields, in the person's words.");
         // Only what was asked alone can be a thing to do now: an answer and its pages were already done, and are asked to be read again.
         var oneTime = AIFunctionFactory.Create(
             (string reason) =>
