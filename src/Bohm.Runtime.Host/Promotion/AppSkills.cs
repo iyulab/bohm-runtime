@@ -5,7 +5,7 @@ using IronHive.Agent.Skills;
 namespace Bohm.Runtime.Host.Promotion;
 
 /// <summary>
-/// The skills the AI that makes and changes applications may read: the ones shipped beside the runtime, then the
+/// The skills the AI that makes and changes applications may read (and the web question, the person's own — <see cref="UserConfig"/>): the ones shipped beside the runtime, then the
 /// person's own under <c>skills/</c> in the data root — each a folder with its <c>SKILL.md</c>, in the Agent Skills
 /// format as it is (nothing of this runtime's own in it). Any of them can be turned off; the person's own can be
 /// removed by removing the folder. When two have the same name the shipped one is used and the person's is listed
@@ -27,6 +27,14 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
 
     /// <summary>The skills a proposal may read now: both roots, without the ones turned off.</summary>
     public SkillsConfig Config() => new() { Roots = [BuiltinRoot, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)] };
+
+    /// <summary>
+    /// The person's own skills only, turned-off ones left out — for the web question, which the built-in skills (written
+    /// for making applications) have nothing to say to. Both roots are still read, so a skill named like a built-in one
+    /// stays shadowed here as everywhere.
+    /// </summary>
+    public SkillsConfig UserConfig() =>
+        new() { Roots = [BuiltinRoot, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)], Filter = skill => !IsBuiltin(skill.Root) };
 
     /// <summary>
     /// Every skill found, in the order the model sees them, then what could not be used under the person's folder:
