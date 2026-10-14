@@ -112,4 +112,29 @@ public sealed class UsageLogTests : IDisposable
         var reopened = UsageLog.Open(Path.Combine(_dir, "usage.ndjson"));
         Assert.Equal(0, reopened.KeyReports[1].Missing);
     }
+
+    [Fact]
+    public void The_record_can_be_read_while_an_application_is_appending_to_it()
+    {
+        // The open application's log appends while the control plane reads the same file to answer «usage».
+        var path = Path.Combine(_dir, "usage.ndjson");
+        File.WriteAllLines(path, ["""{"date":"2026-09-10","signal":"opened"}"""]);
+        using (var writing = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            Assert.Equal(new DateOnly(2026, 9, 10), Assert.Single(UsageLog.Open(path).Days).Date);
+        }
+    }
+
+    [Fact]
+    public void A_line_is_kept_while_the_record_is_being_read()
+    {
+        var path = Path.Combine(_dir, "usage.ndjson");
+        var log = UsageLog.Open(path);
+        using (var reading = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            log.Record(UsageSignal.Opened);
+        }
+
+        Assert.Single(UsageLog.Open(path).Days);
+    }
 }
