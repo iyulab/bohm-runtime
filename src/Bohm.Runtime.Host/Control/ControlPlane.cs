@@ -90,7 +90,9 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/company-model/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed — at <c>{ endpoint?, key? }</c>'s address (the same rules as setting one), or the server in use when none is given (with the connected key when no key is given): <c>{ result, status, models: [{ id, contextWindow }], unreached }</c> — <c>result</c> as for <c>check</c>; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. 400 when the address is not usable, 404 when none is given and no server is set. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
-/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>GET /__control/agent/mcp?name=</c></term><description>What the caller shows the person before a web question's call to an MCP tool named <c>name</c>: <c>{ server, tool, remote, description }</c> — <c>remote</c> when the server is at an address, <c>description</c> the first line of what the server says the tool does (null when it says nothing). 404 when no connected server has it.</description></item>
+/// <item><term><c>POST /__control/agent/mcp</c></term><description>Makes a web question's call to an MCP tool after the person allowed it, from <c>{ name, arguments }</c>: <c>{ text, failed }</c> — the text parts of what the tool returned (or the result as JSON), <c>failed</c> when the tool reported an error or threw. 404 when no connected server has that tool, 400 for a body not in that shape.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
 /// </list>
@@ -366,6 +368,19 @@ internal static partial class ControlPlane
 
             case ("POST", ["agent", "turns"]):
                 await AgentTurnAsync(context, cancel).ConfigureAwait(false);
+                break;
+
+            case ("GET", ["agent", "mcp"]):
+            {
+                // What the caller shows the person before a web question's call to an MCP tool: whose tool, what the server says it does.
+                var tool = await McpToolNamedAsync(context, context.Request.Query["name"].ToString(), cancel).ConfigureAwait(false);
+                if (tool is null) { response.StatusCode = StatusCodes.Status404NotFound; break; }
+                await WriteAsync(response, new McpToolView(tool.Server, tool.Tool, tool.Remote, Promotion.ProgressApprover.DescriptionOf(tool)), cancel).ConfigureAwait(false);
+                break;
+            }
+
+            case ("POST", ["agent", "mcp"]):
+                await McpCallAsync(context, cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "proposals"]):
@@ -1658,6 +1673,12 @@ internal static partial class ControlPlane
     /// </summary>
     internal sealed record ExtensionsView(string SkillsFolder, List<ExtensionView> Items);
 
+    /// <summary>An MCP tool a web question wants to use: whose, whether the server is at an address, what it says it does.</summary>
+    internal sealed record McpToolView(string Server, string Tool, bool Remote, string? Description);
+
+    /// <summary>What an MCP tool returned to a web question's call, as text — or why it failed (<c>Failed</c>).</summary>
+    internal sealed record McpCallView(string Text, bool Failed);
+
     /// <summary>
     /// One skill or MCP server. For a server (<c>kind</c> <c>"mcp"</c>): <c>state</c> — <c>off</c> · <c>connecting</c> ·
     /// <c>connected</c> (with <c>tools</c>) · <c>failed</c> · <c>refused</c>, <c>detail</c> — its command or address with no secret
@@ -1759,6 +1780,85 @@ internal static partial class ControlPlane
     /// A proposal for the application's current source, from the model on this computer. Nothing is
     /// kept: the proposal is the answer, and taking it in is the caller's next request.
     /// </summary>
+    /// <summary>The connected MCP tool the model knows as <paramref name="name"/> (<c>mcp__&lt;server&gt;__&lt;tool&gt;</c>), or null.</summary>
+    private static async Task<Promotion.McpTool?> McpToolNamedAsync(HttpContext context, string name, CancellationToken cancel) =>
+        string.IsNullOrEmpty(name) ? null
+            : (await context.RequestServices.GetRequiredService<Promotion.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false)).FirstOrDefault(t => t.Function.Name == name);
+
+    /// <summary>
+    /// A web question's call to an MCP tool, made after the caller asked the person: <c>{ name, arguments }</c> → <c>{ text, failed }</c>
+    /// — what the tool returned, as text (or why it failed, with <c>failed</c>). 404 when no connected server has that tool.
+    /// </summary>
+    private static async Task McpCallAsync(HttpContext context, CancellationToken cancel)
+    {
+        var response = context.Response;
+        string name;
+        Dictionary<string, object?> arguments;
+        try
+        {
+            using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
+            name = body.RootElement.GetProperty("name").GetString() ?? "";
+            arguments = body.RootElement.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.Object
+                ? a.EnumerateObject().ToDictionary(p => p.Name, p => (object?)p.Value.Clone())
+                : [];
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var tool = await McpToolNamedAsync(context, name, cancel).ConfigureAwait(false);
+        if (tool is null) { response.StatusCode = StatusCodes.Status404NotFound; return; }
+        string text;
+        var failed = false;
+        try
+        {
+            var result = await tool.Function.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments(arguments), cancel).ConfigureAwait(false);
+            (text, failed) = McpResultText(result);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            (text, failed) = (e.Message, true);
+        }
+
+        await WriteAsync(response, new McpCallView(text, failed), cancel).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// An MCP tool's result as text: the text parts of its <c>content</c> (what the protocol's tools answer), with <c>isError</c> as
+    /// failed — else the result as JSON, non-ASCII kept as it is.
+    /// </summary>
+    internal static (string Text, bool Failed) McpResultText(object? result)
+    {
+        if (result is null) return ("", false);
+        if (result is string s) return (s, false);
+        JsonElement json;
+        try
+        {
+            json = result is JsonElement e ? e : JsonSerializer.SerializeToElement(result, Microsoft.Extensions.AI.AIJsonUtilities.DefaultOptions);
+        }
+        catch (Exception e) when (e is NotSupportedException or InvalidOperationException or JsonException)
+        {
+            return (result.ToString() ?? "", false);
+        }
+
+        if (json.ValueKind == JsonValueKind.String) return (json.GetString() ?? "", false);
+        var failed = json.ValueKind == JsonValueKind.Object && json.TryGetProperty("isError", out var error) && error.ValueKind == JsonValueKind.True;
+        if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+        {
+            var texts = content.EnumerateArray()
+                .Where(part => part.ValueKind == JsonValueKind.Object && part.TryGetProperty("type", out var type) && type.GetString() == "text" && part.TryGetProperty("text", out _))
+                .Select(part => part.GetProperty("text").GetString() ?? "")
+                .ToList();
+            if (texts.Count > 0) return (string.Join('\n', texts), failed);
+        }
+
+        return (JsonSerializer.Serialize(json, RelaxedJson), failed);
+    }
+
+    private static readonly JsonSerializerOptions RelaxedJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
     private static async Task AgentTurnAsync(HttpContext context, CancellationToken cancel)
     {
         var response = context.Response;
@@ -1799,12 +1899,13 @@ internal static partial class ControlPlane
 
         var now = context.RequestServices.GetRequiredService<TimeProvider>().GetLocalNow();
         var skills = context.RequestServices.GetRequiredService<Promotion.AppSkills>().UserConfig();
+        IReadOnlyList<Promotion.McpTool> mcp = chosen.OnThisComputer ? [] : await context.RequestServices.GetRequiredService<Promotion.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false);
         if (!AcceptsLines(context.Request))
         {
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills, mcp).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -1839,7 +1940,7 @@ internal static partial class ControlPlane
                         html = AnswerMarkdown.ToHtml(written.ToString());
                     }
                     return WriteLineAsync(response, new TurnText(text, html), token);
-                }, cancel, last, skills).ConfigureAwait(false);
+                }, cancel, last, skills, mcp).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
@@ -2121,6 +2222,8 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AppView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionsView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpToolView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpCallView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExtensionView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpDocumentView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.McpSaveView))]

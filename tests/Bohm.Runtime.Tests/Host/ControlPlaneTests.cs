@@ -307,6 +307,38 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_web_questions_call_to_an_mcp_tool_is_described_for_the_person_then_made_by_the_runtime()
+    {
+        File.WriteAllText(Path.Combine(_host.DataRoot, "mcp.json"), JsonSerializer.Serialize(new { mcpServers = new { stub = new { command = McpStubPath() } } }));
+        using var client = _host.ControlClient();
+
+        // The server connects on the first look; a look while it connects waits a little, so try for a while.
+        HttpResponseMessage? described = null;
+        for (var i = 0; i < 20; i++)
+        {
+            described?.Dispose();
+            described = await client.GetAsync("/__control/agent/mcp?name=mcp__stub__echo");
+            if (described.StatusCode == HttpStatusCode.OK) break;
+            await Task.Delay(500);
+        }
+        HttpAssert.Status(HttpStatusCode.OK, described!);
+        var info = JsonDocument.Parse(await described!.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(("stub", "echo", false, "Says back the text it is given."),
+            (info.GetProperty("server").GetString(), info.GetProperty("tool").GetString(), info.GetProperty("remote").GetBoolean(), info.GetProperty("description").GetString()));
+
+        using var called = await client.PostAsync("/__control/agent/mcp", new StringContent("""{"name":"mcp__stub__echo","arguments":{"text":"안녕"}}"""));
+        HttpAssert.Status(HttpStatusCode.OK, called);
+        var result = JsonDocument.Parse(await called.Content.ReadAsStringAsync()).RootElement;
+        Assert.Contains("안녕", result.GetProperty("text").GetString(), StringComparison.Ordinal);
+        Assert.False(result.GetProperty("failed").GetBoolean());
+
+        using (var unknown = await client.GetAsync("/__control/agent/mcp?name=mcp__stub__nothing")) HttpAssert.Status(HttpStatusCode.NotFound, unknown);
+        using (var notMcp = await client.PostAsync("/__control/agent/mcp", new StringContent("""{"name":"read_page","arguments":{}}"""))) HttpAssert.Status(HttpStatusCode.NotFound, notMcp);
+        using (var bad = await client.PostAsync("/__control/agent/mcp", new StringContent("not json"))) HttpAssert.Status(HttpStatusCode.BadRequest, bad);
+        described!.Dispose();
+    }
+
+    [Fact]
     public async Task With_mcp_turned_off_by_policy_no_server_is_listed_or_offered_and_nothing_can_change_the_document()
     {
         await using var host = await RunningHost.StartAsync(configure: o => o with { McpAllowed = false });

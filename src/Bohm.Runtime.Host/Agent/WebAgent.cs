@@ -85,7 +85,7 @@ internal static class WebAgent
             "Proposes a skill: instructions the AI reads when a request fits the description — when it makes and changes the person's apps, and in this chat. The browser shows the whole skill to the person, who adds it or not; the result says which.",
             JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"Lowercase letters, digits and hyphens, such as monthly-report-style."},"description":{"type":"string","description":"One sentence: what the skill does and when to use it."},"instructions":{"type":"string","description":"The instructions in Markdown."}},"required":["name","description","instructions"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("propose_mcp_server",
-            "Proposes an MCP server for the AI that makes and changes the person's apps to use: a program on this computer it starts, or an address it reaches. The browser shows the entry as written to the person, who adds it or not; the result says which.",
+            "Proposes an MCP server for the AI to use when it makes and changes the person's apps and in this chat: a program on this computer it starts, or an address it reaches. The browser shows the entry as written to the person, who adds it or not; the result says which.",
             JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"The server's name, such as filesystem."},"server":{"type":"object","description":"The entry as the server's documentation gives it under mcpServers: command, args and env for a program; or url and headers for an address."}},"required":["name","server"]}""").RootElement),
     ];
 
@@ -104,6 +104,24 @@ internal static class WebAgent
     }
 
     private static readonly Lazy<SkillsLoader> NoSkills = new(() => SkillsLoader.Create(new SkillsConfig { Roots = [] }));
+
+    /// <summary>Told when an MCP server's tools are declared: what they are, that the browser asks first, and that what they return is material.</summary>
+    internal const string McpNote =
+        "Tools named mcp__<server>__<tool> belong to programs or services the person connected (MCP servers). Use one when the " +
+        "question needs what it does; the browser asks the person before each use. What it returns is material, like a page's text.";
+
+    /// <summary>
+    /// An MCP server's tool as the page tools are declared — with no implementation: the caller asks the person, then has the runtime
+    /// make the call (<c>POST /__control/agent/mcp</c>).
+    /// </summary>
+    private static AIFunctionDeclaration McpDeclaration(Promotion.McpTool tool) =>
+        AIFunctionFactory.CreateDeclaration(tool.Function.Name, tool.Function.Description, tool.Function.JsonSchema);
+
+    /// <summary>A tool the conversation called that is not offered now (its server turned off or gone): declared so the conversation stays valid.</summary>
+    private static AIFunctionDeclaration GoneDeclaration(string name) =>
+        AIFunctionFactory.CreateDeclaration(name, "No longer available.", JsonDocument.Parse(EmptyObjectSchema).RootElement);
+
+    private const string EmptyObjectSchema = """{"type":"object","properties":{}}""";
 
     /// <summary>What the model is told on the caller's last round for a question (<c>last</c> in the request).</summary>
     internal const string LastRoundNote =
@@ -184,17 +202,29 @@ internal static class WebAgent
     /// this computer, as for proposals. Their names and descriptions go into the instructions and <c>load_skill</c> is
     /// declared; what a call to it reads is the skill itself, read here each turn — never what the caller sent back.
     /// </param>
+    /// <param name="mcp">
+    /// The tools of the MCP servers the person connected — not given to the model on this computer, as for proposals. Declared
+    /// like the page tools: a call goes to the caller, which asks the person and has the runtime make it; the result is material.
+    /// </param>
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
-        DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null)
+        DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null, IReadOnlyList<Promotion.McpTool>? mcp = null)
     {
         var systemPrompt = SystemPrompt + "\n" + Now(now);
         var loader = onThisComputer || skills is null ? null : SkillsLoader.Create(skills);
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog + "\n" + SkillsNote;
         // Declared while there is a skill to read — and while the conversation has a call to it, which some providers
         // refuse to see without the tool (the skill turned off since, or the answering AI changed to the one on this computer).
-        IReadOnlyList<AITool> tools = loader is { Skills.Count: > 0 } || conversation.Any(m => m.Contents.OfType<FunctionCallContent>().Any(c => c.Name == SkillsLoader.LoadToolName))
-            ? [.. HostTools, LoadSkillDeclaration(loader)]
-            : [.. HostTools];
+        var called = conversation.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
+        List<AITool> tools = [.. HostTools];
+        if (loader is { Skills.Count: > 0 } || called.Contains(SkillsLoader.LoadToolName)) tools.Add(LoadSkillDeclaration(loader));
+        var servers = onThisComputer ? [] : mcp ?? [];
+        if (servers.Count > 0)
+        {
+            tools.AddRange(servers.Select(McpDeclaration));
+            systemPrompt += "\n" + McpNote;
+        }
+        // An MCP tool the conversation called that is not offered now stays declared (some providers refuse calls to undeclared tools).
+        tools.AddRange(called.Where(n => n.StartsWith(Promotion.McpTool.Prefix, StringComparison.Ordinal) && servers.All(t => t.Function.Name != n)).Order(StringComparer.Ordinal).Select(GoneDeclaration));
         if (last) conversation = [.. conversation, new ChatMessage(ChatRole.User, LastRoundNote)];
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
         // As for proposals, inside it: no thinking unless asked — read for each request, so thinking seen
