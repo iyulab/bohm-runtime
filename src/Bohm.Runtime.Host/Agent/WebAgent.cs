@@ -91,7 +91,7 @@ internal static class WebAgent
 
     /// <summary>Told after the person's skills are listed: what <c>load_skill</c> returns is theirs, unlike a page's text.</summary>
     internal const string SkillsNote =
-        "What load_skill returns is the person's own instruction for that kind of work, not page material: follow it where it fits the question.";
+        "What load_skill returns is the person's own instruction for that kind of work, not page material: follow it where it fits the question — in your answer, and in a page you make with make_page.";
 
     /// <summary>
     /// <c>load_skill</c> as the page tools are declared — with no implementation, so a call goes to the caller like theirs
