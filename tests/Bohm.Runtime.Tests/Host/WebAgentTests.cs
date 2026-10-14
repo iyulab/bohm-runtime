@@ -747,19 +747,21 @@ public sealed class WebAgentTests : IDisposable
                 var named = arguments.TryGetProperty("tab", out var tab) && tab.ValueKind == JsonValueKind.String ? tab.GetString() ?? "" : "";
                 // As the shell answers (chat.js): a tab this question opened is moved to the address (the page there is lost
                 // from view); the tab the person was reading (t0) is kept and a new tab opens instead, and the result says so.
-                // The runtime puts the page's text in <tab-material> itself.
+                // The runtime puts the page's text in <tab-material> itself; which tab it is — the shell's own word — goes in the notice.
                 var over = named.Length > 0 && named != "t0" && opened.Count > 0;
                 if (tool == "navigate") opened.Add((url, over));
                 var id = over ? named : $"t{opened.Count}";
+                var notice = tool == "navigate" && page.Key is not null
+                    ? named == "t0" ? $"This is tab {id}, a new tab — tab t0 was open before this question, so it stays as the person left it." : $"This is tab {id}."
+                    : null;
                 var text = tool switch
                 {
-                    "navigate" when page.Key is not null => $"https://{page.Key}/\n{page.Value}\n"
-                        + (named == "t0" ? $"[This is tab {id}, a new tab — tab t0 was open before this question, so it stays as the person left it.]" : $"[This is tab {id}.]"),
+                    "navigate" when page.Key is not null => $"https://{page.Key}/\n{page.Value}",
                     "list_tabs" => "t0 — Weekly sales report (intranet.example/reports/weekly)",
                     "read_page" or "snapshot_page" when named == "t0" => "Weekly sales report. Region North: 1,240 units. Region South: 980 units.",
                     _ => "There is no such tab. Call list_tabs to see them.",
                 };
-                messages.Add(new { role = "tool", toolCallId = call.GetProperty("id").GetString(), text, notice = (string?)null });
+                messages.Add(new { role = "tool", toolCallId = call.GetProperty("id").GetString(), text, notice });
             }
         }
 
