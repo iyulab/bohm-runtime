@@ -110,8 +110,8 @@ Signing once covers your later contributions for as long as this version of the 
 current. If the agreement is revised, the new version gets its own directory (`v2/`) and asks for a
 fresh signature — old signatures are not silently carried over to terms you never read.
 
-Members of the iyulab organization are not asked to sign: their contributions are already made
-under iyulab's copyright, so there is nothing left to license.
+Members of the iyulab organization sign too. Membership does not tell who holds the copyright in a
+contribution, and where iyulab already holds it, signing costs nothing. Only bots are exempt.
 
 ## Contributing on behalf of an organization
 
