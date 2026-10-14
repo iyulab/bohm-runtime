@@ -60,7 +60,7 @@ public sealed class UsageLog
         var log = new UsageLog(path, clock ?? TimeProvider.System);
         if (!File.Exists(path)) return log;
 
-        foreach (var line in File.ReadLines(path))
+        foreach (var line in ReadLines(path))
         {
             try
             {
@@ -268,11 +268,27 @@ public sealed class UsageLog
         lock (_lock) return _loadErrors.GetValueOrDefault(date);
     }
 
+    /// <summary>
+    /// The file is shared: the open application appends to it while the control plane, or another log of the same
+    /// application, reads or appends. Opening it for reading or appending lets the others in (a reader that shared
+    /// only reading was refused while a line was being written, and the «usage» request failed); a line cut short
+    /// mid-write is skipped when read.
+    /// </summary>
+    private const FileShare Shared = FileShare.ReadWrite | FileShare.Delete;
+
+    private static IEnumerable<string> ReadLines(string path)
+    {
+        using var reader = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, Shared), Utf8NoBom);
+        while (reader.ReadLine() is { } line) yield return line;
+    }
+
     private void Append(string line)
     {
         try
         {
-            File.AppendAllText(_path, line + "\n", Utf8NoBom);
+            // One write per line, appended: lines from two logs do not interleave.
+            using var file = new FileStream(_path, FileMode.Append, FileAccess.Write, Shared);
+            file.Write(Utf8NoBom.GetBytes(line + "\n"));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
