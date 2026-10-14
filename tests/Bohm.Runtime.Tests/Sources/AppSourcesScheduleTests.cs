@@ -130,12 +130,15 @@ public sealed class AppSourcesScheduleTests : IDisposable
         await sources.ScheduleAsync("prices", Five, Cancel);
 
         var waits = new List<TimeSpan>();
+        var began = _clock.GetUtcNow();
         for (var i = 0; i < 6; i++)
         {
             var failed = await sources.ReportFailureAsync("prices", SourceFailure.Transient, "timeout", cancellationToken: Cancel);
             waits.Add(failed!.Watch!.NextAt - _clock.GetUtcNow());
             Assert.False(failed.Watch.Halted);
             Assert.Equal(i + 1, failed.Watch.Failures);
+            Assert.Equal(began, failed.Watch.FailingSince);   // when the failures in a row began, not the latest
+            _clock.Advance(waits[^1]);
         }
 
         Assert.Equal([5, 10, 20, 40, 60, 60], waits.Select(w => w.TotalMinutes));
@@ -143,6 +146,7 @@ public sealed class AppSourcesScheduleTests : IDisposable
         var source = Assert.Single(await sources.ListAsync(Cancel));
         Assert.Equal(0, source.Watch!.Failures);
         Assert.Null(source.Watch.LastFailure);
+        Assert.Null(source.Watch.FailingSince);
     }
 
     [Fact]
