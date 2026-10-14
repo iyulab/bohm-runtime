@@ -27,9 +27,8 @@ jobs:
       - name: Check for a CLA signature
         env:
           LOGIN: ${{ github.event.pull_request.user.login }}
-          ASSOCIATION: ${{ github.event.pull_request.author_association }}
           USER_TYPE: ${{ github.event.pull_request.user.type }}
         # Invoked through `bash` rather than executed directly: the repository is developed on
         # Windows, where git does not track the executable bit, so relying on it would fail every
-        # pull request — including the exempt ones — with "Permission denied".
+        # pull request with "Permission denied".
         run: bash .github/scripts/check-cla.sh

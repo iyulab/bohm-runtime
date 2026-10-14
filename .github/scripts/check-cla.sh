@@ -16,7 +16,6 @@
 set -euo pipefail
 
 login=${LOGIN:?LOGIN is required}
-association=${ASSOCIATION:-NONE}
 user_type=${USER_TYPE:-User}
 version=${CLA_VERSION:-v1}
 
@@ -27,15 +26,9 @@ if [ "$user_type" = "Bot" ]; then
   exit 0
 fi
 
-# Organization members contribute under iyulab's own copyright, so there is no separate grant to
-# make. This encodes an assumption about how membership and copyright line up; it is stated in
-# CLA.md so contributors can see the rule they are being measured against.
-case "$association" in
-  OWNER | MEMBER)
-    echo "Author $login is an organization member ($association) — no CLA required."
-    exit 0
-    ;;
-esac
+# Organization members sign like everyone else. Membership says nothing about who holds the
+# copyright in a contribution — staff of a partner company can be members — and a signature costs
+# nothing where iyulab already holds it.
 
 # GitHub logins are case-insensitive, the runner's filesystem is not: normalize before looking.
 slug=$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')

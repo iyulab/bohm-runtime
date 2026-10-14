@@ -31,7 +31,7 @@ be documented once they stabilise. Until then, treat everything here as subject 
 
 Contributions are accepted under the Individual Contributor License Agreement in [CLA.md](CLA.md),
 which the dual license requires. A pull request is checked for a signature on record; the
-"Signing" section of that file describes how to add one. Organization members and bots are exempt.
+"Signing" section of that file describes how to add one. Only bots are exempt.
 
 ## License
 
