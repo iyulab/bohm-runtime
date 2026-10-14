@@ -69,10 +69,11 @@ public enum SourceFailure
 /// The state of a source read on a schedule: when it is next due, when it was last read without a problem
 /// (<paramref name="CheckedAt"/> — changed or not), the failures since, the last one and its reason, and whether
 /// it stopped (<paramref name="Halted"/>) until the person reads it once. <paramref name="RowsHash"/> recognizes
-/// the rows last kept, so a reading that finds the same rows is not kept again.
+/// the rows last kept, so a reading that finds the same rows is not kept again. <paramref name="FailingSince"/> is
+/// when the failures in a row began — so the person can be told once when a source has not been read for long.
 /// </summary>
 public sealed record SourceWatch(DateTimeOffset NextAt, DateTimeOffset? CheckedAt = null, int Failures = 0, SourceFailure? LastFailure = null,
-    string? Reason = null, bool Halted = false, string? RowsHash = null);
+    string? Reason = null, bool Halted = false, string? RowsHash = null, DateTimeOffset? FailingSince = null);
 
 /// <summary>What was read from a source at one time: the page it came from and its rows, each a cell per column name.</summary>
 public sealed record SourceReading(DateTimeOffset ReadAt, string Source, IReadOnlyList<IReadOnlyDictionary<string, string>> Rows);
@@ -351,7 +352,11 @@ public sealed partial class AppSources : IDisposable
                 : every;
             sources[at] = declared with
             {
-                Watch = watch with { NextAt = now + Max(wait, MinimumEvery), Failures = failures, LastFailure = failure, Reason = reason, Halted = halted },
+                Watch = watch with
+                {
+                    NextAt = now + Max(wait, MinimumEvery), Failures = failures, LastFailure = failure, Reason = reason, Halted = halted,
+                    FailingSince = watch.FailingSince ?? now,
+                },
             };
             await WriteRulesAsync(sources, cancellationToken).ConfigureAwait(false);
             return sources[at];
