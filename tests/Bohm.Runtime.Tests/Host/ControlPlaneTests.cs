@@ -742,6 +742,16 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.Forbidden, resent);
         HttpAssert.Status(HttpStatusCode.Forbidden, late);
         Assert.Equal(1, await LossSuspectedAsync(id));
+
+        // The refused write is kept beside the application as it was made — only the one never applied — and the
+        // application's status says so without quoting it.
+        var kept = Assert.Single(await File.ReadAllLinesAsync(Path.Combine(_host.DataRoot, "adopted", id, "refused-writes.ndjson")));
+        var line = JsonDocument.Parse(kept).RootElement;
+        Assert.Equal("set", line.GetProperty("op").GetString());
+        Assert.Equal("closes", line.GetProperty("key").GetString());
+        Assert.Equal("1", line.GetProperty("value").GetString());
+        var status = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/status")).RootElement;
+        Assert.Contains(status.GetProperty("recentErrors").EnumerateArray(), e => e.GetString()!.Contains("refused-writes.ndjson", StringComparison.Ordinal));
     }
 
     [Fact]
