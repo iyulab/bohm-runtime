@@ -720,7 +720,7 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(id, app.GetProperty("id").GetString());
         Assert.Equal(2, app.GetProperty("revision").GetInt32());
         Assert.True(app.GetProperty("canRevert").GetBoolean());
-        HttpAssert.Status(HttpStatusCode.Forbidden, stale);
+        HttpAssert.Status(HttpStatusCode.Conflict, stale);   // «retired» — the page is told its code was replaced
         Assert.Equal("""{"loan":"3"}""", newPage.Items);
         Assert.Equal(Encoding.UTF8.GetBytes(Page + "<button>반납</button>"), await _host.Catalog.ReadHtmlAsync(id));
         Assert.Contains("\"event\":\"revised\"", await File.ReadAllTextAsync(Path.Combine(_host.DataRoot, "adopted", id, "usage.ndjson")), StringComparison.Ordinal);
@@ -739,8 +739,13 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(0, await LossSuspectedAsync(id));
         using var late = await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"},{"seq":2,"op":"set","key":"closes","value":"1"}]}""");
 
-        HttpAssert.Status(HttpStatusCode.Forbidden, resent);
-        HttpAssert.Status(HttpStatusCode.Forbidden, late);
+        // The page is told its code was replaced (409 «retired»), so its script stops resending; a resend that still
+        // comes is not handed over again.
+        using var again = await _host.PostStorageAsync(id, oldPage, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"loan","value":"3"},{"seq":2,"op":"set","key":"closes","value":"1"}]}""");
+        HttpAssert.Status(HttpStatusCode.Conflict, resent);
+        HttpAssert.Status(HttpStatusCode.Conflict, late);
+        HttpAssert.Status(HttpStatusCode.Conflict, again);
+        Assert.True(JsonDocument.Parse(await late.Content.ReadAsStringAsync()).RootElement.GetProperty("retired").GetBoolean());
         Assert.Equal(1, await LossSuspectedAsync(id));
 
         // The refused write is kept beside the application as it was made — only the one never applied — and the
