@@ -138,7 +138,16 @@ internal static partial class AssetServing
 /// </remarks>
 internal sealed partial class AssetFetcher(IServiceProvider services, IHostApplicationLifetime lifetime, ILogger<AssetFetcher> logger) : IAsyncDisposable
 {
+    /// <summary>How often one application's files that could not be cached are tried again, at most.</summary>
+    public static readonly TimeSpan RetryEvery = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long changes of the network are gathered before trying again — an adapter coming up reports several.</summary>
+    private static readonly TimeSpan NetworkSettle = TimeSpan.FromSeconds(10);
+
     private readonly ConcurrentDictionary<Task, byte> _background = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _retried = new(StringComparer.Ordinal);
+    private int _sweepPending;
+    private bool _watching;
 
     /// <summary>Starts fetching in the background; failures are logged, never thrown.</summary>
     public void Start(string appId)
@@ -164,8 +173,104 @@ internal sealed partial class AssetFetcher(IServiceProvider services, IHostAppli
         task.ContinueWith(t => _background.TryRemove(t, out _), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    /// <summary>Waits for background fetches, which the host's stopping has already cancelled.</summary>
-    public async ValueTask DisposeAsync() => await Task.WhenAll(_background.Keys).ConfigureAwait(false);
+    /// <summary>
+    /// Starts fetching again when <paramref name="app"/> has files that could not be cached because the
+    /// network or the server was in the way (an application added with no internet) — at most once per
+    /// <see cref="RetryEvery"/>. Returns whether it started.
+    /// </summary>
+    public bool RetryIfMissing(string appId, OpenApp app)
+    {
+        if (!app.Assets.Failures.Any(f => f.IsTransient)) return false;
+        var now = services.GetRequiredService<TimeProvider>().GetUtcNow();
+        var due = true;
+        _retried.AddOrUpdate(appId, now, (_, last) => (due = now - last >= RetryEvery) ? now : last);
+        if (!due) return false;
+        LogRetrying(logger, appId);
+        Start(appId);
+        return true;
+    }
+
+    /// <summary>
+    /// Tries again, for every application, the files that could not be cached because the network was in
+    /// the way. Returns how many applications it started fetching for.
+    /// </summary>
+    public async Task<int> RetryAllAsync(CancellationToken cancellationToken)
+    {
+        var catalog = services.GetRequiredService<AdoptionCatalog>();
+        var started = 0;
+        foreach (var record in await catalog.ListAsync(cancellationToken).ConfigureAwait(false))
+        {
+            // The cache's index is read from disk first, so an application with nothing to try again is not opened.
+            AssetCache cache;
+            try { cache = catalog.OpenAssets(record.Id); }
+            catch (KeyNotFoundException) { continue; }
+            if (!cache.Failures.Any(f => f.IsTransient)) continue;
+            OpenApp app;
+            try { app = await services.GetRequiredService<OpenApps>().GetAsync(record.Id).ConfigureAwait(false); }
+            catch (KeyNotFoundException) { continue; } // removed meanwhile
+            if (RetryIfMissing(record.Id, app)) started++;
+        }
+
+        return started;
+    }
+
+    /// <summary>
+    /// Tries again when the network comes back — an application added with no internet gets its code
+    /// cached without anyone asking. Changes are gathered for a few seconds first.
+    /// </summary>
+    public void WatchNetwork()
+    {
+        if (_watching) return;
+        _watching = true;
+        System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += OnAvailabilityChanged;
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnAddressChanged;
+    }
+
+    private void OnAvailabilityChanged(object? sender, System.Net.NetworkInformation.NetworkAvailabilityEventArgs e)
+    {
+        if (e.IsAvailable) ScheduleSweep();
+    }
+
+    private void OnAddressChanged(object? sender, EventArgs e) => ScheduleSweep();
+
+    private void ScheduleSweep()
+    {
+        if (Interlocked.Exchange(ref _sweepPending, 1) == 1) return;
+        var stopping = lifetime.ApplicationStopping;
+        var task = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(NetworkSettle, services.GetRequiredService<TimeProvider>(), stopping).ConfigureAwait(false);
+                Interlocked.Exchange(ref _sweepPending, 0);
+                var started = await RetryAllAsync(stopping).ConfigureAwait(false);
+                if (started > 0) LogNetworkBack(logger, started);
+            }
+            catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+            {
+                // The host is stopping.
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ObjectDisposedException)
+            {
+                Interlocked.Exchange(ref _sweepPending, 0);
+                LogFetchFailed(logger, exception, "(network came back)");
+            }
+        }, CancellationToken.None);
+        _background.TryAdd(task, 0);
+        task.ContinueWith(t => _background.TryRemove(t, out _), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    /// <summary>Stops watching the network, then waits for background fetches, which the host's stopping has already cancelled.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_watching)
+        {
+            System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
+            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnAddressChanged;
+        }
+
+        await Task.WhenAll(_background.Keys).ConfigureAwait(false);
+    }
 
     /// <summary>Fetches the code an application refers to. One fetch at a time per application.</summary>
     public async Task<(int Cached, int Failed)> FetchAsync(string appId, CancellationToken cancellationToken)
@@ -195,6 +300,12 @@ internal sealed partial class AssetFetcher(IServiceProvider services, IHostAppli
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Caching code for {AppId} failed.")]
     private static partial void LogFetchFailed(ILogger logger, Exception exception, string appId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Trying again to cache code for {AppId}: some files could not be reached before.")]
+    private static partial void LogRetrying(ILogger logger, string appId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "The network came back: caching code again for {Count} application(s).")]
+    private static partial void LogNetworkBack(ILogger logger, int count);
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]

@@ -207,6 +207,9 @@ internal static class AdoptedAppServing
         if (HttpMethods.IsGet(context.Request.Method))
         {
             app.Usage.Record(UsageSignal.Opened);
+            // Opened again once the internet is back (a network that came back without telling): code it could not cache is tried again.
+            if (context.RequestServices.GetRequiredService<RuntimeHostOptions>().FetchAssetsOnAdoption)
+                context.RequestServices.GetRequiredService<AssetFetcher>().RetryIfMissing(appId, app);
             // An unsaved result opened again is no longer left: its retention starts over when it is next left.
             if (record.Unsaved && record.LeftAt is not null)
                 await catalog.SetLeftAsync(appId, left: false, context.RequestAborted).ConfigureAwait(false);

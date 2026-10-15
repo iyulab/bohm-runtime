@@ -18,6 +18,9 @@ public sealed class FakeCdn : HttpMessageHandler
 
     public List<string> Requested { get; } = [];
 
+    /// <summary>While set, every request fails the way an unreachable network does (an <see cref="HttpRequestException"/>).</summary>
+    public bool Offline { get; set; }
+
     /// <summary>The most requests that were ever being answered at once.</summary>
     public int MostAtOnce { get; private set; }
 
@@ -63,6 +66,7 @@ public sealed class FakeCdn : HttpMessageHandler
         try
         {
             if (_delays.TryGetValue(host, out var delay)) await Task.Delay(delay, cancellationToken);
+            if (Offline) throw new HttpRequestException("No route to host.");
             return Answer(request);
         }
         finally

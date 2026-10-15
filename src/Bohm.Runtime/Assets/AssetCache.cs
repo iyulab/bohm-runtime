@@ -18,7 +18,29 @@ namespace Bohm.Runtime.Assets;
 public sealed record CachedAsset(string Url, string FinalUrl, string Sha256, string ContentType, long Size, DateTimeOffset FetchedAt);
 
 /// <summary>A referenced file that could not be cached, and why.</summary>
-public sealed record AssetFailure(string Url, string Reason);
+public sealed record AssetFailure(string Url, string Reason)
+{
+    /// <summary>
+    /// Whether trying again later may cache it: the network or the server was in the way (unreachable,
+    /// timed out, out of time, or the server answered 408, 429 or 5xx) — not the file or the address itself.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsTransient =>
+        Reason is AssetFailureReasons.CouldNotBeReached or AssetFailureReasons.TimedOut or AssetFailureReasons.BudgetRanOut
+        || (Reason.StartsWith(AssetFailureReasons.ServerAnswered, StringComparison.Ordinal)
+            && int.TryParse(Reason.AsSpan(AssetFailureReasons.ServerAnswered.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var status)
+            && status is 408 or 429 or >= 500);
+}
+
+/// <summary>The reasons a file could not be cached that depend on the network or the server, as <see cref="AssetFailure.Reason"/> spells them.</summary>
+public static class AssetFailureReasons
+{
+    public const string CouldNotBeReached = "could not be reached";
+    public const string TimedOut = "timed out";
+    public const string BudgetRanOut = "the time budget ran out";
+    /// <summary>Followed by the status code: <c>the server answered 503</c>.</summary>
+    public const string ServerAnswered = "the server answered ";
+}
 
 /// <summary>Limits on what one application's cache may hold.</summary>
 public sealed record AssetCacheLimits
@@ -261,7 +283,7 @@ public sealed class AssetCache
                     return (known, await File.ReadAllBytesAsync(knownPath, cancellationToken).ConfigureAwait(false), null);
             }
 
-            if (budget.IsCancellationRequested) return (null, null, BudgetRanOut);
+            if (budget.IsCancellationRequested) return (null, null, AssetFailureReasons.BudgetRanOut);
             if (Interlocked.Increment(ref requests) > limits.MaxRequests) return (null, null, "too many requests for one fetch");
 
             SemaphoreSlim host;
@@ -281,7 +303,7 @@ public sealed class AssetCache
                     {
                         var (fetched, failure) = await FetchOneAsync(http, reference, clock, limits, network.Token).ConfigureAwait(false);
                         if (fetched is { } found) return (found.Item1, found.Item2, null);
-                        return (null, null, budget.IsCancellationRequested ? BudgetRanOut : failure);
+                        return (null, null, budget.IsCancellationRequested ? AssetFailureReasons.BudgetRanOut : failure);
                     }
                     finally
                     {
@@ -295,12 +317,10 @@ public sealed class AssetCache
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                return (null, null, BudgetRanOut);
+                return (null, null, AssetFailureReasons.BudgetRanOut);
             }
         }
     }
-
-    private const string BudgetRanOut = "the time budget ran out";
 
     /// <summary>
     /// Whether <paramref name="url"/> may be requested on an application's behalf: HTTPS to a public
@@ -342,7 +362,7 @@ public sealed class AssetCache
         {
             using var response = await http.GetAsync(reference.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (response.RequestMessage?.RequestUri is { } landed && !IsPublicHttps(landed)) return (null, "redirected to a non-public address");
-            if (!response.IsSuccessStatusCode) return (null, $"the server answered {(int)response.StatusCode}");
+            if (!response.IsSuccessStatusCode) return (null, $"{AssetFailureReasons.ServerAnswered}{(int)response.StatusCode}");
 
             var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
             if (!IsCode(contentType, reference.Kind)) return (null, $"not code ({contentType})");
@@ -365,7 +385,7 @@ public sealed class AssetCache
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException)
         {
-            return (null, exception is TaskCanceledException ? "timed out" : "could not be reached");
+            return (null, exception is TaskCanceledException ? AssetFailureReasons.TimedOut : AssetFailureReasons.CouldNotBeReached);
         }
     }
 
