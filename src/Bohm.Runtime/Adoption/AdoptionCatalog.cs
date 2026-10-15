@@ -83,13 +83,13 @@ public sealed partial class AdoptionCatalog
     /// <param name="unsaved">A result made for the person, kept only if they keep it (<see cref="AdoptedApp.Unsaved"/>).</param>
     /// <param name="title">The name of an application the runtime made (<see cref="AdoptedApp.Title"/>).</param>
     public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, string? title = null,
-        CancellationToken cancellationToken = default)
+        string? generatedBy = null, CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
             Guid.CreateVersion7(now).ToString("n"),
             now,
-            new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length),
+            new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length, ModelName(generatedBy)),
             Protection: "none",
             Unsaved: unsaved,
             Title: title);
@@ -580,9 +580,16 @@ public sealed partial class AdoptionCatalog
     /// Trimmed and cut at <see cref="MaxRequestLength"/> characters; blank counts as none.
     /// </param>
     /// <exception cref="InvalidOperationException">The bytes are the revision already in use.</exception>
+    /// <param name="generatedBy">The AI model that wrote this revision's code, when one did (<see cref="AdoptionSource.GeneratedBy"/>).</param>
     public Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage, string? request = null,
-        CancellationToken cancellationToken = default) =>
-        ReviseAsync(id, html, originalPath, storage, Note(request), null, cancellationToken);
+        string? generatedBy = null, CancellationToken cancellationToken = default) =>
+        ReviseAsync(id, html, originalPath, storage, Note(request), null, ModelName(generatedBy), cancellationToken);
+
+    /// <summary>The most characters of a model's name a source keeps.</summary>
+    public const int MaxModelNameLength = 200;
+
+    private static string? ModelName(string? model) =>
+        model?.Trim() is { Length: > 0 } name ? name.Length > MaxModelNameLength ? name[..MaxModelNameLength] : name : null;
 
     /// <summary>The most characters of a person's request a revision keeps.</summary>
     public const int MaxRequestLength = 2000;
@@ -610,16 +617,19 @@ public sealed partial class AdoptionCatalog
         if (!File.Exists(path) || (revision > 1 && await ReadRevisionAsync(RevisionFolder(id, revision), cancellationToken).ConfigureAwait(false) is null))
             throw new KeyNotFoundException($"Application '{id}' has no revision {revision}.");
         var html = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        return await ReviseAsync(id, html, null, storage, null, revision, cancellationToken).ConfigureAwait(false);
+        // The code goes back, and so does what wrote it.
+        var wrote = revision == 1 && !Directory.Exists(RevisionFolder(id, 1)) ? app.Source.GeneratedBy
+            : (await ReadRevisionAsync(RevisionFolder(id, revision), cancellationToken).ConfigureAwait(false))?.Source.GeneratedBy;
+        return await ReviseAsync(id, html, null, storage, null, revision, wrote, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage,
-        string? request, int? restoredFrom, CancellationToken cancellationToken)
+        string? request, int? restoredFrom, string? generatedBy, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
         var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
-        var source = new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length);
+        var source = new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length, generatedBy);
         if (source.Sha256 == app.Source.Sha256) throw new InvalidOperationException("These bytes are the revision already in use.");
 
         var revisions = Path.Combine(AppDirectory(id), RevisionsDirectory);
@@ -1125,11 +1135,13 @@ public sealed partial class AdoptionCatalog
         if (source.OriginalPath is null) writer.WriteNull("originalPath");
         else writer.WriteString("originalPath", source.OriginalPath);
         writer.WriteNumber("size", source.Size);
+        if (source.GeneratedBy is not null) writer.WriteString("generatedBy", source.GeneratedBy);
         writer.WriteEndObject();
     }
 
     private static AdoptionSource ReadSource(JsonElement source) =>
-        new(source.GetProperty("sha256").GetString()!, source.GetProperty("originalPath").GetString(), source.GetProperty("size").GetInt64());
+        new(source.GetProperty("sha256").GetString()!, source.GetProperty("originalPath").GetString(), source.GetProperty("size").GetInt64(),
+            source.TryGetProperty("generatedBy", out var by) && by.ValueKind == JsonValueKind.String ? by.GetString() : null);
 
     private static DateTimeOffset ParseTime(string text) => DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
 

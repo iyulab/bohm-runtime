@@ -71,7 +71,8 @@ public sealed partial class AdoptionCatalog
                 AppPackage.ManifestVersion, AppPackage.Format, app.Id, version.ToString(CultureInfo.InvariantCulture), DisplayName(app), AppPackage.PlainContract,
                 await ContentsAsync(files, cancellationToken).ConfigureAwait(false), AppPackage.DataName(data), Includes(folder),
                 new PackagePermissions(true, AiCalled(html, aiServices), await SitesReadAsync(folder, cancellationToken).ConfigureAwait(false), [], []),
-                new PackageProvenance(contentSha256, await HashesAsync(files, cancellationToken).ConfigureAwait(false)));
+                new PackageProvenance(contentSha256, await HashesAsync(files, cancellationToken).ConfigureAwait(false)),
+                app.Source.GeneratedBy);
 
             var partial = target + ".partial-" + Guid.NewGuid().ToString("n")[..8];
             try
