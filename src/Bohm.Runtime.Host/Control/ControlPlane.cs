@@ -15,7 +15,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <summary>
 /// The API the process that started the runtime uses to drive it — the desktop shell, or a
 /// headless deployment's configuration. It answers only on the loopback address itself (never on
-/// an application origin) and only to requests bearing the per-launch secret.
+/// an application origin) and only to requests bearing the per-launch secret. An error answers an RFC 9457
+/// problem with a <c>reason</c> and a <c>detail</c> — the route's own, or the general one for its status (<see cref="ControlProblems"/>).
 /// </summary>
 /// <remarks>
 /// <list type="table">
@@ -23,7 +24,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps</c></term><description>Adopted applications, oldest first, each with the last day it was used; an unsaved result says so, with when it was left and when it expires.</description></item>
 /// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline), <c>damaged</c>, or <c>interruptedRemoval</c> (a removal for good stopped before the recycle bin; the folder is still there). Nothing in them is changed; one unreadable application never hides the others.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, of a file at the same path (optional <c>X-Bohm-Original-Path</c>), or of a file beside it under the same name but for a browser's download number, each with how it matches.</description></item>
-/// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded).</description></item>
+/// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded). 400 <c>{ reason: not-html }</c> for a body with no tag or a binary file.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/from-package</c></term><description>Takes in the code of the package (<c>.bohm</c>) at the full path in the body — the page of the revision in use there, after the checks taking a package in runs — as a new revision of this application, its data here unchanged (as <c>revisions</c> does; the package's data is not used). 400 <c>{ reason }</c> as for taking a package in; 409 when the package holds another application, or its code is the revision already in use.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
@@ -187,6 +188,13 @@ internal static partial class ControlPlane
                 if (html.Length == 0)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                if (!ControlProblems.IsHtml(html))
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "not-html",
+                        "The body is not an HTML document (no tag, or a binary file) — send the application's .html file.").ConfigureAwait(false);
                     break;
                 }
 

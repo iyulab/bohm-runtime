@@ -200,6 +200,7 @@ public static class RuntimeHost
         var callers = new LoopbackCredentials();
         if (options.ControlSecret is { } secret) callers.Register(secret, ShellCaller);
         builder.Services.AddLoopbackAuthentication(callers);
+        builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = ControlProblems.Customize);
         configure?.Invoke(builder);
 
         var app = builder.Build();
@@ -209,6 +210,9 @@ public static class RuntimeHost
         // address — is refused. Names under .localhost are this computer's (browsers resolve them themselves):
         // the applications and the previews live there.
         app.UseLoopbackHostCheck(localhostSubdomains: true);
+        // The control surface never answers an error with nothing: a route's bare status becomes an RFC 9457 problem
+        // with a reason and a next step (ControlProblems). Applications' own pages are left as they are.
+        app.UseWhen(c => c.Request.Path.StartsWithSegments(ControlPlane.PathPrefix), control => control.UseStatusCodePages());
         if (options.ControlSecret is not null)
             app.Map(ControlPlane.PathPrefix + "/{**rest}", ControlPlane.HandleAsync).RequireHost("127.0.0.1", "localhost").RequireCaller(ShellCaller);
 
