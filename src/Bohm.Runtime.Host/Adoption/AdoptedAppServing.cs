@@ -34,9 +34,17 @@ internal static class AdoptedAppServing
         Applied = async (context, appId, _) =>
             (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.Record(UsageSignal.Wrote),
         // A page whose code was replaced while it was still writing: the write is refused (the new code owns the
-        // data now) but it was a write the person made, so it is counted where a host's unconfirmed close is.
+        // data now) but it was a write the person made — kept beside the application as it was made, counted where
+        // a host's unconfirmed close is, and said in the application's status (without the values).
         RefusedFromRetiredTab = async refused =>
-            (await refused.Context.RequestServices.GetRequiredService<OpenApps>().GetAsync(refused.Scope).ConfigureAwait(false)).Usage.RecordLossSuspected(),
+        {
+            var services = refused.Context.RequestServices;
+            var app = await services.GetRequiredService<OpenApps>().GetAsync(refused.Scope).ConfigureAwait(false);
+            var kept = await services.GetRequiredService<AdoptionCatalog>()
+                .KeepRefusedWritesAsync(refused.Scope, refused.Operations, CancellationToken.None).ConfigureAwait(false);
+            app.Usage.RecordLossSuspected();
+            app.AddError($"{refused.Operations.Count} change(s) made on a page still showing the previous version were not applied; they are kept in {Path.GetFileName(kept)} in the application's folder.");
+        },
     };
 
     /// <summary>Where a page reports what stopped it.</summary>
