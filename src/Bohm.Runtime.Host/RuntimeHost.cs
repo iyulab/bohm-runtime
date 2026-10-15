@@ -203,6 +203,8 @@ public static class RuntimeHost
         configure?.Invoke(builder);
 
         var app = builder.Build();
+        // Code an application could not cache with no internet is fetched again when the network comes back.
+        if (options.FetchAssetsOnAdoption) app.Services.GetRequiredService<AssetFetcher>().WatchNetwork();
         // A request naming any host but this computer's own — including a public name rebound to the loopback
         // address — is refused. Names under .localhost are this computer's (browsers resolve them themselves):
         // the applications and the previews live there.
