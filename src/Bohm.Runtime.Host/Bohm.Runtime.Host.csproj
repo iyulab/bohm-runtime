@@ -7,6 +7,14 @@
     <RootNamespace>Bohm.Runtime.Host</RootNamespace>
   </PropertyGroup>
 
+  <!-- The Bohm account (an AI the cloud service pays for) is read from BOHM_CLOUD only in builds that carry it: Debug by
+       default, never a release build until the cloud service is ready. `-p:BohmCloud=true` puts it into a release build
+       for a staging run; `-p:BohmCloud=false` takes it out of a debug one. -->
+  <PropertyGroup>
+    <BohmCloud Condition="'$(BohmCloud)' == '' and '$(Configuration)' == 'Debug'">true</BohmCloud>
+    <DefineConstants Condition="'$(BohmCloud)' == 'true'">$(DefineConstants);BOHM_CLOUD</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="Adoption\shim.js" LogicalName="Bohm.Runtime.Host.shim.js" />
   </ItemGroup>
