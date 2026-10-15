@@ -185,6 +185,11 @@ internal static partial class EditProposals
         }
 
         StoppedBeforeAnyChange(proposal);
+        // The same refusal as making an application: a version that loads from another computer opens broken without a network
+        // (non-negotiable 1), and the code it would load was never read here. What the saved application already loads is not
+        // this change's doing — only what the change adds.
+        if (OutsideReferences.Added(text.Lf, proposal.Html) is { Count: > 0 } added)
+            throw new ProposalFailedException("The change needs something from another computer, which an application here cannot reach: " + string.Join(" ", added));
         return proposal with { Html = text.Restore(proposal.Html) };
     }
 
@@ -489,11 +494,15 @@ internal static partial class EditProposals
                 // change made in several replacements may pass through a broken middle on its way.
                 var broken = AppScripts.SyntaxProblems(changed);
                 var newlyBroken = broken.Count > AppScripts.SyntaxProblems(draft).Count;
+                // What this replacement makes the application load from another computer — refused at the end as making refuses
+                // it, so said now, while the model can still write it into the file.
+                var outside = OutsideReferences.Added(draft, changed);
                 draft = changed;
                 edits.Add(new SourceEdit(done.Old!, done.New!)); // what the source held and now holds — not the model's copy of it
-                return newlyBroken
+                var answer = newlyBroken
                     ? done.Message + " But the source no longer parses: " + string.Join(" ", broken) + " Unless a replacement still to come completes it, correct it."
                     : done.Message;
+                return outside.Count > 0 ? answer + " " + string.Join(" ", outside) + " Correct it with another replacement." : answer;
             },
             "replace",
             "Replaces one exact piece of the application's source, which must appear exactly once, with new text.");

@@ -444,8 +444,7 @@ internal static partial class AppProposals
                     problems.Add($"The application uses {unsafeCall.Value}; page values must reach the page only as text (textContent or createTextNode).");
             }
 
-            foreach (var host in OtherHosts().Matches(html).Select(m => m.Groups["host"].Value).Distinct(StringComparer.OrdinalIgnoreCase))
-                problems.Add($"The application loads code from {host}, which cannot be reached; write it in the file.");
+            problems.AddRange(OutsideReferences.Problems(html));
             var read = SourceReads().Matches(html).Select(m => m.Groups["name"].Value).ToHashSet(StringComparer.Ordinal);
             foreach (var undeclared in read.Where(r => proposed.All(p => p.Name != r)).Order(StringComparer.Ordinal))
                 problems.Add($"The application reads source '{undeclared}', which is not declared.");
@@ -501,9 +500,6 @@ internal static partial class AppProposals
 
     [GeneratedRegex(@"\b(innerHTML|outerHTML|insertAdjacentHTML|document\.write(ln)?)\b", RegexOptions.CultureInvariant)]
     private static partial Regex UnsafeMarkup();
-
-    [GeneratedRegex(@"<(script|link)\b[^>]*\b(src|href)\s*=\s*[""']?(https?:)?//(?<host>[^/""'\s>]+)", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
-    private static partial Regex OtherHosts();
 
     [GeneratedRegex(@"/__bohm/sources/(?<name>[a-z0-9][a-z0-9-]{0,39})", RegexOptions.CultureInvariant)]
     private static partial Regex SourceReads();
