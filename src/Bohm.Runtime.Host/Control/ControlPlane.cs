@@ -25,7 +25,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/apps/unreadable</c></term><description>Application folders that could not be read — kind <c>cannotOpen</c> (the system could not open a file right now, e.g. kept only in the cloud while offline), <c>damaged</c>, or <c>interruptedRemoval</c> (a removal for good stopped before the recycle bin; the folder is still there). Nothing in them is changed; one unreadable application never hides the others.</description></item>
 /// <item><term><c>POST /__control/apps/matches</c></term><description>Earlier adoptions of the HTML in the body, of a file at the same path (optional <c>X-Bohm-Original-Path</c>), or of a file beside it under the same name but for a browser's download number, each with how it matches.</description></item>
 /// <item><term><c>POST /__control/apps</c></term><description>Adopts the HTML in the body (optional <c>X-Bohm-Original-Path</c>, URL-encoded). 400 <c>{ reason: not-html }</c> for a body with no tag or a binary file.</description></item>
-/// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>). Pages still running the old code can no longer write.</description></item>
+/// <item><term><c>POST /__control/apps/{id}/revisions</c></term><description>Takes in the HTML in the body as a new revision of the application: same application, same data, new code (optional <c>X-Bohm-Original-Path</c>; <c>X-Bohm-Model</c>, URL-encoded, names the AI model that wrote it — kept as the revision's <c>generatedBy</c>). Pages still running the old code can no longer write.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/from-package</c></term><description>Takes in the code of the package (<c>.bohm</c>) at the full path in the body — the page of the revision in use there, after the checks taking a package in runs — as a new revision of this application, its data here unchanged (as <c>revisions</c> does; the package's data is not used). 400 <c>{ reason }</c> as for taking a package in; 409 when the package holds another application, or its code is the revision already in use.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/archive</c> · <c>/restore</c></term><description>Puts the application away or brings it back. Only a mark on its record changes — code, data, revisions and usage record stay; an archived application is not served. The caller closes its pages first.</description></item>
 /// <item><term><c>POST /__control/results</c></term><description>Makes a page out of an answer the person was given — <c>{ title, text, sources?: [{ name, url? }], lang?, sourcesHeading? }</c> — and adds it as an unsaved result (201, the application). The page is the text as read, escaped, with its sources; no script. 400 when the body is not that shape.</description></item>
@@ -51,12 +51,12 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/proposals</c></term><description>Proposes a new application — from what the person asked alone, or from an answer and the tables on the pages behind it: the body is <c>{ question, answer?, lang?, pages?: [{ url, title?, tables: [{ selector, headers, rows, preview }] }] }</c> — the tables as the shell found them; with no pages the application is what the person asked for, reading no source. With <c>broken: { html, problems: [text, …] }</c> (no pages) the earlier proposal for that request, which failed when the shell opened it, is fixed from that version with exact replacements and the problems told (the first ten), and held to the same checks; 400 with pages, or without its HTML or a problem. Answers <c>{ title, html, sources: [{ name, page, rule: { site, selector, columns } }], summary, model, refused: [reason, …] }</c> — <c>refused</c> holds what was sent back to the model before the proposal was kept; nothing is kept. What was asked alone may instead be one thing to do now about the pages open in front of the person (summarize them, compare them), which an application could not do: then the answer is <c>{ task, model }</c> — <c>task</c> the model's reason — and no application, for the caller to do it as a web question. The rules are made from the tables and columns the model chose among those given, and the application is refused unless it reads exactly the sources it declares and puts their values on the page only as text. Made with the model chosen for proposals, but never the one on this computer — 409 <c>{ needs: "largerModel" }</c> — or 409 with what is missing, 503 with why when the model cannot run, stops or proposes nothing usable — <c>{ detail, provider?, stopped? }</c>, <c>stopped</c> being <c>output-limit</c> when the answer reached its length limit first.</description></item>
 /// <item><term><c>POST /__control/previews</c></term><description>Holds a proposed new application for a look, from <c>{ html, readings: { name: { source, columns, rows } } }</c>: answers <c>{ token, origin, shareTarget }</c>, served there with no data and each source answering the rows given, until two minutes after it was last used. <c>shareTarget</c> is the query names its manifest gives a shared page (<c>{ title, text, url }</c>, as for <c>apps/page-targets</c>), or <c>null</c> when it receives none. Nothing is kept. <c>GET /__control/previews/{token}</c> and <c>DELETE</c> as for an application's previews.</description></item>
 /// <item><term><c>POST /__control/previews/{token}/pages</c></term><description>Sends a web page to a proposed new application's preview, to try it with — the body and answer as for <c>apps/{id}/pages</c>. The page is held with the preview, which reads it at <c>/__bohm/pages/{id}</c>, and goes with it; once one has arrived the preview's calls to a model are relayed as the application's would be (before, they are declined). 404 once the preview has expired or been removed.</description></item>
-/// <item><term><c>POST /__control/apps/promotions</c></term><description>Takes in a proposed application — <c>{ html, title?, sources?: [{ name, rule }], readings?: { name: { source, columns, rows } } }</c> — with its sources, if any, allowed (taking it in is the person's permission) and the rows read for them kept as the first readings. 201 with the application. Everything is checked first: a bad rule, rows for no source, or rows its source would refuse leave nothing behind (400).</description></item>
+/// <item><term><c>POST /__control/apps/promotions</c></term><description>Takes in a proposed application — <c>{ html, title?, sources?: [{ name, rule }], readings?: { name: { source, columns, rows } }, generatedBy? }</c> — <c>generatedBy</c> the AI model that wrote it — with its sources, if any, allowed (taking it in is the person's permission) and the rows read for them kept as the first readings. 201 with the application. Everything is checked first: a bad rule, rows for no source, or rows its source would refuse leave nothing behind (400).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, until two minutes after it was last used. Nothing about the application changes.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview was served: <c>{ errors, afterModel, blocked, askedModel }</c> — errors thrown or reported, with lines as in the previewed document, split where its first call to a model was declined: <c>errors</c> arrived before it, <c>afterModel</c> after it — they may follow from that answer, which the application taken in would not get; what the content security policy refused (<c>category host</c>); and whether it called a model. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, the AI model that wrote it (<c>generatedBy</c>, when one did), and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/{n}/import</c></term><description>Takes the data revision <c>n</c> wrote back in, replacing the data now — only while nothing was written since going back and the code in use reads its keys; 409 otherwise. <c>…/undo-import</c> puts back the data it replaced, while the data is still what was taken in. <c>…/merge</c> merges it with the data written since going back, while neither changed what the other did (<c>mergeable</c>); <c>…/undo-merge</c> puts back the data merging started from, while the data is still what merging made.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/imports</c></term><description>What a table file could be imported into — <c>{ collections: [{ collection, records, fields: [{ name, kind }], identity }], imports: [{ number, file, collection, added, replaced, skipped, invalid, takenAt, undone }], fileTypes: [extension | "*"] }</c>: every stored key holding a list of records, with the fields and kinds the records show (a list with no records yet is not one) and the field earlier imports told the same record apart by; the imports so far, oldest first; and the file extensions the application's own file inputs take ("*" for one that takes any — see <see cref="TableImports.AppFileInputs"/>). Headers the person put into a field of another name in an earlier import match that field again.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/imports/preview</c></term><description>What importing a table file would do, from <c>{ file: { name, content, codePage? }, collection, identity?, sameRecord?, columns? }</c> (see <see cref="Adoption.TableImportEndpoints"/>; <c>codePage</c> — the code page the person chose for a file that is not UTF-8, else this computer's double-byte one is tried): <c>{ columns: [{ column, field }], unfilled, added, replaced, skipped, invalid: [{ row, field, cell }], sample, generated, codePage }</c> — <c>codePage</c> the file was read in, null for UTF-8 — <c>cell</c> is the cell that is not its field's kind, null for a required field left empty; <c>generated</c> is the application's own key the runtime fills for new records (none: null) — a column whose field is null is left out. Nothing is written. 400 <c>{ problem }</c> — the file's (<c>not-utf8</c>, <c>empty</c>, <c>unclosed-quote</c>, <c>too-large</c>, <c>too-many-rows</c>, <c>duplicate-header</c>) or the choice's (<c>unknown-collection</c>, <c>unknown-identity</c>, <c>unknown-field</c>, <c>unknown-same-record</c>).</description></item>
@@ -108,6 +108,9 @@ internal static partial class ControlPlane
     /// <see cref="OriginalPathHeader"/>. It stays on this computer: a package of the application does not carry it.
     /// </summary>
     public const string RequestHeader = "X-Bohm-Request";
+
+    /// <summary>The AI model that wrote a new revision's code (URL-encoded), when one did — kept as its <see cref="AdoptionSource.GeneratedBy"/>.</summary>
+    public const string ModelHeader = "X-Bohm-Model";
 
     /// <summary>How long no write may be in progress before the runtime counts as drained.</summary>
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(150);
@@ -212,7 +215,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                var result = await catalog.AdoptAsync(page.Render(), originalPath: null, unsaved: true, page.Title, cancel).ConfigureAwait(false);
+                var result = await catalog.AdoptAsync(page.Render(), originalPath: null, unsaved: true, page.Title, cancellationToken: cancel).ConfigureAwait(false);
                 response.StatusCode = StatusCodes.Status201Created;
                 await WriteAsync(response, View(result, port, canRevert: false), cancel).ConfigureAwait(false);
                 break;
@@ -356,8 +359,9 @@ internal static partial class ControlPlane
 
                 var revisedPath = OriginalPath(request);
                 var revisedFor = Escaped(request, RequestHeader);
+                var revisedBy = Escaped(request, ModelHeader);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
-                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, revisedFor, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
+                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, revisedFor, revisedBy, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var restoredId, "revisions", var restoreTo, "restore"]):
@@ -762,7 +766,7 @@ internal static partial class ControlPlane
                         UndoneData.Merged => "merged",
                         UndoneData.Included => "included",
                         _ => null,
-                    }, r.Request, r.RestoredFrom, r.Source.Sha256, r.Incoming))
+                    }, r.Request, r.RestoredFrom, r.Source.Sha256, r.Incoming, r.Source.GeneratedBy))
                     .ToList(), cancel).ConfigureAwait(false);
                 break;
 
@@ -1576,7 +1580,7 @@ internal static partial class ControlPlane
     private static AppView View(AdoptedApp app, int port, bool canRevert, DateOnly? lastUsed = null) =>
         new(app.Id, RuntimeHost.AppOrigin(app.Id, port).ToString(), app.AdoptedAt, app.Source.Sha256, app.Source.OriginalPath, app.Source.Size,
             app.Revision, app.RevisedAt, canRevert, lastUsed?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), app.ArchivedAt,
-            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title, app.ForkedFrom, app.InstalledFrom);
+            app.Unsaved, app.LeftAt, app.LeftAt + AdoptionCatalog.UnsavedRetention, app.Title, app.ForkedFrom, app.InstalledFrom, app.Source.GeneratedBy);
 
     private static string Iso(DateOnly date) => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -1610,7 +1614,7 @@ internal static partial class ControlPlane
     internal sealed record AppView(string Id, string Origin, DateTimeOffset AdoptedAt, string Sha256, string? OriginalPath, long Size,
         int Revision, DateTimeOffset? RevisedAt, bool CanRevert, string? LastUsed = null, DateTimeOffset? ArchivedAt = null,
         bool Unsaved = false, DateTimeOffset? LeftAt = null, DateTimeOffset? ExpiresAt = null, string? Title = null, AppFork? ForkedFrom = null,
-        AppInstall? InstalledFrom = null);
+        AppInstall? InstalledFrom = null, string? GeneratedBy = null);
 
     /// <summary>An earlier adoption and how it matches: <c>"sameBytes"</c>, <c>"sameOriginalPath"</c>, <c>"sameName"</c> (same folder, same name but for a browser's download number) or <c>"sameStoredKeys"</c> (the source names every key the application stored).</summary>
     internal sealed record MatchView(AppView App, string Match);
@@ -1667,7 +1671,7 @@ internal static partial class ControlPlane
     /// <c>incoming</c>, for <c>"mergeable"</c>, how many changes merging would take in.
     /// </summary>
     internal sealed record RevisionView(int Revision, int? Previous, DateTimeOffset TakenInAt, string? File, bool InUse, string? Undone, string? Request, int? RestoredFrom,
-        string Sha256, int? Incoming);
+        string Sha256, int? Incoming, string? GeneratedBy = null);
 
     internal sealed record ExportedView(string Id, string Path);
 

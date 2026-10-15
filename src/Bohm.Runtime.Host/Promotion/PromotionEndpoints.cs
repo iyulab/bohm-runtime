@@ -163,7 +163,7 @@ internal static class PromotionEndpoints
         var sources = request.Sources ?? [];
 
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
-        var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes(html), title: string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(), cancellationToken: cancel).ConfigureAwait(false);
+        var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes(html), title: string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(), generatedBy: request.GeneratedBy, cancellationToken: cancel).ConfigureAwait(false);
         var open = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(app.Id).ConfigureAwait(false);
         foreach (var source in sources)
         {
@@ -267,7 +267,7 @@ internal static class PromotionEndpoints
 
     internal sealed record SourceInput(string? Name, SourceRule? Rule);
 
-    internal sealed record PromotionRequest(string? Html, string? Title, IReadOnlyList<SourceInput>? Sources, IReadOnlyDictionary<string, ReadingInput?>? Readings);
+    internal sealed record PromotionRequest(string? Html, string? Title, IReadOnlyList<SourceInput>? Sources, IReadOnlyDictionary<string, ReadingInput?>? Readings, string? GeneratedBy = null);
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

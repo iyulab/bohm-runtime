@@ -63,8 +63,10 @@ public enum PackageData
 /// <param name="Includes">What of the application's data is actually inside: <c>storage</c>, <c>usage</c>, <c>revision-data</c>, <c>read-rows</c>, <c>received-pages</c>, <c>import-data</c>. Empty for <c>none</c>.</param>
 /// <param name="Permissions">What the application asks to do.</param>
 /// <param name="Provenance">Where it came from and how to check it arrived whole.</param>
+/// <param name="GeneratedBy">The AI model that wrote the code inside, when Bohm made or changed it with one — so whoever receives it can tell it was made with AI (<see cref="AdoptionSource.GeneratedBy"/>). Left out for code a person brought in.</param>
 public sealed record PackageManifest(string ManifestVersion, string Format, string Id, string Version, string Name, int Contract,
-    IReadOnlyDictionary<string, int> Contents, string Data, IReadOnlyList<string> Includes, PackagePermissions Permissions, PackageProvenance Provenance);
+    IReadOnlyDictionary<string, int> Contents, string Data, IReadOnlyList<string> Includes, PackagePermissions Permissions, PackageProvenance Provenance,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? GeneratedBy = null);
 
 /// <summary>
 /// What a packaged application asks to do.

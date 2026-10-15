@@ -68,7 +68,12 @@ public sealed record AppFork(string Id, string Name, string Version);
 /// file at the same path was adopted before, never to decide that two applications are the same.
 /// </param>
 /// <param name="Size">Length of the adopted bytes.</param>
-public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Size);
+/// <param name="GeneratedBy">
+/// The AI model that wrote this code, when Bohm made or changed it with one (<c>provider/model</c> as the caller
+/// named it) — so what is passed on can say it was made with AI and with which. <see langword="null"/> for a file
+/// a person brought in, which Bohm did not write.
+/// </param>
+public sealed record AdoptionSource(string Sha256, string? OriginalPath, long Size, string? GeneratedBy = null);
 
 /// <summary>One revision of an application, as its history shows it.</summary>
 /// <param name="Revision">The revision's number.</param>
