@@ -198,6 +198,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Promotion.AppMcp>();
         builder.Services.AddSingleton<Promotion.ApprovalBook>();
         builder.Services.AddSingleton<Edit.AgentModel>();
+        builder.Services.AddSingleton<Llm.ImageInput>();
         // Every endpoint needs a registered caller unless it is named open; the shell is the only one.
         var callers = new LoopbackCredentials();
         if (options.ControlSecret is { } secret) callers.Register(secret, ShellCaller);

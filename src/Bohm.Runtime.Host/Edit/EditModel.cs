@@ -20,7 +20,9 @@ internal sealed record EditModelChoice(string Provider, string Model);
 internal sealed record EditModelMissing(string Needs, string? Provider);
 
 /// <summary>The model a proposal is made with, the name reported with the proposal, and what is known of the model's limits.</summary>
-internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer, ModelLimits Limits);
+/// <param name="Sees">Whether the model takes pictures in: what its server's model list says, <see langword="false"/> for the model on
+/// this computer, <see langword="null"/> when nobody said (<see cref="Llm.ImageInput"/> learns it once).</param>
+internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnThisComputer, ModelLimits Limits, bool? Sees = null);
 
 /// <summary>
 /// A model the person may choose for one of the runtime's agents: by default the organization's model
@@ -122,10 +124,10 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         {
             if (company.Client() is { } organizations)
                 return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false,
-                    await company.LimitsAsync(cancellationToken).ConfigureAwait(false));
+                    await company.LimitsAsync(cancellationToken).ConfigureAwait(false), company.Current.Input is { } input ? input.Contains("image") : null);
             if (!local.Configured) return null;
             var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);
-            return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits);
+            return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits, Sees: false);
         }
 
         if (chosen.Provider == CloudAccount.ProviderId)
@@ -137,7 +139,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             var client = anthropic is null
                 ? new UnreachableChatClient($"The Bohm account's AI address could not be told ({problem}).")
                 : Kept(chosen, token + "\n" + anthropic.AbsoluteUri, () => new CountedAsSent(CloudAccount.Client(chosen.Model, token, anthropic), egress, anthropic.Authority));
-            return new(client, $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
+            return new(client, $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown, Sees: true);
         }
 
         var provider = LlmProviders.ById(chosen.Provider)!;
@@ -147,7 +149,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var root = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
         return new(Kept(chosen, key, () => new CountedAsSent(ClientOf(provider, root, chosen.Model, key), egress, root.Authority)),
-            $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown);
+            $"{provider.Id}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown, Sees: SeeingProviders.Contains(provider.Id) ? true : null);
     }
 
     /// <summary>
@@ -176,6 +178,12 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     }
 
     private (string Key, IChatClient Client)? _reviewer;
+
+    /// <summary>
+    /// The providers reached through their own APIs, whose models take pictures in as their documentation says (the chat models
+    /// they offer now all do) — not asked. A provider reached at its OpenAI-compatible base serves models of many kinds: asked.
+    /// </summary>
+    private static readonly HashSet<string> SeeingProviders = new(StringComparer.Ordinal) { "openai", "anthropic", "google" };
 
     /// <summary>The client kept for <paramref name="choice"/> and <paramref name="key"/>, made by <paramref name="create"/> when they changed.</summary>
     private IChatClient Kept(EditModelChoice choice, string key, Func<IChatClient> create)

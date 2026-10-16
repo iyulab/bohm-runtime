@@ -533,7 +533,7 @@ public sealed class WebAgentTests : IDisposable
         Assert.Equal(FakeProvider.Reply, answer.GetProperty("text").GetString());
         var request = Assert.Single(provider.Received);
         Assert.Equal("/v1/messages", request.PathAndQuery);
-        Assert.Equal(["click", "drag", "go_back", "hover", "list_tabs", "make_page", "navigate", "press_key", "propose_mcp_server", "propose_skill", "read_page", "scroll", "snapshot_page", "type"], JsonDocument.Parse(request.Body).RootElement.GetProperty("tools").EnumerateArray()
+        Assert.Equal(["click", "drag", "go_back", "hover", "list_tabs", "look", "make_page", "navigate", "press_key", "propose_mcp_server", "propose_skill", "read_page", "scroll", "snapshot_page", "type"], JsonDocument.Parse(request.Body).RootElement.GetProperty("tools").EnumerateArray()
             .Select(t => t.GetProperty("name").GetString()).Order());
     }
 

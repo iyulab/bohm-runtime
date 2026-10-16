@@ -110,13 +110,14 @@ public sealed record CompanyModelList(IReadOnlyList<CompanyServer> Servers)
     private static bool? Flag(JsonElement model, string name) =>
         model.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False ? value.GetBoolean() : null;
 
-    /// <summary>What the model takes in — <c>text</c>, and <c>image</c> when listed; text alone when the list does not say.</summary>
-    private static List<string> Input(JsonElement model)
+    /// <summary>What the model takes in — <c>text</c>, and <c>image</c> when listed; <see langword="null"/> when the list does not say
+    /// (not «text alone»: whether such a model takes pictures in is learned — <see cref="ImageInput"/>).</summary>
+    private static List<string>? Input(JsonElement model)
     {
-        if (!model.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array) return ["text"];
+        if (!model.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array) return null;
         var kinds = input.EnumerateArray().Where(k => k.ValueKind == JsonValueKind.String)
             .Select(k => k.GetString()!.Trim().ToLowerInvariant()).Where(k => k is "text" or "image").Distinct().ToList();
-        return kinds.Count > 0 ? kinds : ["text"];
+        return kinds.Count > 0 ? kinds : null;
     }
 }
 
@@ -135,5 +136,5 @@ public sealed record CompanyServer(string Name, Uri Endpoint, IReadOnlyList<Comp
 /// <param name="Id">The model's name as the server knows it.</param>
 /// <param name="Name">The name to show the person, when the list gives one.</param>
 /// <param name="Limits">What the list says about its limits.</param>
-/// <param name="Input">What it takes in: <c>text</c>, and <c>image</c> when listed.</param>
-public sealed record CompanyListedModel(string Id, string? Name, ModelLimits Limits, IReadOnlyList<string> Input);
+/// <param name="Input">What it takes in: <c>text</c>, and <c>image</c> when listed; <see langword="null"/> when the list does not say.</param>
+public sealed record CompanyListedModel(string Id, string? Name, ModelLimits Limits, IReadOnlyList<string>? Input);
