@@ -76,12 +76,12 @@ internal static partial class ControlPlane
         catch (RegistryRefusedException e)
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
-            await WriteAsync(response, new PackageRefusal(e.Reason), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, e.Reason).ConfigureAwait(false);
         }
         catch (InvalidPackageException e)
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
-            await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
         }
 
         return null;
@@ -134,14 +134,14 @@ internal static partial class ControlPlane
                 catch (InvalidPackageException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
                     return;
                 }
                 catch (AppAlreadyHereException e)
                 {
                     // Taken in by another request since the check above.
                     response.StatusCode = StatusCodes.Status409Conflict;
-                    await WriteAsync(response, new AlreadyHereView(e.Id, e.SameCode, e.SameCodeInUse), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "already-here", new AlreadyHereView(e.Id, e.SameCode, e.SameCodeInUse)).ConfigureAwait(false);
                     return;
                 }
 
@@ -159,7 +159,7 @@ internal static partial class ControlPlane
                 if (manifest.Id != id)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new PackageRefusal(RegistryRefusedException.BadEntry), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, RegistryRefusedException.BadEntry).ConfigureAwait(false);
                     return;
                 }
 
@@ -168,7 +168,7 @@ internal static partial class ControlPlane
             catch (InvalidPackageException e)
             {
                 response.StatusCode = StatusCodes.Status400BadRequest;
-                await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
                 return;
             }
 
@@ -225,7 +225,7 @@ internal static partial class ControlPlane
         catch (RegistryRefusedException e)
         {
             response.StatusCode = e.Reason == RegistryRefusedException.VersionTaken ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
-            await WriteAsync(response, new PackageRefusal(e.Reason), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, e.Reason).ConfigureAwait(false);
             return;
         }
 

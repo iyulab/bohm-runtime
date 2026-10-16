@@ -251,7 +251,7 @@ internal static partial class ControlPlane
                 catch (InvalidPackageException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
                 }
 
                 break;
@@ -282,13 +282,13 @@ internal static partial class ControlPlane
                 catch (InvalidPackageException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
                     break;
                 }
                 catch (AppAlreadyHereException e)
                 {
                     response.StatusCode = StatusCodes.Status409Conflict;
-                    await WriteAsync(response, new AlreadyHereView(e.Id, e.SameCode, e.SameCodeInUse), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "already-here", new AlreadyHereView(e.Id, e.SameCode, e.SameCodeInUse)).ConfigureAwait(false);
                     break;
                 }
                 catch (InvalidDataException)
@@ -335,7 +335,7 @@ internal static partial class ControlPlane
                 catch (InvalidPackageException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, Refusal(e), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, Refusal(e)).ConfigureAwait(false);
                     break;
                 }
 
@@ -454,7 +454,7 @@ internal static partial class ControlPlane
                 if (Edit.PastedProposals.From(pastedSource, pasted) is not { } fromPasted)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new PackageRefusal("not-a-document"), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "not-a-document").ConfigureAwait(false);
                     break;
                 }
 
@@ -901,12 +901,12 @@ internal static partial class ControlPlane
                 catch (Promotion.McpTurnedOffException)
                 {
                     response.StatusCode = StatusCodes.Status403Forbidden;
-                    await WriteAsync(response, new McpSaveView("policy", []), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "policy", new McpSaveView("policy", [])).ConfigureAwait(false);
                 }
                 catch (Promotion.InvalidMcpDocumentException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues)), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, e.Issues.Count == 0 ? "json" : "refused", new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues))).ConfigureAwait(false);
                 }
 
                 break;
@@ -924,7 +924,7 @@ internal static partial class ControlPlane
                 catch (Promotion.McpTurnedOffException)
                 {
                     response.StatusCode = StatusCodes.Status403Forbidden;
-                    await WriteAsync(response, new McpSaveView("policy", []), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "policy", new McpSaveView("policy", [])).ConfigureAwait(false);
                 }
                 catch (Promotion.McpServerExistsException)
                 {
@@ -933,17 +933,17 @@ internal static partial class ControlPlane
                 catch (Promotion.InvalidMcpDocumentException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues)), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, e.Issues.Count == 0 ? "json" : "refused", new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues))).ConfigureAwait(false);
                 }
                 catch (ArgumentException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new McpSaveView(e.ParamName == "name" ? "name" : "json", []), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, e.ParamName == "name" ? "name" : "json", new McpSaveView(e.ParamName == "name" ? "name" : "json", [])).ConfigureAwait(false);
                 }
                 catch (JsonException)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new McpSaveView("json", []), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, "json", new McpSaveView("json", [])).ConfigureAwait(false);
                 }
 
                 break;
@@ -988,7 +988,7 @@ internal static partial class ControlPlane
                 catch (Promotion.InvalidSkillException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
-                    await WriteAsync(response, new PackageRefusal(e.Part), cancel).ConfigureAwait(false);
+                    await ControlProblems.RefuseAsync(response, e.Part).ConfigureAwait(false);
                 }
                 catch (JsonException)
                 {
@@ -1711,15 +1711,14 @@ internal static partial class ControlPlane
     private static List<McpNoteView> Notes(IEnumerable<IronHive.Agent.Mcp.McpConfigIssue> issues) =>
         [.. issues.Select(i => new McpNoteView(i.Entry, i.Kind == IronHive.Agent.Mcp.McpConfigIssueKind.Refused ? "refused" : "ignored", i.Message))];
 
-    internal sealed record PackageRefusal(string Reason);
-
-    private static PackageRefusal Refusal(InvalidPackageException e) => new(e.Problem switch
+    /// <summary>The reason a package was refused.</summary>
+    private static string Refusal(InvalidPackageException e) => e.Problem switch
     {
         PackageProblem.NotAPackage => "not-a-package",
         PackageProblem.UnknownFormat => "unknown-format",
         PackageProblem.TooLarge => "too-large",
         _ => "damaged",
-    });
+    };
 
     internal sealed record AlreadyHereView(string Id, bool SameCode, bool SameCodeInUse);
 
@@ -1898,14 +1897,14 @@ internal static partial class ControlPlane
         catch (LocalModelUnavailableException e)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(e.Failure, null, null), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
             return;
         }
 
         if (model is not { } chosen)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await WriteAsync(response, agentModel.Missing ?? new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
             return;
         }
 
@@ -1922,7 +1921,7 @@ internal static partial class ControlPlane
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
                 response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                await WriteAsync(response, new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+                await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e))).ConfigureAwait(false);
                 return;
             }
 
@@ -2069,14 +2068,14 @@ internal static partial class ControlPlane
         catch (LocalModelUnavailableException e)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(e.Failure, null, null), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
             return;
         }
 
         if (model is null)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await WriteAsync(response, editModel.Missing ?? new Edit.EditModelMissing("localModel", null), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "model-missing", editModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
             return;
         }
 
@@ -2112,7 +2111,7 @@ internal static partial class ControlPlane
             }
 
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new ProposalFailure(null, detail, provider, stopped), cancel).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, detail, provider, stopped)).ConfigureAwait(false);
             return;
         }
 
@@ -2275,7 +2274,6 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ExportedView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TablesView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackedView))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PackageRefusal))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(PackageInspection))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RegistryReadView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(RegistryPublished))]

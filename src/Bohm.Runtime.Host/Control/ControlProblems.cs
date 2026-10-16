@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 
 namespace Bohm.Runtime.Host.Control;
@@ -41,6 +42,33 @@ internal static class ControlProblems
     /// <summary>Answers a refusal with its own reason and next step.</summary>
     public static Task RefuseAsync(HttpContext context, int status, string reason, string detail) =>
         Results.Problem(detail, statusCode: status, extensions: new Dictionary<string, object?> { ["reason"] = reason }).ExecuteAsync(context);
+
+    /// <summary>
+    /// Answers a refusal with the status the route already set: its <paramref name="reason"/>, and what else the route
+    /// knows about it as members of the same problem — the columns a reading should have had, the notes on a document,
+    /// the model that failed. A <c>detail</c> the data carries becomes the problem's own; otherwise the general next step
+    /// for the status. Null members are left out.
+    /// </summary>
+    public static Task RefuseAsync<T>(HttpResponse response, string reason, T data)
+    {
+        var extensions = new Dictionary<string, object?> { ["reason"] = reason };
+        string? detail = null;
+        if (data is not null && JsonSerializer.SerializeToElement(data, Members) is { ValueKind: JsonValueKind.Object } members)
+            foreach (var member in members.EnumerateObject())
+            {
+                if (member.Value.ValueKind == JsonValueKind.Null || member.NameEquals("reason")) continue;
+                if (member.NameEquals("detail") && member.Value.ValueKind == JsonValueKind.String) detail = member.Value.GetString();
+                else extensions[member.Name] = member.Value.Clone();
+            }
+
+        return Results.Problem(detail ?? General(response.StatusCode).Detail, statusCode: response.StatusCode, extensions: extensions).ExecuteAsync(response.HttpContext);
+    }
+
+    /// <summary>Answers a refusal with the status the route already set and its <paramref name="reason"/> alone.</summary>
+    public static Task RefuseAsync(HttpResponse response, string reason) => RefuseAsync<object?>(response, reason, null);
+
+    /// <summary>A refusal's data as members — the control surface's own spelling (camelCase).</summary>
+    private static readonly JsonSerializerOptions Members = new(JsonSerializerDefaults.Web);
 
     /// <summary>
     /// Whether a body to take in as an application is an HTML document: text with at least one tag.
