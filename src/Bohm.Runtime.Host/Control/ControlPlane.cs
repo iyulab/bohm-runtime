@@ -53,7 +53,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/previews/{token}/pages</c></term><description>Sends a web page to a proposed new application's preview, to try it with — the body and answer as for <c>apps/{id}/pages</c>. The page is held with the preview, which reads it at <c>/__bohm/pages/{id}</c>, and goes with it; once one has arrived the preview's calls to a model are relayed as the application's would be (before, they are declined). 404 once the preview has expired or been removed.</description></item>
 /// <item><term><c>POST /__control/apps/promotions</c></term><description>Takes in a proposed application — <c>{ html, title?, sources?: [{ name, rule }], readings?: { name: { source, columns, rows } }, generatedBy? }</c> — <c>generatedBy</c> the AI model that wrote it — with its sources, if any, allowed (taking it in is the person's permission) and the rows read for them kept as the first readings. 201 with the application. Everything is checked first: a bad rule, rows for no source, or rows its source would refuse leave nothing behind (400).</description></item>
 /// <item><term><c>POST /__control/apps/{id}/previews</c></term><description>Holds the HTML in the body as a preview of a new revision, for a look before it is taken in: answers <c>{ token, origin }</c> — the preview is served at that origin (never the application's own) with the application's current data to read and nowhere to write it, until two minutes after it was last used. Nothing about the application changes.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview was served: <c>{ errors, afterModel, blocked, askedModel }</c> — errors thrown or reported, with lines as in the previewed document, split where its first call to a model was declined: <c>errors</c> arrived before it, <c>afterModel</c> after it — they may follow from that answer, which the application taken in would not get; what the content security policy refused (<c>category host</c>); and whether it called a model. 404 once it has expired or been removed.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/previews/{token}</c></term><description>What went wrong while the preview was served: <c>{ errors, afterModel, blocked, askedModel, pending, quietMs }</c> — errors thrown or reported, with lines as in the previewed document, split where its first call to a model was declined: <c>errors</c> arrived before it, <c>afterModel</c> after it — they may follow from that answer, which the application taken in would not get; what the content security policy refused (<c>category host</c>); and whether it called a model; with <c>pending</c> (its origin's requests in flight now) and <c>quietMs</c> (since that last changed, <c>null</c> before any reached it) — a caller waits for the page to go quiet instead of a fixed time. 404 once it has expired or been removed.</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/previews/{token}</c></term><description>Stops serving the preview.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/revisions/revert</c></term><description>Goes back to the previous revision, code and data together; what the revision being left wrote is kept aside.</description></item>
 /// <item><term><c>GET /__control/apps/{id}/revisions</c></term><description>The application's revisions, oldest first: number, the one before it, when it was taken in, the name of the file it came from (none for an applied change), whether it is in use, the AI model that wrote it (<c>generatedBy</c>, when one did), and — for one the application was put back from — where the data it wrote stands against the data now.</description></item>
@@ -419,7 +419,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await WriteAsync(response, new PreviewReport(newPreview.Errors, newPreview.AfterModel, newPreview.Blocked, newPreview.AskedModel), cancel).ConfigureAwait(false);
+                await WriteAsync(response, Report(context, newToken, newPreview.Errors, newPreview.AfterModel, newPreview.Blocked, newPreview.AskedModel), cancel).ConfigureAwait(false);
                 break;
 
             case (_, ["previews", var receivingToken, "pages", .. var previewPagesRest]):
@@ -487,7 +487,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await WriteAsync(response, new PreviewReport(preview.Errors, preview.AfterModel, preview.Blocked, preview.AskedModel), cancel).ConfigureAwait(false);
+                await WriteAsync(response, Report(context, readToken, preview.Errors, preview.AfterModel, preview.Blocked, preview.AskedModel), cancel).ConfigureAwait(false);
                 break;
 
             case ("DELETE", ["apps", var previewedApp, "previews", var removedToken]):
@@ -2227,7 +2227,19 @@ internal static partial class ControlPlane
     /// <param name="ShareTarget">For a proposed new application whose manifest says it receives pages, the query names it gives them — what the person tries it with through <c>POST /__control/previews/{token}/pages</c>.</param>
     internal sealed record PreviewView(string Token, string Origin, Bohm.Runtime.Pages.ShareTarget? ShareTarget = null);
 
-    internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> AfterModel, IReadOnlyList<string> Blocked, bool AskedModel);
+    /// <summary>
+    /// What went wrong while a preview was served, and what its origin is serving now: <c>Pending</c> requests in flight and
+    /// <c>QuietMs</c> since that last changed (<see langword="null"/> before any request reached it).
+    /// </summary>
+    internal sealed record PreviewReport(IReadOnlyList<string> Errors, IReadOnlyList<string> AfterModel, IReadOnlyList<string> Blocked, bool AskedModel, int Pending, long? QuietMs);
+
+    private static PreviewReport Report(HttpContext context, string token, IReadOnlyList<string> errors, IReadOnlyList<string> afterModel, IReadOnlyList<string> blocked, bool askedModel)
+    {
+        var activity = context.RequestServices.GetRequiredService<LocalOrigin.Origins.ScopeActivity>().Read(token);
+        var now = context.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        return new PreviewReport(errors, afterModel, blocked, askedModel, activity?.Pending ?? 0,
+            activity is { } seen ? (long)(now - seen.LastChange).TotalMilliseconds : null);
+    }
 }
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase)]
