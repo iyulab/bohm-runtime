@@ -3,6 +3,7 @@ using Bohm.Runtime.Adoption;
 using Bohm.Runtime.Pages;
 using LocalOrigin.AspNetCore.Previews;
 using LocalOrigin.AspNetCore.Storage;
+using LocalOrigin.Origins;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -16,7 +17,9 @@ namespace Bohm.Runtime.Host.Adoption;
 /// storage, no session cookie of the application), its writes are acknowledged and dropped, it
 /// reads the application's sources as they are,
 /// records no use, asks no model (a call to one is declined and noted) and adds nothing to what the application is told it is missing.
-/// Load errors and refused requests are kept on the preview, for the caller to read.
+/// Load errors and refused requests are kept on the preview, for the caller to read, with what its origin is serving
+/// right now (<see cref="ScopeActivity"/> — requests in flight, and when that last changed): a caller waits for the
+/// page to go quiet rather than a fixed time.
 /// A proposed new application is tried with pages the person sends it (<see cref="AppPreviews.Preview.Pages"/>):
 /// once one has arrived, its calls to a model are relayed as the application's would be — sending a page to
 /// try it with is the person asking it to do its work — and it is served with a session of its own, so that
@@ -36,6 +39,7 @@ internal static class PreviewServing
             return;
         }
 
+        using var serving = context.RequestServices.GetRequiredService<ScopeActivity>().Begin(token);
         AdoptedAppServing.Profile.Apply(response);
         if (AdoptedAppServing.Profile.Refuses(context.Request))
         {

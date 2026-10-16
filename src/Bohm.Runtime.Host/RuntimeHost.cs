@@ -182,6 +182,8 @@ public static class RuntimeHost
         builder.Services.AddSingleton(new ProblemReports(AdoptedAppServing.ProblemOptions));
         builder.Services.AddSingleton<OpenApps>();
         builder.Services.AddSingleton<AppPreviews>();
+        // What each preview's origin is serving now — how the shell tells a preview has settled, instead of a fixed wait.
+        builder.Services.AddSingleton(sp => new ScopeActivity(sp.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<Activity>();
         builder.Services.AddSingleton<AssetFetcher>();

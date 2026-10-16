@@ -54,6 +54,25 @@ public sealed class AppPreviewTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_report_says_what_the_previews_origin_is_serving_so_a_caller_can_wait_for_it_to_go_quiet()
+    {
+        var id = await _host.AdoptAsync(Page);
+        var (token, _) = await CreateAsync(id, Page);
+
+        // Nothing reached its origin yet: none pending, and no quiet to measure from.
+        var before = await ReadAsync(id, token);
+        Assert.Equal(0, before.GetProperty("pending").GetInt32());
+        Assert.Equal(JsonValueKind.Null, before.GetProperty("quietMs").ValueKind);
+
+        using var preview = _host.ClientFor($"pv-{token}.localhost");
+        (await preview.GetAsync("/")).Dispose();
+        (await preview.GetAsync("/footer.js")).Dispose();   // a 404 is still a request the page made
+        var after = await ReadAsync(id, token);
+        Assert.Equal(0, after.GetProperty("pending").GetInt32());
+        Assert.True(after.GetProperty("quietMs").GetInt64() >= 0);
+    }
+
+    [Fact]
     public async Task A_preview_routes_model_calls_as_the_application_does_and_declines_them()
     {
         using (var set = await _host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(
