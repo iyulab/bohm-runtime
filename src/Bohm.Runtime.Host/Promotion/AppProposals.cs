@@ -306,18 +306,20 @@ internal static partial class AppProposals
     /// falls short with exact replacements — the round a person would otherwise make by asking after seeing it. No
     /// change is an answer too: the version stays as it was.
     /// </summary>
+    /// <param name="sees">Whether the model takes pictures in (<see cref="Llm.ImageInput"/>) — one that does not looks over the
+    /// version from its code alone, and is told no picture is attached.</param>
     /// <exception cref="ArgumentException">There is no version to look at, or its picture is not a data URL of an image.</exception>
     public static async Task<AppProposal> ReviewAsync(IChatClient model, ModelLimits limits, AppRequest request, CancellationToken cancellationToken,
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null, IChatClient? reviewer = null)
+        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null, IChatClient? reviewer = null, bool sees = true)
     {
         var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
         if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
         var (advice, reviewerUse, reviewerStopped) = reviewer is null ? (null, null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
-        var instruction = ReviewInstruction(request.Question)
+        var instruction = (sees ? ReviewInstruction(request.Question) : CodeReviewInstruction(request.Question))
             + (advice is { Length: > 0 } ? "\n\nAnother reviewer read the application's code against the request and said:\n" + advice
                 + "\nWeigh what it says with what you see; change only what you agree falls short." : "");
         var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
-            instruction, null, cancellationToken, onProgress, [new DataContent(review.Image)], skills).ConfigureAwait(false);
+            instruction, null, cancellationToken, onProgress, sees ? [new DataContent(review.Image)] : [], skills).ConfigureAwait(false);
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
@@ -398,6 +400,14 @@ internal static partial class AppProposals
         + "layout, spacing, sizes, colours, the first-time hint, wording — with exact replacements (the a-finished-look skill "
         + "offers a checklist if you want one). Keep every feature, every element id, every localStorage key and the shape of "
         + "what is stored as it is. When nothing falls short, change nothing and say so in one sentence.";
+
+    /// <summary>The same look for a model that takes no pictures in: from the code, with nothing attached.</summary>
+    internal static string CodeReviewInstruction(string question) =>
+        "This is the application you just wrote for this request: «" + question.Trim() + "». No picture of it is attached: read its "
+        + "code as its first screen would look, compare that with what was asked, and change what you would change — layout, spacing, "
+        + "sizes, colours, the first-time hint, wording — with exact replacements (the a-finished-look skill offers a checklist if you "
+        + "want one). Keep every feature, every element id, every localStorage key and the shape of what is stored as it is. When "
+        + "nothing falls short, change nothing and say so in one sentence.";
 
     private static (List<string> Problems, List<ProposedSource> Proposed) Check(AppRequest request, string? title, SourceChoice[]? choices, string? html)
     {

@@ -1911,12 +1911,24 @@ internal static partial class ControlPlane
         var now = context.RequestServices.GetRequiredService<TimeProvider>().GetLocalNow();
         var skills = context.RequestServices.GetRequiredService<Promotion.AppSkills>().UserConfig();
         IReadOnlyList<Promotion.McpTool> mcp = chosen.OnThisComputer ? [] : await context.RequestServices.GetRequiredService<Promotion.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false);
+        // Whether the model takes pictures in: look is declared unless it is known not to, and a model nobody described is
+        // asked once, only when a picture look took is about to go to it — until then no request is spent on it. A picture that
+        // cannot go is replaced by the runtime's word (look stays declared when asking told nothing).
+        var images = context.RequestServices.GetRequiredService<Llm.ImageInput>();
+        var seen = images.Known(chosen);
+        if (Agent.WebAgent.HasPicture(conversation))
+        {
+            seen ??= await images.SeesAsync(chosen, cancel).ConfigureAwait(false);
+            if (seen != true) conversation = Agent.WebAgent.WithoutPicture(conversation, seen is false ? Agent.WebAgent.BlindNote : Agent.WebAgent.NotSentNote);
+        }
+
+        var sees = seen != false;
         if (!AcceptsLines(context.Request))
         {
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills, mcp).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills, mcp, sees).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -1951,7 +1963,7 @@ internal static partial class ControlPlane
                         html = AnswerMarkdown.ToHtml(written.ToString());
                     }
                     return WriteLineAsync(response, new TurnText(text, html), token);
-                }, cancel, last, skills, mcp).ConfigureAwait(false);
+                }, cancel, last, skills, mcp, sees).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)

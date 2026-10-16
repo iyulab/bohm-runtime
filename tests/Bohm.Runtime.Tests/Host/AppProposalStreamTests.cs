@@ -161,7 +161,9 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
 
         var lines = await LinesAsync(response);
         Assert.Contains("Add your first book.", lines[^1].GetProperty("html").GetString(), StringComparison.Ordinal);
-        // The provider is shown the picture, as an image part of the request — not its address as text.
+        // A model nobody described is asked once whether it takes pictures in (it says the colour), then shown the picture, as an
+        // image part of the request — not its address as text.
+        Assert.Single(_server.PictureQuestions);
         var first = JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("messages").EnumerateArray().Last(m => m.GetProperty("role").GetString() == "user");
         var image = Assert.Single(first.GetProperty("content").EnumerateArray(), part => part.GetProperty("type").GetString() == "image_url");
         Assert.Equal(Picture, image.GetProperty("image_url").GetProperty("url").GetString());

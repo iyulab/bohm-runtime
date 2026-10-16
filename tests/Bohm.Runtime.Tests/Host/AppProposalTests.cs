@@ -516,6 +516,21 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task A_model_that_takes_no_pictures_in_looks_over_the_new_application_from_its_code_with_nothing_attached()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, Picture) };
+
+        await AppProposals.ReviewAsync(model, ModelLimits.Unknown, looked, TestContext.Current.CancellationToken, sees: false);
+
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User);
+        Assert.Empty(model.Calls[0].Messages.SelectMany(m => m.Contents).OfType<DataContent>());
+        Assert.Contains("No picture of it is attached", asked.Text, StringComparison.Ordinal);
+        Assert.Contains("A reading log for the books I borrow", asked.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Nothing_to_change_after_a_look_keeps_the_version_as_it_was()
     {
         var model = new FakeChatModel();

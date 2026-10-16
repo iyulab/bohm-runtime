@@ -62,7 +62,12 @@ public sealed class FakeProvider : IAsyncDisposable
     public string? FinishReason { get; set; } = "stop";
 
     /// <summary>The requests received other than for the model list and the question whether the model thinks — what a task asked of a model.</summary>
-    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)) && !IsThinkingQuestion(r))];
+    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)) && !IsThinkingQuestion(r) && !IsPictureQuestion(r))];
+
+    /// <summary>The questions whether the model takes pictures in (<see cref="Bohm.Runtime.Host.Llm.ImageInput.Question"/>) received — answered «Red.», as a model that sees.</summary>
+    public IReadOnlyList<ReceivedRequest> PictureQuestions => [.. Received.Where(IsPictureQuestion)];
+
+    private static bool IsPictureQuestion(ReceivedRequest r) => r.Body.Contains(Bohm.Runtime.Host.Llm.ImageInput.Question, StringComparison.Ordinal);
 
     /// <summary>The questions whether the model thinks (<see cref="Bohm.Runtime.Host.Llm.CompanyModel.ThinkingQuestion"/>) received.</summary>
     public IReadOnlyList<ReceivedRequest> ThinkingQuestions => [.. Received.Where(IsThinkingQuestion)];
@@ -134,6 +139,13 @@ public sealed class FakeProvider : IAsyncDisposable
             {
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(answer);
+                return;
+            }
+
+            if (IsPictureQuestion(self.Received.Last()) && context.Request.Path.Value?.EndsWith("/chat/completions", StringComparison.Ordinal) == true)
+            {
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("""{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Red."},"finish_reason":"stop"}]}""");
                 return;
             }
 

@@ -94,7 +94,8 @@ internal static class PromotionEndpoints
             outcome = request.Broken is not null
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : request.Review is not null
-                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills, editModel.Reviewer()?.Client).ConfigureAwait(false)
+                ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills, editModel.Reviewer()?.Client,
+                    await context.RequestServices.GetRequiredService<Llm.ImageInput>().SeesAsync(model, cancel).ConfigureAwait(false) == true).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
                     onProgress, skills, await McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false)).ConfigureAwait(false);

@@ -584,7 +584,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(["text", "image"], first.Input!);
         // An answer larger than the window makes no sense: that model's limits are unknown, the model is kept.
         Assert.Equal(ModelLimits.Unknown, list.Find("GPU", "small")!.Limits);
-        Assert.Equal(["text"], list.Find("cpu", "phi")!.Input!);
+        Assert.Null(list.Find("cpu", "phi")!.Input);   // the list does not say — not «text alone»
         Assert.Null(list.Find("gpu", "claude"));
         Assert.DoesNotContain("never-taken", JsonSerializer.Serialize(list));
     }
