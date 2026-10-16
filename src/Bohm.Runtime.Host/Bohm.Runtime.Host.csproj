@@ -40,7 +40,7 @@
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
   -->
   <ItemGroup>
-    <PackageReference Include="IronHive.Agent" Version="0.63.0" />
+    <PackageReference Include="IronHive.Agent" Version="0.64.0" />
     <PackageReference Include="IronHive.Extensions.AI" Version="0.66.1" />
     <PackageReference Include="IronHive.Providers.Anthropic" Version="0.66.1" />
     <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.66.1" />
