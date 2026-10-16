@@ -145,7 +145,7 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
         using var refused = await PostAsync("imports/preview", Body("title\n파이썬", collection, identity));
 
         HttpAssert.Status(HttpStatusCode.BadRequest, refused);
-        Assert.Equal(problem, JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("problem").GetString());
+        Assert.Equal(problem, JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
         using var preview = await PostAsync("imports/preview", Body(null, "books", "isbn", content: Convert.ToBase64String(neither)));
 
         HttpAssert.Status(HttpStatusCode.BadRequest, preview);
-        Assert.Equal("not-utf8", JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement.GetProperty("problem").GetString());
+        Assert.Equal("not-utf8", JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
     }
 
     [Fact]

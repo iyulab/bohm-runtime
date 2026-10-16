@@ -53,7 +53,7 @@ internal static class PromotionEndpoints
         catch (LocalModelUnavailableException e)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(e.Failure, null, null), cancel).ConfigureAwait(false);
+            await Control.ControlProblems.RefuseAsync(response, "proposal-failed", new Control.ControlPlane.ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
             return;
         }
 
@@ -61,7 +61,7 @@ internal static class PromotionEndpoints
         if (model is null || model.OnThisComputer)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await WriteAsync(response, model is null ? editModel.Missing ?? new Edit.EditModelMissing("localModel", null) : new Edit.EditModelMissing(NeedsLargerModel, null), cancel).ConfigureAwait(false);
+            await Control.ControlProblems.RefuseAsync(response, "model-missing", model is null ? editModel.Missing ?? new Edit.EditModelMissing("localModel", null) : new Edit.EditModelMissing(NeedsLargerModel, null)).ConfigureAwait(false);
             return;
         }
 
@@ -109,7 +109,7 @@ internal static class PromotionEndpoints
             }
 
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await WriteAsync(response, new Control.ControlPlane.ProposalFailure(null, detail, provider, stopped), cancel).ConfigureAwait(false);
+            await Control.ControlProblems.RefuseAsync(response, "proposal-failed", new Control.ControlPlane.ProposalFailure(null, detail, provider, stopped)).ConfigureAwait(false);
             return;
         }
 

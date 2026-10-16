@@ -122,7 +122,7 @@ internal static class TableImportEndpoints
         }
 
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await WriteAsync(context.Response, new ProblemView(problem), TableImportJson.Default.ProblemView, cancel).ConfigureAwait(false);
+        await Control.ControlProblems.RefuseAsync(context.Response, problem).ConfigureAwait(false);
         return null;
     }
 
@@ -140,8 +140,6 @@ internal static class TableImportEndpoints
     /// <param name="FileTypes">The file extensions the application's own file inputs take (<see cref="AppFileInputs"/>) — a table file of one of them is better taken in by the application itself.</param>
     internal sealed record ImportsView(IReadOnlyList<CollectionView> Collections, IReadOnlyList<TableImportRecord> Imports, IReadOnlyList<string> FileTypes);
 
-    internal sealed record ProblemView(string Problem);
-
     /// <param name="CodePage">The legacy code page the file was read in — <see langword="null"/> for UTF-8.</param>
     internal sealed record PlanView(IReadOnlyList<ColumnMapping> Columns, IReadOnlyList<string> Unfilled, int Added, int Replaced, int Skipped,
         IReadOnlyList<InvalidRow> Invalid, IReadOnlyList<JsonObject> Sample, string? Generated, int? CodePage)
@@ -153,6 +151,5 @@ internal static class TableImportEndpoints
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(TableImportEndpoints.ImportsView))]
 [JsonSerializable(typeof(TableImportEndpoints.PlanView))]
-[JsonSerializable(typeof(TableImportEndpoints.ProblemView))]
 [JsonSerializable(typeof(TableImportRecord))]
 internal sealed partial class TableImportJson : JsonSerializerContext;

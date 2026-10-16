@@ -143,12 +143,12 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
 
         using var outside = await RecordAsync(id, """{"source":"https://shop.example.evil/items","columns":["Item","Price"],"rows":[]}""");
         HttpAssert.Status(HttpStatusCode.Forbidden, outside);
-        Assert.Equal("outside-grant", JsonDocument.Parse(await outside.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+        Assert.Equal("outside-grant", JsonDocument.Parse(await outside.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
 
         using (var revoked = await _host.ControlClient().DeleteAsync($"/__control/apps/{id}/sources/prices/grant")) HttpAssert.Status(HttpStatusCode.NoContent, revoked);
         using var notGranted = await RecordAsync(id);
         HttpAssert.Status(HttpStatusCode.Forbidden, notGranted);
-        Assert.Equal("not-granted", JsonDocument.Parse(await notGranted.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+        Assert.Equal("not-granted", JsonDocument.Parse(await notGranted.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
     }
 
     [Fact]
@@ -159,8 +159,12 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
         using var response = await RecordAsync(id, """{"source":"https://shop.example/items","columns":["Item","Cost"],"rows":[["Pen","1.20"]]}""");
 
         HttpAssert.Status(HttpStatusCode.Conflict, response);
+        // The control surface's one refusal shape: an RFC 9457 problem with a reason, a next step, and the route's own data beside them.
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
         var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
-        Assert.Equal("shape-mismatch", body.GetProperty("code").GetString());
+        Assert.Equal(409, body.GetProperty("status").GetInt32());
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("detail").GetString()));
+        Assert.Equal("shape-mismatch", body.GetProperty("reason").GetString());
         Assert.Equal(["Item", "Price"], body.GetProperty("columns").EnumerateArray().Select(c => c.GetString()));
     }
 
@@ -255,7 +259,7 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
         using var set = await ScheduleAsync(id, "5");
 
         HttpAssert.Status(HttpStatusCode.BadRequest, tooOften);
-        Assert.Equal("too-often", JsonDocument.Parse(await tooOften.Content.ReadAsStringAsync()).RootElement.GetProperty("code").GetString());
+        Assert.Equal("too-often", JsonDocument.Parse(await tooOften.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
         HttpAssert.Status(HttpStatusCode.OK, set);
         var source = JsonDocument.Parse(await set.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("00:05:00", source.GetProperty("grant").GetProperty("every").GetString());

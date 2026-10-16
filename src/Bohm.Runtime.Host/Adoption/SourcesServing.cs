@@ -129,14 +129,14 @@ internal static class SourcesServing
                         response.StatusCode = StatusCodes.Status404NotFound;
                         return;
                     case RecordOutcome.NotGranted:
-                        await RefuseAsync(response, StatusCodes.Status403Forbidden, new SourceRefusal("not-granted", null), cancel).ConfigureAwait(false);
+                        await RefuseAsync(response, StatusCodes.Status403Forbidden, "not-granted", null).ConfigureAwait(false);
                         return;
                     case RecordOutcome.OutsideGrant:
-                        await RefuseAsync(response, StatusCodes.Status403Forbidden, new SourceRefusal("outside-grant", null), cancel).ConfigureAwait(false);
+                        await RefuseAsync(response, StatusCodes.Status403Forbidden, "outside-grant", null).ConfigureAwait(false);
                         return;
                     default:
                         var expected = (await sources.ListAsync(cancel).ConfigureAwait(false)).FirstOrDefault(s => s.Name == name)?.Rule.Columns;
-                        await RefuseAsync(response, StatusCodes.Status409Conflict, new SourceRefusal("shape-mismatch", expected), cancel).ConfigureAwait(false);
+                        await RefuseAsync(response, StatusCodes.Status409Conflict, "shape-mismatch", expected).ConfigureAwait(false);
                         return;
                 }
 
@@ -154,10 +154,10 @@ internal static class SourcesServing
                         await response.WriteAsJsonAsync(scheduledSource!, SourcesHttpJson.Default.AppSource, cancellationToken: cancel).ConfigureAwait(false);
                         return;
                     case ScheduleOutcome.TooOften:
-                        await RefuseAsync(response, StatusCodes.Status400BadRequest, new SourceRefusal("too-often", null), cancel).ConfigureAwait(false);
+                        await RefuseAsync(response, StatusCodes.Status400BadRequest, "too-often", null).ConfigureAwait(false);
                         return;
                     case ScheduleOutcome.NotGranted:
-                        await RefuseAsync(response, StatusCodes.Status409Conflict, new SourceRefusal("not-granted", null), cancel).ConfigureAwait(false);
+                        await RefuseAsync(response, StatusCodes.Status409Conflict, "not-granted", null).ConfigureAwait(false);
                         return;
                     default:
                         response.StatusCode = StatusCodes.Status404NotFound;
@@ -191,10 +191,11 @@ internal static class SourcesServing
         }
     }
 
-    private static Task RefuseAsync(HttpResponse response, int status, SourceRefusal refusal, CancellationToken cancellationToken)
+    /// <summary>Why a reading was not kept, as a control problem (<c>reason</c>); for a shape mismatch, the <c>columns</c> the rule expects.</summary>
+    private static Task RefuseAsync(HttpResponse response, int status, string reason, IReadOnlyList<string>? columns)
     {
         response.StatusCode = status;
-        return response.WriteAsJsonAsync(refusal, SourcesHttpJson.Default.SourceRefusal, cancellationToken: cancellationToken);
+        return Control.ControlProblems.RefuseAsync(response, reason, new { columns });
     }
 
     private static async Task<T?> ReadAsync<T>(HttpRequest request, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> type, CancellationToken cancellationToken)
@@ -230,8 +231,6 @@ internal static class SourcesServing
     /// <summary>A source due to be read on its schedule, and its application.</summary>
     internal sealed record DueSource(string App, AppSource Source);
 
-    /// <summary>Why a reading was not kept; for a shape mismatch, the columns the rule expects.</summary>
-    internal sealed record SourceRefusal(string Code, IReadOnlyList<string>? Columns);
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -239,7 +238,6 @@ internal static class SourcesServing
 [JsonSerializable(typeof(List<SourcesServing.ReadingView>))]
 [JsonSerializable(typeof(SourcesServing.DeclareRequest))]
 [JsonSerializable(typeof(SourcesServing.ReadingRequest))]
-[JsonSerializable(typeof(SourcesServing.SourceRefusal))]
 [JsonSerializable(typeof(AppSource))]
 [JsonSerializable(typeof(List<AppSource>))]
 [JsonSerializable(typeof(SourcesServing.ScheduledReadingView))]
