@@ -204,6 +204,9 @@ public static class RuntimeHost
         if (options.ControlSecret is { } secret) callers.Register(secret, ShellCaller);
         builder.Services.AddLoopbackAuthentication(callers);
         builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = ControlProblems.Customize);
+        // «Is it still answering» for the shell that watches it: a runtime that is alive but stuck is told from one
+        // that is busy by whether this cheap route answers.
+        builder.Services.AddHealthChecks();
         configure?.Invoke(builder);
 
         var app = builder.Build();
@@ -217,7 +220,10 @@ public static class RuntimeHost
         // with a reason and a next step (ControlProblems). Applications' own pages are left as they are.
         app.UseWhen(c => c.Request.Path.StartsWithSegments(ControlPlane.PathPrefix), control => control.UseStatusCodePages());
         if (options.ControlSecret is not null)
+        {
+            app.MapHealthChecks(ControlPlane.PathPrefix + "/health").RequireHost("127.0.0.1", "localhost").RequireCaller(ShellCaller);
             app.Map(ControlPlane.PathPrefix + "/{**rest}", ControlPlane.HandleAsync).RequireHost("127.0.0.1", "localhost").RequireCaller(ShellCaller);
+        }
 
         // What pages ask for: open, because an application's own key (or none) is all a page holds.
         app.MapFallback("{**path}", context =>

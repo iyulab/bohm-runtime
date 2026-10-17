@@ -96,6 +96,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/agent/mcp</c></term><description>Makes a web question's call to an MCP tool after the person allowed it, from <c>{ name, arguments }</c>: <c>{ text, failed }</c> — the text parts of what the tool returned (or the result as JSON), <c>failed</c> when the tool reported an error or threw. 404 when no connected server has that tool, 400 for a body not in that shape.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
 /// <item><term><c>POST /__control/shutdown</c></term><description>Drains, then stops the runtime.</description></item>
+/// <item><term><c>GET /__control/health</c></term><description>Answers <c>Healthy</c> while the runtime answers at all — ASP.NET Core's health checks, mapped next to this surface. The shell asks it every so often and stops a runtime that keeps not answering, then starts it again.</description></item>
 /// </list>
 /// </remarks>
 internal static partial class ControlPlane

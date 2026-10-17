@@ -494,6 +494,17 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_shell_can_ask_whether_the_runtime_still_answers()
+    {
+        using var answered = await _host.ControlClient().GetAsync("/__control/health");
+        using var none = await _host.ControlClient(secret: null).GetAsync("/__control/health");
+
+        HttpAssert.Status(HttpStatusCode.OK, answered);
+        Assert.Equal("Healthy", await answered.Content.ReadAsStringAsync());
+        HttpAssert.Status(HttpStatusCode.Unauthorized, none);
+    }
+
+    [Fact]
     public async Task Requests_without_the_secret_are_refused()
     {
         using var none = await _host.ControlClient(secret: null).GetAsync("/__control/apps");
