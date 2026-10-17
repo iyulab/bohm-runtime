@@ -2,6 +2,8 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Host.Llm;
+using LMSupply;
+using LMSupply.Lifecycle;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Bohm.Runtime.Tests.Host;
@@ -115,6 +117,38 @@ public sealed class ModelDownloadsTests : IDisposable
     }
 
     [Fact]
+    public async Task A_download_stopped_before_its_first_progress_ends_stopped()
+    {
+        var source = new StandIn(_cache) { Hold = new TaskCompletionSource() };
+        await using var host = await StartAsync(source);
+
+        using (var started = await DownloadAsync(host, "large")) HttpAssert.Status(HttpStatusCode.Accepted, started);
+        using (var stop = await host.ControlClient().DeleteAsync("/__control/llm/local-model/download")) HttpAssert.Status(HttpStatusCode.OK, stop);
+        await host.Services.GetRequiredService<ModelDownloads>().Settled;
+
+        var state = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/local-model")).RootElement;
+        Assert.Equal("stopped", state.GetProperty("download").GetProperty("failure").GetString());
+
+        // The library's download is stopped too, not only the wait for it: let it go on, and nothing arrives.
+        source.Hold!.SetResult();
+        await Task.Delay(300);
+        Assert.False(source.IsDownloaded("large"));
+    }
+
+    [Fact]
+    public async Task Without_a_llama_server_a_model_not_here_is_not_downloaded_and_nothing_is_sent()
+    {
+        // The model library's own source with no server shipped: a download would fetch a model this copy cannot run
+        // (and, left to itself, the library would fetch a server too) — so it is refused before anything is asked.
+        await using var host = await RunningHost.StartAsync();
+
+        using var refused = await DownloadAsync(host, "someone/not-on-this-computer-GGUF");
+
+        HttpAssert.Status(HttpStatusCode.Conflict, refused);
+        Assert.Empty(Sent(await EgressAsync(host)));
+    }
+
+    [Fact]
     public async Task A_model_the_host_does_not_have_ends_the_download_saying_so_and_a_fixed_model_cannot_be_replaced()
     {
         var source = new StandIn(_cache);
@@ -161,6 +195,8 @@ public sealed class ModelDownloadsTests : IDisposable
     /// <summary>Two catalog models; «missing» is not on the host; downloads write a file into the cache.</summary>
     private sealed class StandIn(string cache) : IModelSource
     {
+        public string Cache => cache;
+
         public int Asked;
 
         public int Fetched;
@@ -188,16 +224,28 @@ public sealed class ModelDownloadsTests : IDisposable
         public Task<string> LocalPathAsync(string model, CancellationToken cancellationToken) =>
             Task.FromResult(IsDownloaded(model) ? Path.Combine(cache, model + ".gguf") : throw new KeyNotFoundException(model));
 
-        public async Task<string> DownloadAsync(string model, IProgress<ModelDownloadProgress> progress, CancellationToken cancellationToken)
+        public IModelArtifacts Artifacts => new Files(this);
+
+        /// <summary>What a download fetches: one file into the cache, after reporting half of it.</summary>
+        private sealed class Files(StandIn source) : IModelArtifacts
         {
-            Interlocked.Increment(ref Fetched);
-            if (model == "missing") throw new KeyNotFoundException(model);
-            progress.Report(new(4_500, 9_000));
-            Reported.TrySetResult();
-            if (Hold is { } hold) await hold.Task.WaitAsync(cancellationToken);
-            var path = Path.Combine(cache, model + ".gguf");
-            await File.WriteAllTextAsync(path, "gguf", cancellationToken);
-            return path;
+            public string Kind => "generator";
+
+            public Task<bool> IsAvailableOfflineAsync(string modelId, CancellationToken cancellationToken = default) => Task.FromResult(source.IsDownloaded(modelId));
+
+            public Task<long> GetRemainingDownloadBytesAsync(string modelId, CancellationToken cancellationToken = default) => source.DownloadSizeAsync(modelId, cancellationToken);
+
+            public async Task DownloadAsync(string modelId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+            {
+                Interlocked.Increment(ref source.Fetched);
+                if (modelId == "missing") throw new KeyNotFoundException(modelId);
+                progress?.Report(new DownloadProgress { FileName = modelId + ".gguf", BytesDownloaded = 4_500, TotalBytes = 9_000 });
+                source.Reported.TrySetResult();
+                if (source.Hold is { } hold) await hold.Task.WaitAsync(cancellationToken);
+                await File.WriteAllTextAsync(Path.Combine(source.Cache, modelId + ".gguf"), "gguf", cancellationToken);
+            }
+
+            public bool Delete(string modelId) => throw new NotSupportedException();
         }
     }
 }

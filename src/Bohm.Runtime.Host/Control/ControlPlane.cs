@@ -1183,7 +1183,7 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["llm", "local-model"]):
-                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm", "local-model", "catalog"]):
@@ -1206,7 +1206,7 @@ internal static partial class ControlPlane
                 if (request.Method == "DELETE")
                 {
                     downloads.Stop();
-                    await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                    await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                     break;
                 }
 
@@ -1236,7 +1236,7 @@ internal static partial class ControlPlane
 
                 // In use at once (200) or being got in the background (202).
                 response.StatusCode = started == ModelDownloads.Started.InUse ? StatusCodes.Status200OK : StatusCodes.Status202Accepted;
-                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["llm", "speech-model"]):
@@ -1291,7 +1291,7 @@ internal static partial class ControlPlane
                 }
 
                 response.StatusCode = StatusCodes.Status202Accepted;
-                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", "local-model"]):
@@ -1312,7 +1312,7 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await WriteAsync(response, LocalModelViewOf(context), cancel).ConfigureAwait(false);
+                await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", var providerId, "key"]):
@@ -1761,11 +1761,11 @@ internal static partial class ControlPlane
 
     internal sealed record AssetsView(IReadOnlyList<AssetView> Cached, IReadOnlyList<AssetView> NotCached);
 
-    private static LocalModelView LocalModelViewOf(HttpContext context)
+    private static async Task<LocalModelView> LocalModelViewOfAsync(HttpContext context, CancellationToken cancel)
     {
         var local = context.RequestServices.GetRequiredService<LocalModel>();
-        return new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure,
-            context.RequestServices.GetRequiredService<ModelDownloads>().Current);
+        var download = await context.RequestServices.GetRequiredService<ModelDownloads>().CurrentAsync(cancel).ConfigureAwait(false);
+        return new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure, download);
     }
 
     private static async Task<SpeechModelView> SpeechModelViewOfAsync(HttpContext context, CancellationToken cancel)
