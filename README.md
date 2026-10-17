@@ -2,30 +2,58 @@
 
 A local-first application runtime.
 
-An application is described declaratively — its data model, permissions, scheduled jobs and
-notifications — and the runtime executes that description. Generated server-side logic runs in an
-isolated sandbox rather than in-process; generated UI is isolated on the browser side, by the UI
-layer this runtime sits behind. Changes to a running application, including those produced from
-natural-language intent, arrive as **change sets**: reviewed units that the runtime applies
-deterministically and never applies unreviewed. Existing data is preserved across those changes.
+It runs small applications on the computer they are used on. Each application is a single HTML file, served from
+its own origin (`http://<id>.localhost:<port>/`) under a strict content security policy. What an application
+keeps is stored next to it in a data folder on this computer and survives every later version of the application.
+When an application calls an AI service, it calls the runtime instead (`/__bohm/llm/<provider host>/…`): the runtime
+adds the key the person connected, or answers with a model on this computer, so the application never holds a key.
+Everything an application sends out is counted.
 
-The same runtime runs on a workstation or headless on a server, so an application can move between
-the two without being rebuilt.
+The runtime is the companion process of a desktop browser shell, which starts it, talks to it over a loopback
+control API, and shows its applications.
 
 ## Design commitments
 
-- **Data outlives the application.** Application code can be regenerated; the data it holds cannot.
-  Where the two conflict, the data wins.
-- **Generated code is not trusted.** Sandboxing, network allow-lists and scoped file access are the
-  default, not an option.
-- **No network dependency for core function.** The runtime works fully on a disconnected network.
-- **Proposals, not applications.** Nothing changes a running system without a reviewed change set.
+- **Data outlives the application.** Application code can be rewritten; the data it holds cannot. Where the two
+  conflict, the data wins.
+- **Generated code is not trusted.** Each application is isolated in its own origin with a restrictive policy, and
+  what it reaches outside is counted.
+- **No network dependency for core function.** With a model on this computer, applications keep working on a
+  disconnected network.
+- **Proposals, not applications.** A change to an application arrives as a proposal the person reviews; nothing
+  replaces a running application unreviewed.
+
+The direction beyond this — a declared data model, permissions and scheduled jobs that the runtime carries out — is
+not built yet.
 
 ## Status
 
-Early design — no releases, and the public contract is deliberately not open yet. The extension
-points, the on-disk project format and the registry protocol are still being shaped, and they will
-be documented once they stabilise. Until then, treat everything here as subject to change.
+No standalone releases: the runtime ships inside the desktop application that uses it. The control API, the
+application contract and the on-disk layout are not a public contract yet and change without notice.
+
+## Build and run
+
+Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download). Developed and tested on Windows.
+
+```sh
+dotnet build src/Bohm.Runtime.Host -c Release
+dotnet test
+```
+
+Run it by hand with a data folder and a secret for the control API (32 characters or more):
+
+```sh
+BOHM_RUNTIME_SECRET=<a random string of 32+ characters> \
+  dotnet run --project src/Bohm.Runtime.Host -- --data-root ./data --port 0
+```
+
+When it is listening it writes one line to standard output — `bohm-runtime ready port=<n>` — and everything else to
+standard error. Send the secret as a bearer token to `http://127.0.0.1:<n>/__control/…`; without it the control API
+is off and answers nothing. `--help` lists every option and environment variable.
+
+Two things are shared by every data folder on the computer, not kept per folder: the keys the person connects (the
+Windows Credential Manager, under `Bohm/` — `BOHM_VAULT_PREFIX` moves them elsewhere for a check that must not touch
+the person's keys) and downloaded models (the model library's cache).
 
 ## Contributing
 

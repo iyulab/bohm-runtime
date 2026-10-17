@@ -116,7 +116,14 @@ internal static class TableImportEndpoints
         {
             problem = e.Problem;
         }
-        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+        catch (FormatException)
+        {
+            // The one thing a caller cannot guess from the field's name: the file goes in as its bytes, base64-encoded.
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await Control.ControlProblems.RefuseAsync(context.Response, "bad-request", new { Detail = "file.content is not base64: send the file's bytes base64-encoded." }).ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
         {
             problem = "bad-request";
         }
