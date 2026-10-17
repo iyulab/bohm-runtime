@@ -2,6 +2,8 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Host.Llm;
+using LMSupply;
+using LMSupply.Lifecycle;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Bohm.Runtime.Tests.Host;
@@ -47,7 +49,7 @@ public sealed class LocalSpeechTests
         HttpAssert.Status(HttpStatusCode.OK, text);
         Assert.Equal("heard 3 bytes in (any)", await text.Content.ReadAsStringAsync());
         Assert.Equal(1, source.Loads);                                     // loaded once, then kept
-        Assert.All(source.LoadedWithDownload, Assert.False);               // an application never causes a download
+        Assert.Equal(0, source.Fetched);                                   // an application never causes a download
         Assert.Empty(Sent(await EgressAsync(host)));                       // nothing left the computer
     }
 
@@ -94,7 +96,7 @@ public sealed class LocalSpeechTests
         Assert.True(after.GetProperty("loaded").GetBoolean());
         Assert.Equal(JsonValueKind.Null, after.GetProperty("download").ValueKind);
         Assert.Equal(["speech.example"], Sent(await EgressAsync(host)));
-        Assert.Equal([true], source.LoadedWithDownload);
+        Assert.Equal(1, source.Fetched);
 
         using (var again = await host.ControlClient().PostAsync("/__control/llm/speech-model/download", null))
             HttpAssert.Status(HttpStatusCode.OK, again);                    // here already: nothing to get
@@ -145,7 +147,7 @@ public sealed class LocalSpeechTests
         var native = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native");
         Assert.SkipUnless(OperatingSystem.IsWindows() && File.Exists(Path.Combine(native, "onnxruntime.dll")), "No native ONNX Runtime next to the tests.");
         var source = new LMSupplySpeechModelSource(native);
-        Assert.SkipUnless(await source.IsDownloadedAsync(CancellationToken.None), "The speech model is not in the model library's cache.");
+        Assert.SkipUnless(await source.Artifacts.IsAvailableOfflineAsync("quality"), "The speech model is not in the model library's cache.");
         await using var host = await RunningHost.StartAsync(configure: o => o with
         {
             SpeechModelSource = source,
@@ -191,31 +193,52 @@ public sealed class LocalSpeechTests
 
     private static List<string?> Sent(JsonElement egress) => egress.GetProperty("sent").EnumerateArray().Select(s => s.GetProperty("host").GetString()).ToList();
 
+    /// <summary>A model that is here once its download ran; the download reports half, then writes nothing but the flag.</summary>
     private sealed class StandIn : ISpeechModelSource
     {
+        public StandIn() => Artifacts = new Files(this);
+
         public bool Downloaded { get; set; }
 
         public Exception? FailDownload { get; init; }
 
         public int Loads;
 
-        public List<bool> LoadedWithDownload { get; } = [];
+        public int Fetched;
 
         public string Host => "speech.example";
 
+        public string Model => "quality";
+
+        public IModelArtifacts Artifacts { get; }
+
         public Task<long> DownloadSizeAsync(CancellationToken cancellationToken) => Task.FromResult(253L);
 
-        public Task<bool> IsDownloadedAsync(CancellationToken cancellationToken) => Task.FromResult(Downloaded);
-
-        public Task<ISpeechToText> LoadAsync(bool download, IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken)
+        public Task<ISpeechToText> LoadAsync(CancellationToken cancellationToken)
         {
-            lock (LoadedWithDownload) LoadedWithDownload.Add(download);
-            if (!Downloaded && !download) throw new InvalidOperationException("not here");
-            if (download && FailDownload is { } failure) throw failure;
-            progress?.Report(new(253, 253));
-            Downloaded = true;
+            if (!Downloaded) throw new InvalidOperationException("not here");
             Interlocked.Increment(ref Loads);
             return Task.FromResult<ISpeechToText>(new Heard());
+        }
+
+        private sealed class Files(StandIn source) : IModelArtifacts
+        {
+            public string Kind => "transcriber";
+
+            public Task<bool> IsAvailableOfflineAsync(string modelId, CancellationToken cancellationToken = default) => Task.FromResult(source.Downloaded);
+
+            public Task<long> GetRemainingDownloadBytesAsync(string modelId, CancellationToken cancellationToken = default) => Task.FromResult(source.Downloaded ? 0L : 253L);
+
+            public Task DownloadAsync(string modelId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
+            {
+                Interlocked.Increment(ref source.Fetched);
+                if (source.FailDownload is { } failure) throw failure;
+                progress?.Report(new DownloadProgress { FileName = "model.onnx", BytesDownloaded = 253, TotalBytes = 253 });
+                source.Downloaded = true;
+                return Task.CompletedTask;
+            }
+
+            public bool Delete(string modelId) => throw new NotSupportedException();
         }
 
         private sealed class Heard : ISpeechToText
