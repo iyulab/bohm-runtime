@@ -1,4 +1,5 @@
 using LMSupply;
+using LMSupply.Lifecycle;
 using LMSupply.Runtime;
 using LMSupply.Transcriber;
 
@@ -21,17 +22,20 @@ public interface ISpeechModelSource
     /// <summary>The host downloads come from — what is counted as sent to.</summary>
     string Host { get; }
 
+    /// <summary>The model's id, as <see cref="Artifacts"/> knows it.</summary>
+    string Model { get; }
+
     /// <summary>How many bytes getting the model takes. Asks the host once.</summary>
     Task<long> DownloadSizeAsync(CancellationToken cancellationToken);
 
-    /// <summary>Whether the model is on this computer, complete. Read without the network.</summary>
-    Task<bool> IsDownloadedAsync(CancellationToken cancellationToken);
-
     /// <summary>
-    /// Loads the model — getting it first when <paramref name="download"/> and it is not on this computer;
-    /// otherwise a missing model fails instead of being got.
+    /// The files a load opens: whether they are all on this computer (read without the network) and the download that puts
+    /// them there, as the model library's lifecycle drives it (its progress, stopping, failure).
     /// </summary>
-    Task<ISpeechToText> LoadAsync(bool download, IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken);
+    IModelArtifacts Artifacts { get; }
+
+    /// <summary>Loads the model, which is on this computer — a missing one fails instead of being got.</summary>
+    Task<ISpeechToText> LoadAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>LMSupply's Whisper Small, on the CPU, with the native ONNX Runtime from a directory the runtime ships.</summary>
@@ -87,15 +91,16 @@ internal sealed class LMSupplySpeechModelSource : ISpeechModelSource
         }
     }
 
-    public Task<bool> IsDownloadedAsync(CancellationToken cancellationToken) =>
-        LocalTranscriber.IsModelDownloadedAsync(Model, Options(download: false), cancellationToken);
+    string ISpeechModelSource.Model => Model;
 
-    public async Task<ISpeechToText> LoadAsync(bool download, IProgress<ModelDownloadProgress>? progress, CancellationToken cancellationToken)
+    // The options the load uses, so the files counted and fetched are the ones it opens.
+    public IModelArtifacts Artifacts { get; } = new TranscriberArtifacts(Options(download: true));
+
+    public async Task<ISpeechToText> LoadAsync(CancellationToken cancellationToken)
     {
-        var relay = progress is null ? null : new Relay(p => progress.Report(new(p.OverallBytesDownloaded ?? p.BytesDownloaded, p.OverallTotalBytes ?? p.TotalBytes)));
         try
         {
-            return new Loaded(await LocalTranscriber.LoadAsync(Model, Options(download), relay, cancellationToken).ConfigureAwait(false));
+            return new Loaded(await LocalTranscriber.LoadAsync(Model, Options(download: false), null, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception e) when (LMSupplyModelSource.Translated(e) is { } translated)
         {
@@ -111,12 +116,6 @@ internal sealed class LMSupplySpeechModelSource : ISpeechModelSource
             (await model.TranscribeAsync(audio, new TranscribeOptions { Language = language }, cancellationToken).ConfigureAwait(false)).Text;
 
         public ValueTask DisposeAsync() => model.DisposeAsync();
-    }
-
-    /// <summary>Reports on the thread that reports — no synchronization context to post to.</summary>
-    private sealed class Relay(Action<DownloadProgress> report) : IProgress<DownloadProgress>
-    {
-        public void Report(DownloadProgress value) => report(value);
     }
 }
 
@@ -134,6 +133,7 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
     private readonly ISpeechModelSource? _source = options.SpeechModelSource
         ?? (options.SpeechRuntimeDirectory is { } directory ? new LMSupplySpeechModelSource(directory) : null);
 
+    private ModelLifecycle? _lifecycle;
     private readonly SemaphoreSlim _load = new(1, 1);
     private readonly SemaphoreSlim _turn = new(1, 1);
     private readonly Lock _lock = new();
@@ -174,16 +174,26 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
     {
         if (_source is null) return false;
         if (_downloaded) return true;
-        return _downloaded = await _source.IsDownloadedAsync(cancellationToken).ConfigureAwait(false);
+        return _downloaded = await _source.Artifacts.IsAvailableOfflineAsync(_source.Model, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>The download under way or the last one that ended without the model, or <see langword="null"/>.</summary>
-    public ModelDownloads.DownloadView? Download
+    /// <remarks>Reads the lifecycle's status only while the download runs — after it, there is nothing new to read.</remarks>
+    public async Task<ModelDownloads.DownloadView?> CurrentAsync(CancellationToken cancellationToken)
     {
-        get
-        {
-            lock (_lock) return _running?.View();
-        }
+        Running? running;
+        lock (_lock) running = _running;
+        if (running is null) return null;
+        if (!running.Task.IsCompleted && _lifecycle is { } lifecycle
+            && await lifecycle.GetStatusAsync(running.Kind, running.Model, cancellationToken).ConfigureAwait(false) is { State: ModelState.Downloading, Progress: { } progress })
+            running.Progress = new(progress.OverallBytesDownloaded ?? progress.BytesDownloaded, progress.OverallTotalBytes ?? progress.TotalBytes);
+        return running.View();
+    }
+
+    // The library's lifecycle over this source's files — made on first use, so a copy that never gets the model never builds it.
+    private ModelLifecycle Lifecycle(ISpeechModelSource source)
+    {
+        lock (_lock) return _lifecycle ??= new ModelLifecycle([source.Artifacts]);
     }
 
     /// <summary>
@@ -195,11 +205,12 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
         var source = _source ?? throw new NotSupportedException("This copy cannot run a speech model.");
         if (await DownloadedAsync(cancellationToken).ConfigureAwait(false)) return ModelDownloads.Started.InUse;
 
+        var lifecycle = Lifecycle(source);
         Running running;
         lock (_lock)
         {
             if (_running is { Ended: false }) return ModelDownloads.Started.Busy;
-            running = _running = new Running();
+            running = _running = new Running(source.Artifacts.Kind, source.Model);
         }
 
         egress.Sent(source.Host);
@@ -207,7 +218,18 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
         {
             try
             {
-                var model = await source.LoadAsync(download: true, running, running.Stop.Token).ConfigureAwait(false);
+                try
+                {
+                    await lifecycle.DownloadAsync(running.Kind, running.Model, running.Stop.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (running.Stop.IsCancellationRequested)
+                {
+                    // Stopped before the lifecycle's download was there to cancel: the wait ends here, the download too.
+                    lifecycle.CancelDownload(running.Kind, running.Model);
+                    throw;
+                }
+
+                var model = await source.LoadAsync(CancellationToken.None).ConfigureAwait(false);
                 await _load.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                 try
                 {
@@ -226,7 +248,7 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
             }
             catch (Exception e)
             {
-                running.Fail(e switch
+                running.Fail((LMSupplyModelSource.Translated(e) ?? e) switch
                 {
                     OperationCanceledException when running.Stop.IsCancellationRequested => ModelDownloads.DownloadView.Stopped,
                     HttpRequestException or OperationCanceledException => ModelDownloads.DownloadView.Unreachable,
@@ -241,7 +263,12 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
     /// <summary>Stops the download under way, if there is one.</summary>
     public void StopDownload()
     {
-        lock (_lock) _running?.Stop.Cancel();
+        lock (_lock)
+        {
+            if (_running is not { Ended: false } running) return;
+            running.Stop.Cancel();
+            _lifecycle?.CancelDownload(running.Kind, running.Model);
+        }
     }
 
     /// <summary>Waits for the download under way to end — for tests.</summary>
@@ -283,7 +310,7 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
             {
                 // The loaded model serves every recording after this one: one that gives up while it loads does not
                 // throw away a load the next would only have to start again.
-                _model = await _source.LoadAsync(download: false, progress: null, CancellationToken.None).ConfigureAwait(false);
+                _model = await _source.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -313,21 +340,27 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
         _turn.Dispose();
     }
 
-    private sealed class Running : IProgress<ModelDownloadProgress>
+    /// <summary>The person's side of one download: which files, and how it ended for them.</summary>
+    private sealed class Running(string kind, string model)
     {
-        private ModelDownloadProgress _progress = new(0, null);
         private string? _failure;
 
+        public string Kind => kind;
+
+        public string Model => model;
+
+        /// <summary>Ends this caller's wait — the lifecycle's download is cancelled with it (<see cref="StopDownload"/>).</summary>
         public CancellationTokenSource Stop { get; } = new();
 
         public Task Task { get; set; } = Task.CompletedTask;
 
-        public bool Ended => _failure is not null;
+        /// <summary>The last progress read while it ran.</summary>
+        public ModelDownloadProgress Progress { get; set; } = new(0, null);
 
-        public void Report(ModelDownloadProgress value) => _progress = value;
+        public bool Ended => _failure is not null;
 
         public void Fail(string failure) => _failure = failure;
 
-        public ModelDownloads.DownloadView View() => new(LMSupplySpeechModelSource.Model, null, _progress.Bytes, _progress.Total, _failure);
+        public ModelDownloads.DownloadView View() => new(model, null, Progress.Bytes, Progress.Total, _failure);
     }
 }

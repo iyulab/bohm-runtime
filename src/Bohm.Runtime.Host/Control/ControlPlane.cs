@@ -1771,7 +1771,7 @@ internal static partial class ControlPlane
     private static async Task<SpeechModelView> SpeechModelViewOfAsync(HttpContext context, CancellationToken cancel)
     {
         var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
-        return new(speech.Supported, await speech.DownloadedAsync(cancel).ConfigureAwait(false), speech.Loaded, speech.LastFailure, speech.Download);
+        return new(speech.Supported, await speech.DownloadedAsync(cancel).ConfigureAwait(false), speech.Loaded, speech.LastFailure, await speech.CurrentAsync(cancel).ConfigureAwait(false));
     }
 
     /// <param name="Supported">Whether this copy can run a speech model at all.</param>
