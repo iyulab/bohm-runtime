@@ -397,7 +397,7 @@ internal static partial class AppProposals
     private static string ReviewInstruction(string question) =>
         "This is the application you just wrote for this request: «" + question.Trim() + "». The picture shows how its "
         + "first screen looks now. Compare what you see with what was asked, and change what you would change, looking at it — "
-        + "layout, spacing, sizes, colours, the first-time hint, wording — with exact replacements (the a-finished-look skill "
+        + "layout, spacing, sizes, colours and how well text stands out from what is behind it, a name on every field, the first-time hint, wording — with exact replacements (the a-finished-look skill "
         + "offers a checklist if you want one). Keep every feature, every element id, every localStorage key and the shape of "
         + "what is stored as it is. When nothing falls short, change nothing and say so in one sentence.";
 
@@ -405,7 +405,7 @@ internal static partial class AppProposals
     internal static string CodeReviewInstruction(string question) =>
         "This is the application you just wrote for this request: «" + question.Trim() + "». No picture of it is attached: read its "
         + "code as its first screen would look, compare that with what was asked, and change what you would change — layout, spacing, "
-        + "sizes, colours, the first-time hint, wording — with exact replacements (the a-finished-look skill offers a checklist if you "
+        + "sizes, colours and how well text stands out from what is behind it, a name on every field, the first-time hint, wording — with exact replacements (the a-finished-look skill offers a checklist if you "
         + "want one). Keep every feature, every element id, every localStorage key and the shape of what is stored as it is. When "
         + "nothing falls short, change nothing and say so in one sentence.";
 
