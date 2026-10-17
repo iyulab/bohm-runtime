@@ -43,6 +43,39 @@ using TauriKit.Sidecar.Loopback;
 // Manager instead of Bohm/, so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]";
+// What --help prints: the comment above, short — what someone running the runtime by hand needs to get to a first request.
+const string help = usage + """
+
+
+      --data-root <directory>    Where applications and their data are kept (created when missing).
+      --port <n>                 The loopback port; without it the data root keeps its port across launches, 0 lets the
+                                 operating system choose.
+      --parent-pid <pid>         Stop when that process ends.
+      --llama-server <path>      The executable that runs a model chosen on this computer (default: one shipped next
+                                 to this executable, when present).
+      --company-models <json>    The organization's model servers and models (an administrator's policy).
+      --company-model-endpoint <url> --company-model <name>
+                                 The older way to name one such server and model.
+      --no-mcp                   Turn MCP servers off for this run.
+
+    Environment:
+      BOHM_RUNTIME_SECRET        A per-launch secret, 32 characters or more, that turns the control API (/__control/)
+                                 on; send it as a bearer token. Without it the control API answers nothing.
+      BOHM_LLM_ENDPOINTS         host=address pairs, separated by ';', that send a provider's traffic to a gateway
+                                 speaking the same API.
+      BOHM_REVIEW_MODEL          <provider>/<model> that reads a newly written application once before it is polished.
+      BOHM_DISCARD_DIR           (checks) Move applications removed for good there instead of the recycle bin.
+      BOHM_VAULT_PREFIX          (checks) Keep keys under that prefix in the Windows Credential Manager instead of Bohm/.
+
+    Once listening, one line goes to standard output: bohm-runtime ready port=<n> (and previousPort=<m> when the data
+    root's port was taken). Everything else goes to standard error.
+    """;
+if (args.Contains("--help") || args.Contains("-h"))
+{
+    Console.WriteLine(help);
+    return 0;
+}
+
 string? dataRoot = null;
 int? port = null;
 int? parentPid = null;
@@ -95,8 +128,14 @@ if (dataRoot is null
             || !Bohm.Runtime.Host.Llm.CompanyModelOptions.TryCreate(companyEndpoint, companyModelName, out companyModel)))
 {
     await Console.Error.WriteLineAsync(usage);
+    await Console.Error.WriteLineAsync("Run with --help for what each option and environment variable does.");
     return 2;
 }
+
+// Without the secret the control API is off and answers 404 with no body — say why, once, so a run by hand is not a puzzle.
+var controlSecret = LoopbackCredentials.ReadToken("BOHM_RUNTIME_SECRET");
+if (controlSecret is null)
+    await Console.Error.WriteLineAsync("BOHM_RUNTIME_SECRET is not set to 32 characters or more: the control API (/__control/) is off this run.");
 
 var companyModels = companyModel is not null ? Bohm.Runtime.Host.Llm.CompanyModelList.Of(companyModel) : null;
 if (companyModelsJson is not null && !Bohm.Runtime.Host.Llm.CompanyModelList.TryParse(companyModelsJson, out companyModels))
@@ -133,7 +172,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
 {
     DataRoot = dataRoot,
     Port = port,
-    ControlSecret = LoopbackCredentials.ReadToken("BOHM_RUNTIME_SECRET"),
+    ControlSecret = controlSecret,
     LlamaServerPath = llamaServer,
     SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,

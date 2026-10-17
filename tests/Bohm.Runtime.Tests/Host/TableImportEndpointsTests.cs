@@ -149,6 +149,17 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_file_sent_as_plain_text_instead_of_base64_is_refused_saying_so()
+    {
+        using var refused = await PostAsync("imports/preview", Body(null, content: "isbn,title\n978-3,파이썬"));
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        var problem = JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("bad-request", problem.GetProperty("reason").GetString());
+        Assert.Contains("base64", problem.GetProperty("detail").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_file_that_is_neither_utf8_nor_text_in_this_computers_code_page_is_refused()
     {
         // A lead byte followed by a line break: no character in UTF-8, nor in a double-byte code page (the

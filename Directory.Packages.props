@@ -1,0 +1,10 @@
+<Project>
+  <!--
+    Package versions are set in each project, not centrally. This file is here so MSBuild stops looking upward: a
+    Directory.Packages.props in a folder above a clone would otherwise turn central package management on for this
+    repository and fail the first restore (NU1008).
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>
