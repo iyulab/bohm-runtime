@@ -55,9 +55,12 @@ internal static class AdoptedAppServing
     /// loads from the application's own origin (inline script and style allowed — adopted documents are single
     /// files that rely on them), nothing reaches another origin, no other origin may embed or pull in the
     /// application, and no <c>Referer</c> leaves it. Requests another site's page makes — another application
-    /// included — are refused. See <see cref="OriginSecurityProfile"/>.
+    /// included — are refused. WebRTC, which the content security policy does not govern, is held to the application's
+    /// own origin by a <c>Connection-Allowlist</c> — it would otherwise reach any address past the policy (a STUN server
+    /// answers it from outside). That also stops the page navigating away itself, so links to other sites leave through
+    /// a new window (shim.js). See <see cref="OriginSecurityProfile"/>.
     /// </summary>
-    public static readonly OriginSecurityProfile Profile = new();
+    public static readonly OriginSecurityProfile Profile = new() { ConnectionAllowlist = OriginSecurityProfile.DefaultConnectionAllowlist };
 
     private const string LocalhostSuffix = ".localhost";
 

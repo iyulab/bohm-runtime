@@ -115,6 +115,24 @@
     return nativeFetch(input instanceof Request ? new Request(proxied, input) : proxied, init);
   };
 
+  // A link to another site leaves through a new window, which the browser around the application asks about and
+  // opens elsewhere. This origin answers with a Connection-Allowlist of itself, so WebRTC stays inside the content
+  // security policy; that also stops the page from navigating away itself, and the link would end on the browser's
+  // error page. Only a plain click the page did not handle: a modified click, a download or a link that opens a
+  // window already takes the browser's own way.
+  window.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    var link = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if (!link || link.hasAttribute("download")) return;
+    var target = (link.getAttribute("target") || "").toLowerCase();
+    if (target && target !== "_self" && target !== "_top" && target !== "_parent") return;
+    var to;
+    try { to = new URL(link.href, location.href); } catch (err) { return; }
+    if ((to.protocol !== "http:" && to.protocol !== "https:") || to.origin === location.origin) return;
+    e.preventDefault();
+    window.open(to.href, "_blank", "noopener");
+  });
+
   var nativeOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
     var proxied = toProxy(String(url));

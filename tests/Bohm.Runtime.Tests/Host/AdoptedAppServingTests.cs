@@ -66,6 +66,8 @@ public sealed class AdoptedAppServingTests : IAsyncLifetime
         // Would lose the writes a closing page sends (see IsolationHeaders).
         Assert.False(response.Headers.Contains("Cross-Origin-Opener-Policy"));
         Assert.Single(response.Headers.GetValues("Content-Security-Policy"));
+        // WebRTC is outside the content security policy; this holds it to the application's own origin.
+        Assert.Equal("(response-origin)", Assert.Single(response.Headers.GetValues("Connection-Allowlist")));
     }
 
     [Fact]

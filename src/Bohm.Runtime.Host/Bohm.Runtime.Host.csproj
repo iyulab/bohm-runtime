@@ -31,7 +31,7 @@
 
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
   <ItemGroup>
-    <PackageReference Include="LocalOrigin.AspNetCore" Version="0.4.0" />
+    <PackageReference Include="LocalOrigin.AspNetCore" Version="0.4.1" />
     <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.21.0" />
   </ItemGroup>
 
