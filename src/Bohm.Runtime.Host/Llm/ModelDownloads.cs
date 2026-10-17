@@ -2,6 +2,8 @@ using LMSupply;
 using LMSupply.Exceptions;
 using LMSupply.Generator;
 using LMSupply.Generator.Gguf;
+using LMSupply.Lifecycle;
+using LMSupply.Llama.Server;
 
 namespace Bohm.Runtime.Host.Llm;
 
@@ -43,15 +45,25 @@ public interface IModelSource
     /// <exception cref="KeyNotFoundException">It is not on this computer.</exception>
     Task<string> LocalPathAsync(string model, CancellationToken cancellationToken);
 
-    /// <summary>Gets <paramref name="model"/> and returns the path of its model file (<c>.gguf</c>) on this computer.</summary>
-    /// <exception cref="KeyNotFoundException">The host has no such model.</exception>
-    Task<string> DownloadAsync(string model, IProgress<ModelDownloadProgress> progress, CancellationToken cancellationToken);
+    /// <summary>
+    /// What a download fetches, as the model library's lifecycle drives it (its progress, stopping, failure), or
+    /// <see langword="null"/> when this copy cannot run a model on this computer, so there is nothing worth getting.
+    /// A model it has fetched is then found by <see cref="LocalPathAsync"/>.
+    /// </summary>
+    IModelArtifacts? Artifacts { get; }
 }
 
 /// <summary>LMSupply's GGUF catalog and downloads from Hugging Face, into the library's cache.</summary>
-internal sealed class LMSupplyModelSource : IModelSource
+/// <param name="serverPath">The llama-server shipped with this copy. A download fetches the model files only — never a server —
+/// so without one there is nothing to download (<see cref="Artifacts"/> is <see langword="null"/>).</param>
+internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
 {
     public string Host => "huggingface.co";
+
+    public IModelArtifacts? Artifacts { get; } = serverPath is null ? null : new GeneratorArtifacts(new GeneratorOptions
+    {
+        ServerUpdateOptions = new LlamaServerUpdateOptions { ServerBinaryPath = serverPath, AutoDownloadUpdates = false },
+    });
 
     /// <remarks>
     /// The catalog is the library's GGUF aliases, each asked for as <c>gguf:&lt;alias&gt;</c> — a plain alias names an ONNX model,
@@ -108,20 +120,6 @@ internal sealed class LMSupplyModelSource : IModelSource
         }
     }
 
-    public async Task<string> DownloadAsync(string model, IProgress<ModelDownloadProgress> progress, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await LocalGenerator.DownloadModelAsync(model, null,
-                new Relay(p => progress.Report(new(p.OverallBytesDownloaded ?? p.BytesDownloaded, p.OverallTotalBytes ?? p.TotalBytes))),
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception e) when (Translated(e) is { } translated)
-        {
-            throw translated;
-        }
-    }
-
     /// <summary>
     /// The library's failures in the interface's terms: no such model — including a repository the Hub refuses, which it
     /// answers the same whether it does not exist or is private or gated — as <see cref="KeyNotFoundException"/>, and a
@@ -134,12 +132,6 @@ internal sealed class LMSupplyModelSource : IModelSource
         ModelDownloadException { InnerException: HttpRequestException inner } => new HttpRequestException(e.Message, e, inner.StatusCode),
         _ => null,
     };
-
-    /// <summary>Reports on the thread that reports — no synchronization context to post to.</summary>
-    private sealed class Relay(Action<DownloadProgress> report) : IProgress<DownloadProgress>
-    {
-        public void Report(DownloadProgress value) => report(value);
-    }
 }
 
 /// <summary>
@@ -152,12 +144,28 @@ internal sealed class LMSupplyModelSource : IModelSource
 /// happens only when the person asks; once on the computer the model runs without it. Asking a size and
 /// downloading are counted as sent to the model host. Whether the person may get models at all is the
 /// shell's to decide (an administrator's policy), like the other ways out.
+/// <para>
+/// The download itself — its progress, stopping it, why it failed — is the model library's lifecycle
+/// (<see cref="ModelLifecycle"/>); what is kept here is the person's side of it: one at a time, the name they
+/// chose it by, what is counted as sent, and the model in use once it has arrived.
+/// </para>
 /// </remarks>
-internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel local, Egress egress)
+internal sealed class ModelDownloads
 {
-    private readonly IModelSource _source = options.ModelSource ?? new LMSupplyModelSource();
+    private readonly LocalModel _local;
+    private readonly Egress _egress;
+    private readonly IModelSource _source;
+    private readonly ModelLifecycle? _lifecycle;
     private readonly Lock _lock = new();
     private Running? _running;
+
+    public ModelDownloads(RuntimeHostOptions options, LocalModel local, Egress egress)
+    {
+        _local = local;
+        _egress = egress;
+        _source = options.ModelSource ?? new LMSupplyModelSource(options.LlamaServerPath);
+        _lifecycle = _source.Artifacts is { } artifacts ? new ModelLifecycle([artifacts]) : null;
+    }
 
     /// <summary>The catalog, each with whether it is on this computer already.</summary>
     public IReadOnlyList<CatalogView> Catalog() =>
@@ -168,7 +176,7 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
     {
         var entry = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase));
         var downloaded = _source.IsDownloaded(model);
-        egress.Sent(_source.Host);
+        _egress.Sent(_source.Host);
         try
         {
             var size = await _source.DownloadSizeAsync(model, cancellationToken).ConfigureAwait(false);
@@ -185,32 +193,40 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
     }
 
     /// <summary>The download under way or the last one that ended without the model, or <see langword="null"/>.</summary>
-    public DownloadView? Current
+    /// <remarks>Reads the lifecycle's status only while the download runs — after it, there is nothing new to read.</remarks>
+    public async Task<DownloadView?> CurrentAsync(CancellationToken cancellationToken)
     {
-        get
-        {
-            lock (_lock) return _running?.View();
-        }
+        Running? running;
+        lock (_lock) running = _running;
+        if (running is null) return null;
+        if (!running.Task.IsCompleted && _lifecycle is not null
+            && await _lifecycle.GetStatusAsync(running.Kind, running.Model, cancellationToken).ConfigureAwait(false) is { State: ModelState.Downloading, Progress: { } progress })
+            running.Progress = new(progress.OverallBytesDownloaded ?? progress.BytesDownloaded, progress.OverallTotalBytes ?? progress.TotalBytes);
+        return running.View();
     }
 
     /// <summary>
     /// Makes <paramref name="model"/> the model in use: at once when it is on this computer already — nothing to get, so
     /// nothing is sent and there is no download to show — otherwise by getting it in the background.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The model was set when the runtime was started.</exception>
+    /// <exception cref="InvalidOperationException">The model was set when the runtime was started, or it is not on this computer
+    /// and this copy cannot run a model it would get (no llama-server ships with it).</exception>
     public async Task<Started> StartAsync(string model, CancellationToken cancellationToken)
     {
-        if (local.Fixed) throw new InvalidOperationException("The model was set when the runtime was started.");
+        if (_local.Fixed) throw new InvalidOperationException("The model was set when the runtime was started.");
         lock (_lock)
             if (_running is { Ended: false }) return Started.Busy;
 
         if (_source.IsDownloaded(model) && await LocalPathAsync(model, cancellationToken).ConfigureAwait(false) is { } here)
         {
-            await local.ChooseAsync(here, cancellationToken).ConfigureAwait(false);
+            await _local.ChooseAsync(here, cancellationToken).ConfigureAwait(false);
             lock (_lock)
                 if (_running is { Ended: true }) _running = null; // a download that ended without its model is no longer the last word
             return Started.InUse;
         }
+
+        var lifecycle = _lifecycle ?? throw new InvalidOperationException("This copy cannot run a model on this computer: no llama-server ships with it.");
+        var kind = _source.Artifacts!.Kind;
 
         // The catalog's name, so progress reads as the model the person chose, not its id.
         var name = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase))?.Name;
@@ -218,29 +234,40 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
         lock (_lock)
         {
             if (_running is { Ended: false }) return Started.Busy;
-            running = _running = new Running(model, name);
+            running = _running = new Running(kind, model, name);
         }
 
-        egress.Sent(_source.Host);
+        _egress.Sent(_source.Host);
         running.Task = Task.Run(async () =>
         {
             try
             {
-                var path = await _source.DownloadAsync(model, running, running.Stop.Token).ConfigureAwait(false);
-                await local.ChooseAsync(path, CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    await lifecycle.DownloadAsync(kind, model, running.Stop.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (running.Stop.IsCancellationRequested)
+                {
+                    // Stopped before the lifecycle's download was there to cancel: the wait ends here, the download too.
+                    lifecycle.CancelDownload(kind, model);
+                    throw;
+                }
+
+                var path = await _source.LocalPathAsync(model, CancellationToken.None).ConfigureAwait(false);
+                await _local.ChooseAsync(path, CancellationToken.None).ConfigureAwait(false);
                 lock (_lock)
                     if (ReferenceEquals(_running, running)) _running = null; // arrived and in use: nothing left to show
             }
             catch (Exception e)
             {
-                running.Fail(e switch
+                running.Failure = (LMSupplyModelSource.Translated(e) ?? e) switch
                 {
                     OperationCanceledException when running.Stop.IsCancellationRequested => DownloadView.Stopped,
                     KeyNotFoundException => DownloadView.NotFound,
                     HttpRequestException or OperationCanceledException => DownloadView.Unreachable,
                     IOException or UnauthorizedAccessException => DownloadView.Disk,
                     _ => DownloadView.Other,
-                });
+                };
             }
         }, CancellationToken.None); // it outlives the request that started it; stopping is what ends it
         return Started.Downloading;
@@ -249,7 +276,7 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
     /// <summary>What <see cref="StartAsync"/> did.</summary>
     internal enum Started
     {
-        /// <summary>Getting it in the background — <see cref="Current"/> follows it.</summary>
+        /// <summary>Getting it in the background — <see cref="CurrentAsync"/> follows it.</summary>
         Downloading,
 
         /// <summary>It was on this computer already and is the model in use now.</summary>
@@ -276,7 +303,12 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
     /// <summary>Stops the download under way, if there is one; the model in use stays as it was.</summary>
     public void Stop()
     {
-        lock (_lock) _running?.Stop.Cancel();
+        lock (_lock)
+        {
+            if (_running is not { Ended: false } running) return;
+            running.Stop.Cancel();
+            _lifecycle?.CancelDownload(running.Kind, running.Model);
+        }
     }
 
     /// <summary>Waits for the download under way to end — for tests.</summary>
@@ -288,22 +320,26 @@ internal sealed class ModelDownloads(RuntimeHostOptions options, LocalModel loca
         }
     }
 
-    private sealed class Running(string model, string? name) : IProgress<ModelDownloadProgress>
+    /// <summary>The person's side of one download: what they asked for and by what name, and how it ended for them.</summary>
+    private sealed class Running(string kind, string model, string? name)
     {
-        private ModelDownloadProgress _progress = new(0, null);
-        private string? _failure;
+        public string Kind => kind;
 
+        public string Model => model;
+
+        /// <summary>Ends this caller's wait — the lifecycle's download is cancelled with it (<see cref="Stop()"/>).</summary>
         public CancellationTokenSource Stop { get; } = new();
 
         public Task Task { get; set; } = Task.CompletedTask;
 
-        public bool Ended => _failure is not null;
+        /// <summary>The last progress read while it ran.</summary>
+        public ModelDownloadProgress Progress { get; set; } = new(0, null);
 
-        public void Report(ModelDownloadProgress value) => _progress = value;
+        public string? Failure { get; set; }
 
-        public void Fail(string failure) => _failure = failure;
+        public bool Ended => Failure is not null;
 
-        public DownloadView View() => new(model, name, _progress.Bytes, _progress.Total, _failure);
+        public DownloadView View() => new(model, name, Progress.Bytes, Progress.Total, Failure);
     }
 
     /// <param name="Downloaded">Whether it is on this computer already — getting it again takes no download.</param>
