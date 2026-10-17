@@ -89,6 +89,32 @@ public sealed class ProcessTests : IDisposable
     }
 
     [Fact]
+    public async Task The_runtime_does_not_start_when_the_process_that_started_it_is_already_gone()
+    {
+        int gone;
+        using (var ended = OperatingSystem.IsWindows()
+                   ? Process.Start(new ProcessStartInfo("cmd.exe", "/c exit 0") { UseShellExecute = false, CreateNoWindow = true })!
+                   : Process.Start(new ProcessStartInfo("true") { UseShellExecute = false })!)
+        {
+            await ended.WaitForExitAsync();
+            gone = ended.Id;
+        }
+
+        using var process = Start("s", gone);
+        try
+        {
+            using var exited = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await process.WaitForExitAsync(exited.Token);
+            Assert.Equal(3, process.ExitCode);
+            Assert.Equal("", await process.StandardOutput.ReadToEndAsync()); // never announced itself ready
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+    }
+
+    [Fact]
     public async Task The_runtime_stops_by_itself_when_the_process_that_started_it_ends()
     {
         // A stand-in for the shell. It ends when the test ends it, once the runtime is ready — a parent that

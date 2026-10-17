@@ -110,6 +110,21 @@ llamaServer ??= File.Exists(shipped) ? shipped : null;
 var speechRuntime = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native") }
     .FirstOrDefault(d => File.Exists(Path.Combine(d, OperatingSystem.IsWindows() ? "onnxruntime.dll" : "libonnxruntime.so")));
 
+// A parent that is already gone: say so and stop before serving anything (the watch below would stop the host
+// too, but only after it had started and announced itself ready).
+if (parentPid is { } pid)
+{
+    try
+    {
+        using var parent = Process.GetProcessById(pid);
+    }
+    catch (ArgumentException)
+    {
+        await Console.Error.WriteLineAsync($"Parent process {pid} is not running; stopping.");
+        return 3;
+    }
+}
+
 // Standard output carries only the protocol line below; every log line goes to standard error.
 // Per-request lines from ASP.NET Core are kept at Warning (its usual production level): the caller
 // polls the control API every few seconds, so at Information an idle runtime grows its log for as long
@@ -138,28 +153,16 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
         }
         : null,
 },
-    builder => builder.Logging
-        .AddFilter("Microsoft.AspNetCore", LogLevel.Warning)
-        .AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace));
+    builder =>
+    {
+        builder.Logging
+            .AddFilter("Microsoft.AspNetCore", LogLevel.Warning)
+            .AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace);
+        // A normal stop when the parent ends, so storage is closed cleanly. A process that took the parent's id
+        // after the parent ended does not count as the parent.
+        if (parentPid is { } watched) builder.Services.AddParentProcessWatch(watched);
+    });
 await using var app = started.App;
-
-if (parentPid is { } pid)
-{
-    Process parent;
-    try
-    {
-        parent = Process.GetProcessById(pid);
-    }
-    catch (ArgumentException)
-    {
-        await Console.Error.WriteLineAsync($"Parent process {pid} is not running; stopping.");
-        await app.StopAsync();
-        return 3;
-    }
-
-    // A normal stop, so storage is closed cleanly.
-    _ = parent.WaitForExitAsync().ContinueWith(_ => app.Lifetime.StopApplication(), TaskScheduler.Default);
-}
 
 Console.WriteLine(LoopbackHost.ReadyLine(RuntimeHost.ReadyPrefix, started.Port, started.PreviousPort is { } previous
     ? [new("previousPort", previous.ToString(CultureInfo.InvariantCulture))]
