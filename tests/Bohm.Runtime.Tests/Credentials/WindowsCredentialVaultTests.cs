@@ -37,7 +37,7 @@ public sealed class WindowsCredentialVaultTests
     }
 
     [Fact]
-    public void A_key_kept_by_an_earlier_version_is_read_once_moved_to_the_shared_entry_and_its_old_entry_removed()
+    public void A_key_kept_by_an_earlier_version_is_copied_to_the_shared_entry_and_kept_until_the_key_is_changed_or_removed()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -54,8 +54,14 @@ public sealed class WindowsCredentialVaultTests
             Assert.Null(shared.Get("llm/anthropic"));
             Assert.Equal("sk-ant-예전", vault.Read("llm/anthropic"));
             Assert.Equal("sk-ant-예전", shared.Get("llm/anthropic")); // the entry a tauri-kit shell reads too
-            Assert.Null(WindowsCredentialVault.Legacy.Read($"{service}/llm/anthropic"));
+            // The old entry stays — an earlier version of the app, run again, still finds the key.
+            Assert.Equal("sk-ant-예전", WindowsCredentialVault.Legacy.Read($"{service}/llm/anthropic"));
             Assert.Equal("sk-ant-예전", vault.Read("llm/anthropic"));
+
+            // Changing the key removes the old entry, so an earlier version never reads a key the person replaced.
+            vault.Write("llm/anthropic", "sk-ant-새");
+            Assert.Null(WindowsCredentialVault.Legacy.Read($"{service}/llm/anthropic"));
+            Assert.Equal("sk-ant-새", vault.Read("llm/anthropic"));
 
             // Deleting removes an old entry too, so a key the person removed never comes back from it.
             WriteOldEntry($"{service}/llm/openai", "sk-stale");

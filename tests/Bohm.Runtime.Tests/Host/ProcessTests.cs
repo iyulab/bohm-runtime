@@ -234,6 +234,9 @@ public sealed class ProcessTests : IDisposable
         foreach (var argument in extra ?? []) info.ArgumentList.Add(argument);
 
         info.Environment["BOHM_RUNTIME_SECRET"] = secret;
+        // Every run keeps its keys in a space of its own — a runtime started here never reads the person's keys (a read
+        // can write: it copies a key kept by an earlier version). A test that names its own prefix overrides this.
+        info.Environment["BOHM_VAULT_PREFIX"] = $"Bohm-test-{Guid.NewGuid():N}";
         foreach (var (name, value) in environment ?? []) info.Environment[name] = value;
         var process = Process.Start(info)!;
         process.ErrorDataReceived += (_, _) => { };

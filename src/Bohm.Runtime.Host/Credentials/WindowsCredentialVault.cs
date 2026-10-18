@@ -21,11 +21,11 @@ internal sealed class WindowsCredentialVault(string service = "Bohm") : ICredent
     public string? Read(string name)
     {
         if (_entries.Get(name) is { } secret) return secret;
-        // TODO(remove after 2027-01-01): versions up to 0.13.9 kept a secret as «<service>/<name>». Moved the first time
-        // it is read, so a person's keys survive the update; removing this reader early loses keys of anyone who skips it.
+        // TODO(remove after 2027-01-01): versions up to 0.13.9 kept a secret as «<service>/<name>». Copied the first time it
+        // is read, so a person's keys survive the update; the old entry stays, so an earlier version still finds the key —
+        // writing or removing the key removes it. Removing this reader early loses keys of anyone who skips the copy.
         if (Legacy.Read($"{service}/{name}") is not { } old) return null;
         _entries.Set(name, old);
-        Legacy.Delete($"{service}/{name}");
         return old;
     }
 
@@ -44,7 +44,7 @@ internal sealed class WindowsCredentialVault(string service = "Bohm") : ICredent
         Legacy.Delete($"{service}/{name}");
     }
 
-    /// <summary>The entries earlier versions wrote — read once and removed, never written.</summary>
+    /// <summary>The entries earlier versions wrote — read and removed, never written.</summary>
     internal static class Legacy
     {
         private const int GenericCredential = 1;
