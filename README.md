@@ -52,7 +52,7 @@ standard error. Send the secret as a bearer token to `http://127.0.0.1:<n>/__con
 is off and answers nothing. `--help` lists every option and environment variable.
 
 Two things are shared by every data folder on the computer, not kept per folder: the keys the person connects (the
-Windows Credential Manager, under `Bohm/` — `BOHM_VAULT_PREFIX` moves them elsewhere for a check that must not touch
+Windows Credential Manager, as `<name>.Bohm` — the entries a tauri-kit shell shares; `BOHM_VAULT_PREFIX` moves them elsewhere for a check that must not touch
 the person's keys) and downloaded models (the model library's cache).
 
 ## Contributing

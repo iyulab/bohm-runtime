@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Bohm.Runtime.Credentials;
+using Bohm.Runtime.Host.Credentials;
 using Bohm.Runtime.Host;
 using TauriKit.Sidecar.Loopback;
 
@@ -40,7 +41,7 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
-// Manager instead of Bohm/, so an automated check never reads, overwrites or deletes the person's keys
+// Manager instead of the person's (<name>.Bohm), so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]";
 // What --help prints: the comment above, short — what someone running the runtime by hand needs to get to a first request.
@@ -65,7 +66,7 @@ const string help = usage + """
                                  speaking the same API.
       BOHM_REVIEW_MODEL          <provider>/<model> that reads a newly written application once before it is polished.
       BOHM_DISCARD_DIR           (checks) Move applications removed for good there instead of the recycle bin.
-      BOHM_VAULT_PREFIX          (checks) Keep keys under that prefix in the Windows Credential Manager instead of Bohm/.
+      BOHM_VAULT_PREFIX          (checks) Keep keys under that prefix in the Windows Credential Manager instead of the person's (<name>.Bohm).
 
     Once listening, one line goes to standard output: bohm-runtime ready port=<n> (and previousPort=<m> when the data
     root's port was taken). Everything else goes to standard error.
