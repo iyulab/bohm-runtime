@@ -9,21 +9,23 @@ namespace Bohm.Runtime.Tests.Host;
 /// The Bohm account: chosen like a provider only when the runtime was given the cloud's address, asked in Anthropic's own
 /// API at the metering gateway the cloud names (<c>GET me</c>) with the account's access token, counted as sent to that
 /// gateway — and its refusals told by the gateway's code, the one whose credits cannot hold the output limit asked once
-/// more with the limit they can.
+/// more with the limit they can. Signing in is at the identity service the cloud names (its protected resource metadata),
+/// through the loopback; the session is kept in the vault and refreshed here, and signing out revokes it.
 /// </summary>
 public sealed class CloudAccountTests : IAsyncLifetime
 {
     private const string App = """<!doctype html><title>Tasks</title><button onclick="add()">Add Task</button>""";
-    private const string Token = "account-token-0123456789";
-
+    private FakeIdentity _identity = null!;
     private FakeProvider _cloud = null!;
     private FakeProvider _gateway = null!;
     private RunningHost _host = null!;
 
     public async ValueTask InitializeAsync()
     {
+        _identity = await FakeIdentity.StartAsync();
         _cloud = await FakeProvider.StartAsync();
         _gateway = await FakeProvider.StartAsync();
+        _cloud.Answers["/.well-known/oauth-protected-resource"] = JsonSerializer.Serialize(new { resource = _cloud.Address.AbsoluteUri, authorization_servers = new[] { _identity.Issuer } });
         _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri } });
         _host = await RunningHost.StartAsync(configure: o => o with { CloudEndpoint = _cloud.Address });
     }
@@ -33,7 +35,14 @@ public sealed class CloudAccountTests : IAsyncLifetime
         await _host.DisposeAsync();
         await _cloud.DisposeAsync();
         await _gateway.DisposeAsync();
+        await _identity.DisposeAsync();
     }
+
+    /// <summary>The account's access token now — the one the identity service handed out last.</summary>
+    private string Token => _identity.AccessToken!;
+
+    /// <summary>What reached the cloud apart from looking up where to sign in.</summary>
+    private List<FakeProvider.ReceivedRequest> CloudCalls => [.. _cloud.Received.Where(r => !r.PathAndQuery.StartsWith("/.well-known/", StringComparison.Ordinal))];
 
     [Fact]
     public async Task Without_the_clouds_address_the_account_cannot_be_chosen_and_has_no_token_to_keep()
@@ -44,8 +53,8 @@ public sealed class CloudAccountTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.BadRequest, chose);
         using var account = await host.ControlClient().GetAsync("/__control/cloud/account");
         HttpAssert.Status(HttpStatusCode.NotFound, account);
-        using var token = await host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token));
-        HttpAssert.Status(HttpStatusCode.NotFound, token);
+        using var signIn = await host.ControlClient().PostAsync("/__control/cloud/account/sign-in", null);
+        HttpAssert.Status(HttpStatusCode.NotFound, signIn);
     }
 
     [Fact]
@@ -66,7 +75,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         using var response = await ProposeAsync(await _host.AdoptAsync(App));
 
         HttpAssert.Status(HttpStatusCode.Conflict, response);
-        Assert.Empty(_cloud.Received);
+        Assert.Empty(CloudCalls);
     }
 
     [Fact]
@@ -87,9 +96,11 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal(_gateway.Address.Authority, sent.GetProperty("host").GetString());
         Assert.DoesNotContain(_cloud.Received, r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal));   // the cloud relays nothing
 
-        // Signing out takes the token away: the account is missing again.
-        using var signedOut = await _host.ControlClient().DeleteAsync("/__control/cloud/account/token");
+        // Signing out revokes the session and forgets it: the account is missing again.
+        var refresh = _identity.RefreshToken;
+        using var signedOut = await _host.ControlClient().DeleteAsync("/__control/cloud/account/session");
         Assert.False(JsonDocument.Parse(await signedOut.Content.ReadAsStringAsync()).RootElement.GetProperty("signedIn").GetBoolean());
+        Assert.Contains(refresh!, _identity.Revoked);
         Assert.Equal("account", JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement.GetProperty("missing").GetProperty("needs").GetString());
     }
 
@@ -98,20 +109,20 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         _cloud.Answers["/me/balance"] = """{"balance":187,"lots":[]}""";
 
-        var kept = await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        var kept = await SignInOnlyAsync();
         Assert.True(kept.GetProperty("signedIn").GetBoolean());
         Assert.Equal(187, kept.GetProperty("balance").GetInt64());
         Assert.Equal(JsonValueKind.Null, kept.GetProperty("problem").ValueKind);
 
         var looked = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"));
         Assert.Equal(187, looked.GetProperty("balance").GetInt64());
-        Assert.All(_cloud.Received, r => Assert.Equal("Bearer " + Token, r.Headers["Authorization"]));
+        Assert.All(CloudCalls, r => Assert.Equal("Bearer " + Token, r.Headers["Authorization"]));
         // Asking for its own balance carries nothing of an application's: not counted as data sent.
         Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
 
-        var signedOut = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/account/token"));
+        var signedOut = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/account/session"));
         Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
-        Assert.Equal(2, _cloud.Received.Count);
+        Assert.Equal(2, CloudCalls.Count);
     }
 
     [Fact]
@@ -119,13 +130,13 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         _cloud.Answers["/me/balance"] = """{"balance":10}""";
         _cloud.Posted["/me/links"] = (201, """{"id":"abc","url":"/l/abc","expiresAt":"2026-11-11T09:00:00+00:00"}""");
-        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        await SignInOnlyAsync();
 
         var kept = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>Stock</p>", Encoding.UTF8, "text/html")));
 
         Assert.Equal(new Uri(_cloud.Address, "/l/abc").AbsoluteUri, kept.GetProperty("url").GetString());
         Assert.Equal(JsonValueKind.Null, kept.GetProperty("problem").ValueKind);
-        var sent = _cloud.Received.Last();
+        var sent = CloudCalls.Last();
         Assert.Equal("/me/links", sent.PathAndQuery);
         Assert.Equal("<p>Stock</p>", sent.Body);
         Assert.Equal("Bearer " + Token, sent.Headers["Authorization"]);
@@ -143,7 +154,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         _cloud.Answers["/me/balance"] = """{"balance":10}""";
         _cloud.Posted["/me/links"] = (status, """{"error":{"code":"x"}}""");
-        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        await SignInOnlyAsync();
 
         var refused = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html")));
 
@@ -156,7 +167,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         var signedOut = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html")));
         Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
-        Assert.Empty(_cloud.Received);
+        Assert.Empty(CloudCalls);
 
         await using var host = await RunningHost.StartAsync();
         using var none = await host.ControlClient().PostAsync("/__control/cloud/links", new StringContent("<p>x</p>", Encoding.UTF8, "text/html"));
@@ -173,7 +184,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
              {"id":"elsewhere","url":"https://example.com/l/elsewhere"},
              {"url":"/l/no-id"}]
             """;
-        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        await SignInOnlyAsync();
 
         var told = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/links"));
 
@@ -182,7 +193,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal(new Uri(_cloud.Address, "/l/new").AbsoluteUri, links[0].GetProperty("url").GetString());
         Assert.Equal(2048, links[0].GetProperty("bytes").GetInt64());
         Assert.Equal(JsonValueKind.Null, told.GetProperty("problem").ValueKind);
-        Assert.Equal("Bearer " + Token, _cloud.Received.Last().Headers["Authorization"]);
+        Assert.Equal("Bearer " + Token, CloudCalls.Last().Headers["Authorization"]);
         Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
     }
 
@@ -194,7 +205,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         _cloud.Answers["/me/balance"] = """{"balance":10}""";
         _cloud.Deleted["/me/links/old"] = status;
         _cloud.Answers["/me/links"] = """[{"id":"new","url":"/l/new"}]""";
-        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        await SignInOnlyAsync();
 
         var left = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/links/old"));
 
@@ -211,7 +222,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     {
         _cloud.Answers["/me/balance"] = """{"balance":10}""";
         _cloud.Deleted["/me/links/old"] = status;
-        await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        await SignInOnlyAsync();
 
         var refused = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/links/old"));
 
@@ -228,7 +239,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.BadRequest, escaped);
         var signedOut = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/links"));
         Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
-        Assert.Empty(_cloud.Received);
+        Assert.Empty(CloudCalls);
 
         await using var host = await RunningHost.StartAsync();
         using var none = await host.ControlClient().GetAsync("/__control/cloud/links");
@@ -240,9 +251,10 @@ public sealed class CloudAccountTests : IAsyncLifetime
     [InlineData(503, "unreachable")]
     public async Task A_balance_the_cloud_does_not_tell_says_why(int status, string problem)
     {
+        await SignInOnlyAsync();
         _cloud.Refusal = (status, """{"error":"no"}""");
 
-        var account = await AccountAsync(await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)));
+        var account = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"));
 
         Assert.True(account.GetProperty("signedIn").GetBoolean());
         Assert.Equal(JsonValueKind.Null, account.GetProperty("balance").ValueKind);
@@ -310,6 +322,48 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
     }
 
+    [Fact]
+    public async Task A_declined_sign_in_keeps_no_session_and_says_so()
+    {
+        _identity.Declines = true;
+
+        var account = await SignInOnlyAsync();
+
+        Assert.False(account.GetProperty("signedIn").GetBoolean());
+        Assert.Equal("denied", account.GetProperty("problem").GetString());
+        Assert.Empty(CloudCalls);
+    }
+
+    [Fact]
+    public async Task When_the_cloud_names_no_identity_service_signing_in_cannot_begin()
+    {
+        _cloud.Answers.TryRemove("/.well-known/oauth-protected-resource", out _);
+
+        var begun = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/account/sign-in", null));
+
+        Assert.Equal(JsonValueKind.Null, begun.GetProperty("url").ValueKind);
+        Assert.Equal("unreachable", begun.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task An_access_token_about_to_end_is_refreshed_once_even_when_asked_for_at_once()
+    {
+        _identity.ExpiresIn = 30;   // within the client's refresh-ahead window: every use refreshes first
+        _cloud.Answers["/me/balance"] = """{"balance":5}""";
+        await SignInOnlyAsync();
+        var before = _identity.Refreshes;
+        _identity.RefreshDelay = TimeSpan.FromMilliseconds(300);
+
+        // Looks at once: the session turns over one at a time, so neither uses a refresh token the other spent.
+        var asked = Enumerable.Range(0, 4).Select(_ => _host.ControlClient().GetAsync("/__control/cloud/account")).ToList();
+        var looks = await Task.WhenAll(asked.Select(async a => await AccountAsync(await a)));
+
+        Assert.All(looks, look => Assert.Equal(5, look.GetProperty("balance").GetInt64()));
+        Assert.Equal(before + 4, _identity.Refreshes);
+        Assert.NotNull(_identity.RefreshToken);   // never an old one used again — the session is still live
+        Assert.Equal("Bearer " + Token, CloudCalls.Last().Headers["Authorization"]);
+    }
+
     [Theory]
     [InlineData("https://cloud.example", "https://cloud.example/")]
     [InlineData("https://cloud.example/base", "https://cloud.example/base/")]
@@ -343,10 +397,27 @@ public sealed class CloudAccountTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Signs in as the person would: the address the runtime gives is opened (here by a client that follows the identity
+    /// service's redirect back to the runtime's loopback port, as the browser does), then the runtime is asked to finish.
+    /// </summary>
+    private async Task<JsonElement> SignInOnlyAsync()
+    {
+        var begun = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/account/sign-in", null));
+        var url = begun.GetProperty("url").GetString()!;
+        Assert.StartsWith(_identity.Issuer + "/authorize?", url, StringComparison.Ordinal);
+        var finishing = _host.ControlClient().PostAsync("/__control/cloud/account/sign-in/finish", null);
+        using (var browser = new HttpClient())
+        using (await browser.GetAsync(new Uri(url)))
+        {
+        }
+
+        return await AccountAsync(await finishing);
+    }
+
     private async Task SignInAsync()
     {
-        using (var token = await _host.ControlClient().PutAsync("/__control/cloud/account/token", new StringContent(Token)))
-            Assert.True(JsonDocument.Parse(await token.Content.ReadAsStringAsync()).RootElement.GetProperty("signedIn").GetBoolean());
+        Assert.True((await SignInOnlyAsync()).GetProperty("signedIn").GetBoolean());
         using var chose = await _host.ControlClient().PutAsync("/__control/edit/model", Choice("bohm", "model-x"));
         HttpAssert.Status(HttpStatusCode.OK, chose);
         Assert.Equal(JsonValueKind.Null, JsonDocument.Parse(await chose.Content.ReadAsStringAsync()).RootElement.GetProperty("missing").ValueKind);

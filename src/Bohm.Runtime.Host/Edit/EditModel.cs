@@ -73,7 +73,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     /// <remarks>The Bohm account (<see cref="CloudAccount"/>) needs its access token — <c>account</c>.</remarks>
     public EditModelMissing? Missing => Remembered switch
     {
-        { Provider: CloudAccount.ProviderId } => account.Token is null ? new("account", CloudAccount.ProviderId) : null,
+        { Provider: CloudAccount.ProviderId } => !account.SignedIn ? new("account", CloudAccount.ProviderId) : null,
         { } chosen => string.IsNullOrEmpty(vault.Read(LlmProviders.ById(chosen.Provider)!.VaultName)) ? new("key", chosen.Provider) : null,
         null => company.Configured || local.Configured ? null : new("localModel", null),
     };
@@ -132,11 +132,12 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
         if (chosen.Provider == CloudAccount.ProviderId)
         {
-            if (account.Token is not { } token) return null;
-            // The cloud names the gateway the account's calls go to; when it cannot be told, the request fails as an
-            // unreachable provider does — the same words, the same «try again».
-            var (anthropic, problem) = await account.AiAsync(cancellationToken).ConfigureAwait(false);
-            var client = anthropic is null
+            var (token, tokenProblem) = await account.TokenAsync(cancellationToken).ConfigureAwait(false);
+            if (tokenProblem == "signedOut") return null;
+            // The cloud names the gateway the account's calls go to; when it — or a fresh token — cannot be had, the request
+            // fails as an unreachable provider does: the same words, the same «try again».
+            var (anthropic, problem) = token is null ? (null, tokenProblem) : await account.AiAsync(cancellationToken).ConfigureAwait(false);
+            var client = anthropic is null || token is null
                 ? new UnreachableChatClient($"The Bohm account's AI address could not be told ({problem}).")
                 : Kept(chosen, token + "\n" + anthropic.AbsoluteUri, () => new CountedAsSent(CloudAccount.Client(chosen.Model, token, anthropic), egress, anthropic.Authority));
             return new(client, $"{CloudAccount.ProviderId}/{chosen.Model}", OnThisComputer: false, ModelLimits.Unknown, Sees: true);

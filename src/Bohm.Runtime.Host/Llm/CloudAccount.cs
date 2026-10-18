@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Authway.Native;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Edit;
 using IronHive.Extensions.AI;
@@ -21,16 +22,29 @@ namespace Bohm.Runtime.Host.Llm;
 /// Choosing the account sends what an agent works on to that gateway, and from there to the model's provider — so,
 /// like choosing a provider, it is only ever the person's choice, and every request is counted as sent to the gateway.
 /// </remarks>
-internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault vault, IHttpClientFactory clients)
+internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault vault, IHttpClientFactory clients) : IDisposable
 {
     /// <summary>The provider id a choice of the account is remembered with.</summary>
     public const string ProviderId = "bohm";
 
-    /// <summary>Where the account's access token is kept.</summary>
-    public const string VaultName = "cloud/account";
+    /// <summary>Where the signed-in session is kept — its refresh token among it, so in the vault.</summary>
+    public const string VaultName = "cloud/session";
 
     /// <summary>The environment variable the cloud's address is read from.</summary>
     public const string Variable = "BOHM_CLOUD";
+
+    /// <summary>The environment variable a client id other than <see cref="DefaultClientId"/> is read from (a test identity service).</summary>
+    public const string ClientIdVariable = "BOHM_CLOUD_CLIENT_ID";
+
+    /// <summary>Bohm's own client at the identity service: a public client signing in through the loopback (RFC 8252).</summary>
+    public const string DefaultClientId = "bohm-desktop";
+
+    /// <summary>How long a sign-in waits for the browser to come back.</summary>
+    public static readonly TimeSpan SignInTimeout = TimeSpan.FromMinutes(5);
+
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private NativeClient? _client;
+    private PendingSignIn? _pending;
 
     /// <summary>The cloud's base address, ending in «/».</summary>
     public Uri? Endpoint => options.CloudEndpoint;
@@ -38,11 +52,176 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// <summary>Whether the account can be chosen at all — not whether it is signed in.</summary>
     public bool Configured => Endpoint is not null;
 
-    /// <summary>The account's access token, or <see langword="null"/> when none is kept.</summary>
-    public string? Token => vault.Read(VaultName) is { Length: > 0 } token ? token : null;
+    /// <summary>Whether someone is signed in on this computer — told from the kept session, without asking anyone.</summary>
+    public bool SignedIn => vault.Read(VaultName) is { Length: > 0 };
 
     /// <summary>The host requests go to — what they are counted as sent to.</summary>
     public string? Host => Endpoint?.Authority;
+
+    /// <summary>
+    /// The account's access token, refreshed first when it is about to end — or why there is none: <c>signedOut</c> (no
+    /// session, or the identity service no longer takes it: sign in again) or <c>unreachable</c>. This process alone
+    /// refreshes the session: the identity service gives a new refresh token on each use and ends the session when an old
+    /// one is used again, so two refreshing at once — two requests here, or the shell beside — would sign the person out.
+    /// </summary>
+    public async Task<(string? Token, string? Problem)> TokenAsync(CancellationToken cancellationToken)
+    {
+        if (!SignedIn) return (null, "signedOut");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (await ClientAsync(cancellationToken).ConfigureAwait(false) is not { } client) return (null, "unreachable");
+            return await client.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false) is { } token ? (token, null) : (null, "signedOut");
+        }
+        catch (Exception exception) when (exception is NativeSignInException or HttpRequestException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, "unreachable");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Starts signing in: the address the person opens to sign in at the identity service, which comes back to a port on
+    /// this computer (<see cref="FinishSignInAsync"/>) — or why not: <c>unreachable</c> (the cloud does not name its
+    /// identity service, or it cannot be reached). A sign-in already under way is given up.
+    /// </summary>
+    public async Task<(Uri? Url, string? Problem)> BeginSignInAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Exchange(ref _pending, null)?.Dispose();
+            if (await ClientAsync(cancellationToken).ConfigureAwait(false) is not { } client) return (null, "unreachable");
+            var pending = await client.BeginSignInAsync(cancellationToken).ConfigureAwait(false);
+            _pending = pending;
+            return (pending.Url, null);
+        }
+        catch (Exception exception) when (exception is NativeSignInException or HttpRequestException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return (null, "unreachable");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Waits for the sign-in begun with <see cref="BeginSignInAsync"/> to come back, and keeps the session: <see langword="null"/>
+    /// when signed in, or why not — <c>noSignIn</c> (none under way), <c>denied</c> (the person declined, or the identity
+    /// service refused), <c>timedOut</c>, <c>cancelled</c> (a new sign-in began, or signing out, meanwhile) or <c>unreachable</c>.
+    /// </summary>
+    public async Task<string?> FinishSignInAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _pending) is not { } pending) return "noSignIn";
+        try
+        {
+            await pending.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        catch (NativeSignInException exception)
+        {
+            return exception.Failure switch
+            {
+                NativeSignInFailure.Denied => "denied",
+                NativeSignInFailure.TimedOut => "timedOut",
+                _ => "unreachable",
+            };
+        }
+        catch (HttpRequestException)
+        {
+            return "unreachable";
+        }
+        catch (Exception exception) when (exception is ObjectDisposedException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return "cancelled";   // given up here: a new sign-in began, or the person signed out meanwhile
+        }
+        finally
+        {
+            if (Interlocked.CompareExchange(ref _pending, null, pending) == pending) pending.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Signs out: the session's tokens are revoked at the identity service and the session is forgotten here — forgotten
+    /// even when the service cannot be reached (then the tokens end on their own).
+    /// </summary>
+    public async Task SignOutAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Exchange(ref _pending, null)?.Dispose();
+            if (SignedIn && await ClientAsync(cancellationToken).ConfigureAwait(false) is { } client)
+                await client.SignOutAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is NativeSignInException or HttpRequestException
+            || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+        }
+        finally
+        {
+            vault.Delete(VaultName);
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The client signing in at the identity service the cloud names — its OAuth 2.0 Protected Resource Metadata (RFC 9728,
+    /// <c>authorization_servers</c>) — learned once; <see langword="null"/> when the cloud does not name one. Called under <see cref="_gate"/>.
+    /// </summary>
+    private async Task<NativeClient?> ClientAsync(CancellationToken cancellationToken)
+    {
+        if (_client is { } known) return known;
+        if (Endpoint is not { } endpoint) return null;
+        var http = clients.CreateClient(nameof(CloudAccount));
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(BalanceTimeout);
+        var metadata = new Uri(endpoint, "/.well-known/oauth-protected-resource" + endpoint.AbsolutePath.TrimEnd('/'));
+        using var response = await http.GetAsync(metadata, limit.Token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) return null;
+        using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
+        if (answer.RootElement.ValueKind != JsonValueKind.Object
+            || !answer.RootElement.TryGetProperty("authorization_servers", out var servers) || servers.ValueKind != JsonValueKind.Array
+            || servers.EnumerateArray().FirstOrDefault() is not { ValueKind: JsonValueKind.String } first
+            || EndpointOf(first.GetString()) is null)
+            return null;
+
+        return _client = new NativeClient(
+            new NativeClientOptions(first.GetString()!, options.CloudClientId ?? DefaultClientId) { StoreKey = VaultName },
+            new VaultTokenStore(vault), http);
+    }
+
+    public void Dispose()
+    {
+        _pending?.Dispose();
+        _client?.Dispose();
+        _gate.Dispose();
+    }
+
+    /// <summary>The session kept in the vault — where the person's other secrets are.</summary>
+    private sealed class VaultTokenStore(ICredentialVault vault) : ITokenStore
+    {
+        public ValueTask<string?> GetAsync(string key, CancellationToken cancellationToken) => ValueTask.FromResult(vault.Read(key));
+
+        public ValueTask SetAsync(string key, string value, CancellationToken cancellationToken)
+        {
+            vault.Write(key, value);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask DeleteAsync(string key, CancellationToken cancellationToken)
+        {
+            vault.Delete(key);
+            return ValueTask.CompletedTask;
+        }
+    }
 
     /// <summary>
     /// The cloud's address from <paramref name="value"/>: an absolute https address, or http on this computer;
@@ -66,7 +245,8 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(long? Balance, string? Problem)> BalanceAsync(HttpClient http, CancellationToken cancellationToken)
     {
-        if (Token is not { } token) return (null, "signedOut");
+        var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
+        if (token is null) return (null, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try
@@ -97,7 +277,8 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(Uri? Link, DateTimeOffset? ExpiresAt, string? Problem)> ShareAsync(HttpClient http, byte[] page, Egress egress, CancellationToken cancellationToken)
     {
-        if (Token is not { } token) return (null, null, "signedOut");
+        var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
+        if (token is null) return (null, null, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(ShareTimeout);
         try
@@ -145,7 +326,8 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(IReadOnlyList<Link>? Links, string? Problem)> LinksAsync(HttpClient http, CancellationToken cancellationToken)
     {
-        if (Token is not { } token) return (null, "signedOut");
+        var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
+        if (token is null) return (null, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try
@@ -189,7 +371,8 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<string?> TakeBackAsync(HttpClient http, string id, CancellationToken cancellationToken)
     {
-        if (Token is not { } token) return "signedOut";
+        var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
+        if (token is null) return notSignedIn;
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try
@@ -226,7 +409,8 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(Uri? Anthropic, string? Problem)> AiAsync(CancellationToken cancellationToken)
     {
-        if (Token is not { } token) return (null, "signedOut");
+        var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
+        if (token is null) return (null, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try

@@ -37,6 +37,11 @@
     <PackageReference Include="TauriKit.Credentials" Version="0.22.0" />
   </ItemGroup>
 
+  <!-- Signing in to the Bohm account: OAuth 2.0 for native apps (RFC 8252) against the identity service the cloud names. -->
+  <ItemGroup>
+    <PackageReference Include="Authway.Native" Version="0.1.0" />
+  </ItemGroup>
+
   <!--
     A model on this computer answering applications' AI requests (GGUF through llama-server), and the
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.

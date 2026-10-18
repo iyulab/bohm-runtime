@@ -1342,9 +1342,12 @@ internal static partial class ControlPlane
                 await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices), cancel).ConfigureAwait(false);
                 break;
 
-            // The Bohm account's access token, while there is no sign-in yet: only when the runtime was given the cloud's address.
+            // The Bohm account — signing in at the identity service the cloud names, and out: only when the runtime was given
+            // the cloud's address. Signing in is two steps: the address the person opens, then waiting for it to come back.
             case ("GET", ["cloud", "account"]):
-            case ("PUT" or "DELETE", ["cloud", "account", "token"]):
+            case ("POST", ["cloud", "account", "sign-in"]):
+            case ("POST", ["cloud", "account", "sign-in", "finish"]):
+            case ("DELETE", ["cloud", "account", "session"]):
                 var account = context.RequestServices.GetRequiredService<Llm.CloudAccount>();
                 if (!account.Configured)
                 {
@@ -1352,27 +1355,22 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                if (request.Method == "DELETE")
+                if (segments is [_, _, "sign-in"])
                 {
-                    context.RequestServices.GetRequiredService<ICredentialVault>().Delete(Llm.CloudAccount.VaultName);
-                }
-                else if (request.Method == "PUT")
-                {
-                    var token = System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
-                    if (token.Length == 0)
-                    {
-                        response.StatusCode = StatusCodes.Status400BadRequest;
-                        break;
-                    }
-
-                    context.RequestServices.GetRequiredService<ICredentialVault>().Write(Llm.CloudAccount.VaultName, token);
+                    var (signInUrl, notBegun) = await account.BeginSignInAsync(cancel).ConfigureAwait(false);
+                    await WriteAsync(response, new CloudSignInView(signInUrl?.AbsoluteUri, notBegun), cancel).ConfigureAwait(false);
+                    break;
                 }
 
-                // Looking at the account, or keeping a new token, tells its balance — and whether the cloud takes the token.
-                var (balance, problem) = request.Method == "DELETE"
+                string? signInProblem = null;
+                if (request.Method == "DELETE") await account.SignOutAsync(cancel).ConfigureAwait(false);
+                else if (request.Method == "POST") signInProblem = await account.FinishSignInAsync(Llm.CloudAccount.SignInTimeout, cancel).ConfigureAwait(false);
+
+                // Looking at the account, or just signed in, tells its balance — and whether the cloud takes the account's token.
+                var (balance, problem) = !account.SignedIn
                     ? (null, "signedOut")
                     : await account.BalanceAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount)), cancel).ConfigureAwait(false);
-                await WriteAsync(response, new CloudAccountView(account.Host!, account.Token is not null, balance, problem), cancel).ConfigureAwait(false);
+                await WriteAsync(response, new CloudAccountView(account.Host!, account.SignedIn, balance, signInProblem ?? problem), cancel).ConfigureAwait(false);
                 break;
 
             // A saved screen kept as a read-only link under the Bohm account (the shell seals the page first).
@@ -2182,6 +2180,9 @@ internal static partial class ControlPlane
     /// </summary>
     internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem);
 
+    /// <summary>The address to sign in at, or why a sign-in could not begin (<see cref="Llm.CloudAccount.BeginSignInAsync"/>).</summary>
+    internal sealed record CloudSignInView(string? Url, string? Problem);
+
     /// <summary>A saved screen kept as a link: its address and when it ends — or why it was not kept (<see cref="Llm.CloudAccount.ShareAsync"/>).</summary>
     internal sealed record CloudLinkView(string? Url, DateTimeOffset? ExpiresAt, string? Problem);
 
@@ -2284,6 +2285,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudAccountView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudSignInView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinkView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinksView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
