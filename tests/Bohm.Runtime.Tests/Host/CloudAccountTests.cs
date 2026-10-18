@@ -26,7 +26,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         _cloud = await FakeProvider.StartAsync();
         _gateway = await FakeProvider.StartAsync();
         _cloud.Answers["/.well-known/oauth-protected-resource"] = JsonSerializer.Serialize(new { resource = _cloud.Address.AbsoluteUri, authorization_servers = new[] { _identity.Issuer } });
-        _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri } });
+        _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri }, links = true });
         _host = await RunningHost.StartAsync(configure: o => o with { CloudEndpoint = _cloud.Address });
     }
 
@@ -116,13 +116,19 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
         var looked = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"));
         Assert.Equal(187, looked.GetProperty("balance").GetInt64());
+        Assert.True(looked.GetProperty("links").GetBoolean());   // the cloud says it keeps links
+
+        // A cloud that does not keep links: «send as a link» is not offered.
+        _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri }, links = false });
+        Assert.False((await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"))).GetProperty("links").GetBoolean());
         Assert.All(CloudCalls, r => Assert.Equal("Bearer " + Token, r.Headers["Authorization"]));
         // Asking for its own balance carries nothing of an application's: not counted as data sent.
         Assert.Empty(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
 
+        var asked = CloudCalls.Count;
         var signedOut = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/account/session"));
         Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
-        Assert.Equal(2, CloudCalls.Count);
+        Assert.Equal(asked, CloudCalls.Count);   // signed out, the cloud is not asked
     }
 
     [Fact]
@@ -359,7 +365,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         var looks = await Task.WhenAll(asked.Select(async a => await AccountAsync(await a)));
 
         Assert.All(looks, look => Assert.Equal(5, look.GetProperty("balance").GetInt64()));
-        Assert.Equal(before + 4, _identity.Refreshes);
+        Assert.Equal(before + 2 * asked.Count, _identity.Refreshes);   // each look asks for a token twice: its balance, then what the cloud keeps
         Assert.NotNull(_identity.RefreshToken);   // never an old one used again — the session is still live
         Assert.Equal("Bearer " + Token, CloudCalls.Last().Headers["Authorization"]);
     }

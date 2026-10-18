@@ -409,8 +409,18 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(Uri? Anthropic, string? Problem)> AiAsync(CancellationToken cancellationToken)
     {
+        var (anthropic, _, problem) = await MeAsync(cancellationToken).ConfigureAwait(false);
+        return (anthropic, problem);
+    }
+
+    /// <summary>
+    /// What the cloud tells of the account (<c>GET me</c>): where its AI calls go (<see cref="AiAsync"/>), and whether the
+    /// cloud keeps read-only links (<c>links</c> — «send as a link» is offered only then) — or why it could not be told.
+    /// </summary>
+    public async Task<(Uri? Anthropic, bool Links, string? Problem)> MeAsync(CancellationToken cancellationToken)
+    {
         var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
-        if (token is null) return (null, notSignedIn);
+        if (token is null) return (null, false, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try
@@ -418,20 +428,21 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
             using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Endpoint!, "me"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await clients.CreateClient(nameof(CloudAccount)).SendAsync(request, limit.Token).ConfigureAwait(false);
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, "unauthorized");
-            if (!response.IsSuccessStatusCode) return (null, "unreachable");
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, false, "unauthorized");
+            if (!response.IsSuccessStatusCode) return (null, false, "unreachable");
             using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
-            return answer.RootElement.ValueKind == JsonValueKind.Object
-                && answer.RootElement.TryGetProperty("ai", out var ai) && ai.ValueKind == JsonValueKind.Object
+            var root = answer.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("ai", out var ai) && ai.ValueKind == JsonValueKind.Object
                 && ai.TryGetProperty("anthropic", out var path) && path.ValueKind == JsonValueKind.String
                 && EndpointOf(path.GetString()) is { } anthropic
-                    ? (anthropic, null)
-                    : (null, "unreachable");
+                    ? (anthropic, root.TryGetProperty("links", out var links) && links.ValueKind == JsonValueKind.True, null)
+                    : (null, false, "unreachable");
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException
             || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            return (null, "unreachable");
+            return (null, false, "unreachable");
         }
     }
 
