@@ -6,7 +6,7 @@ using Bohm.Runtime.Host;
 using TauriKit.Sidecar.Loopback;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
-//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]
+//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud]
 // The control API is enabled by passing a per-launch secret (32 characters or more) in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -28,7 +28,8 @@ using TauriKit.Sidecar.Loopback;
 // its OpenAI-compatible base address and the model's name. Given together or not at all, and not
 // together with --company-models.
 // --no-mcp turns MCP servers off for this run (an administrator's policy): none is listed, connected or
-// offered to the AI, and the person cannot add one.
+// offered to the AI, and the person cannot add one. --no-cloud turns the Bohm account off for this run (an administrator's
+// policy): BOHM_CLOUD is not read, the account cannot be chosen, and nothing is sent to the cloud.
 // BOHM_LLM_ENDPOINTS sends a provider's traffic to a gateway that speaks the same API instead of the provider
 // itself: `host=address` pairs separated by `;` (https, or http on this computer) — see LlmEndpointsVariable.
 // Pairs that cannot be used are left out and named on standard error.
@@ -44,7 +45,7 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
 // Manager instead of the person's (<name>.Bohm), so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp]";
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud]";
 // What --help prints: the comment above, short — what someone running the runtime by hand needs to get to a first request.
 const string help = usage + """
 
@@ -59,6 +60,7 @@ const string help = usage + """
       --company-model-endpoint <url> --company-model <name>
                                  The older way to name one such server and model.
       --no-mcp                   Turn MCP servers off for this run.
+      --no-cloud                 Turn the Bohm account off for this run: nothing is sent to its cloud.
 
     Environment:
       BOHM_RUNTIME_SECRET        A per-launch secret, 32 characters or more, that turns the control API (/__control/)
@@ -94,7 +96,10 @@ var reviewModel = reviewVariable?.Split('/', 2) is [var reviewProvider, var revi
 if (reviewModel is null && !string.IsNullOrWhiteSpace(reviewVariable))
     await Console.Error.WriteLineAsync("BOHM_REVIEW_MODEL is not <provider>/<model> with a known provider; no review this run.");
 #if BOHM_CLOUD
-var cloudVariable = Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
+// An administrator's policy (--no-cloud) wins over the variable: the account is not offered and nothing is sent there.
+var cloudVariable = args.Contains("--no-cloud") ? null : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
+if (args.Contains("--no-cloud") && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable)))
+    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is ignored: the Bohm account is turned off (--no-cloud).");
 #else
 // A build that does not carry the Bohm account (a release build, until the cloud service is ready — see the BohmCloud
 // property in the project file) never takes an address from the variable: the account is not offered and nothing is sent
