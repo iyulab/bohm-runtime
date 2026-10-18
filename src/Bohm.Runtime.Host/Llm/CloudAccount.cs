@@ -62,25 +62,32 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// The account's access token, refreshed first when it is about to end — or why there is none: <c>signedOut</c> (no
     /// session, or the identity service no longer takes it: sign in again) or <c>unreachable</c>. This process alone
     /// refreshes the session: the identity service gives a new refresh token on each use and ends the session when an old
-    /// one is used again, so two refreshing at once — two requests here, or the shell beside — would sign the person out.
+    /// one is used again, so two refreshing at once — the shell beside, say — would sign the person out. Requests here
+    /// share one client, which lines its own session calls up (one refresh, the others get the new token — the identity
+    /// service's own guarantee); the gate is held only while that client is first made.
     /// </summary>
     public async Task<(string? Token, string? Problem)> TokenAsync(CancellationToken cancellationToken)
     {
         if (!SignedIn) return (null, "signedOut");
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (await ClientAsync(cancellationToken).ConfigureAwait(false) is not { } client) return (null, "unreachable");
+            NativeClient? client;
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                client = await ClientAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+            if (client is null) return (null, "unreachable");
             return await client.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false) is { } token ? (token, null) : (null, "signedOut");
         }
         catch (Exception exception) when (exception is NativeSignInException or HttpRequestException
             || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
             return (null, "unreachable");
-        }
-        finally
-        {
-            _gate.Release();
         }
     }
 
@@ -227,7 +234,37 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// The cloud's address from <paramref name="value"/>: an absolute https address, or http on this computer;
     /// <see langword="null"/> when there is none or it cannot be used.
     /// </summary>
-    public static Uri? EndpointOf(string? value) =>
+    public static Uri? EndpointOf(string? value) => EndpointOfAddress(value);
+
+    /// <summary>
+    /// The cloud address a release build carries in place of <see cref="Variable"/> (<c>BohmCloudUrl</c> in the project
+    /// file) — <see langword="null"/> in a build that reads the variable.
+    /// </summary>
+    public static string? BuiltInAddress { get; } = typeof(CloudAccount).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+        .OfType<System.Reflection.AssemblyMetadataAttribute>()
+        .FirstOrDefault(a => a.Key == "BohmCloudUrl")?.Value is { Length: > 0 } address ? address : null;
+
+    /// <summary>
+    /// The cloud this run may use, and what to say on standard error about it. An administrator's <c>--no-cloud</c> wins
+    /// over everything. A build that carries its own address (<paramref name="builtIn"/>) uses it and ignores the variable:
+    /// the person's session and requests go only where the build says. Otherwise the variable's address, when it is one.
+    /// </summary>
+    public static (Uri? Endpoint, string? Note) Choose(string? variable, string? builtIn, bool turnedOff)
+    {
+        var given = !string.IsNullOrWhiteSpace(variable);
+        if (turnedOff)
+            return (null, given ? $"{Variable} is ignored: the Bohm account is turned off (--no-cloud)."
+                : builtIn is not null ? "The Bohm account is turned off (--no-cloud): nothing is sent to its cloud." : null);
+        if (builtIn is not null)
+            return EndpointOfAddress(builtIn) is { } own
+                ? (own, given ? $"{Variable} is ignored: this build uses its own address ({own.Authority})." : null)
+                : (null, "This build's cloud address is not an https address; no Bohm account this run.");
+        if (EndpointOfAddress(variable) is { } endpoint) return (endpoint, null);
+        return (null, given ? $"{Variable} is not an https address (or http on this computer) without a user name, query or fragment; no Bohm account this run." : null);
+    }
+
+    private static Uri? EndpointOfAddress(string? value) =>
         Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var address)
         && (address.Scheme == Uri.UriSchemeHttps || (address.Scheme == Uri.UriSchemeHttp && address.IsLoopback))
         && address.UserInfo.Length == 0 && string.IsNullOrEmpty(address.Query) && string.IsNullOrEmpty(address.Fragment)

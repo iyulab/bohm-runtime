@@ -382,6 +382,31 @@ public sealed class CloudAccountTests : IAsyncLifetime
     public void The_clouds_address_is_https_or_http_on_this_computer_and_ends_in_a_slash(string value, string? expected) =>
         Assert.Equal(expected, CloudAccount.EndpointOf(value)?.AbsoluteUri);
 
+    [Theory]
+    // A debug build reads the variable.
+    [InlineData("https://cloud.example", null, false, "https://cloud.example/", null)]
+    [InlineData(null, null, false, null, null)]
+    [InlineData("http://cloud.example/", null, false, null, "BOHM_CLOUD is not an https address")]
+    // A release build that carries the account uses its own address — the variable cannot send the session elsewhere.
+    [InlineData(null, "https://cloud.bohm.example/", false, "https://cloud.bohm.example/", null)]
+    [InlineData("https://elsewhere.example/", "https://cloud.bohm.example/", false, "https://cloud.bohm.example/", "BOHM_CLOUD is ignored: this build uses its own address (cloud.bohm.example)")]
+    [InlineData(null, "http://cloud.bohm.example/", false, null, "This build's cloud address is not an https address")]
+    // An administrator's --no-cloud wins over both, and says so whenever there was an account to turn off.
+    [InlineData("https://cloud.example/", null, true, null, "BOHM_CLOUD is ignored: the Bohm account is turned off (--no-cloud)")]
+    [InlineData(null, "https://cloud.bohm.example/", true, null, "The Bohm account is turned off (--no-cloud)")]
+    [InlineData(null, null, true, null, null)]
+    public void The_cloud_a_run_uses_is_the_builds_own_address_or_the_variable_and_no_cloud_wins(
+        string? variable, string? builtIn, bool turnedOff, string? endpoint, string? note)
+    {
+        var (chosen, said) = CloudAccount.Choose(variable, builtIn, turnedOff);
+        Assert.Equal(endpoint, chosen?.AbsoluteUri);
+        if (note is null) Assert.Null(said);
+        else Assert.StartsWith(note, said);
+    }
+
+    [Fact]
+    public void A_debug_build_carries_no_address_of_its_own() => Assert.Null(CloudAccount.BuiltInAddress);
+
     /// <summary>The requests to the gateway's Anthropic path.</summary>
     private List<FakeProvider.ReceivedRequest> Messages => [.. _gateway.Received.Where(r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal))];
 

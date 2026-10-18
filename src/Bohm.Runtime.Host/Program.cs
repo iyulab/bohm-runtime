@@ -38,8 +38,9 @@ using TauriKit.Sidecar.Loopback;
 // The provider's key is the one connected in the vault; without it, or when the review cannot be had, no review.
 // BOHM_CLOUD is the Bohm cloud's base address (https, or http on this computer): with it the person may choose a model
 // their Bohm account pays for — see CloudAccount. Without it (the default) nothing is ever sent there. Only builds that carry
-// the account read it (Debug by default; BohmCloud in the project file) — a release build ignores it. BOHM_CLOUD_CLIENT_ID
-// (a test identity service) signs the account in as another client than Bohm's own.
+// the account read it (Debug by default; BohmCloud in the project file) — a release build ignores it, and one that carries
+// the account uses the address built into it (BohmCloudUrl). BOHM_CLOUD_CLIENT_ID (a test identity service, debug builds)
+// signs the account in as another client than Bohm's own.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
@@ -96,21 +97,20 @@ var reviewModel = reviewVariable?.Split('/', 2) is [var reviewProvider, var revi
 if (reviewModel is null && !string.IsNullOrWhiteSpace(reviewVariable))
     await Console.Error.WriteLineAsync("BOHM_REVIEW_MODEL is not <provider>/<model> with a known provider; no review this run.");
 #if BOHM_CLOUD
-// An administrator's policy (--no-cloud) wins over the variable: the account is not offered and nothing is sent there.
-var cloudVariable = args.Contains("--no-cloud") ? null : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable);
-if (args.Contains("--no-cloud") && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable)))
-    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is ignored: the Bohm account is turned off (--no-cloud).");
+// An administrator's policy (--no-cloud) wins over everything: the account is not offered and nothing is sent there. A
+// release build that carries the account has its own address built in and ignores the variable (see CloudAccount.Choose).
+var (cloudEndpoint, cloudNote) = Bohm.Runtime.Host.Llm.CloudAccount.Choose(
+    Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable), Bohm.Runtime.Host.Llm.CloudAccount.BuiltInAddress, args.Contains("--no-cloud"));
 #else
 // A build that does not carry the Bohm account (a release build, until the cloud service is ready — see the BohmCloud
 // property in the project file) never takes an address from the variable: the account is not offered and nothing is sent
 // there. Said on standard error, so a check of a release build can see that it ignored the variable.
-string? cloudVariable = null;
-if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable)))
-    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is ignored: this build does not carry the Bohm account.");
+Uri? cloudEndpoint = null;
+var cloudNote = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.Variable))
+    ? null : $"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is ignored: this build does not carry the Bohm account.";
 #endif
-var cloudEndpoint = Bohm.Runtime.Host.Llm.CloudAccount.EndpointOf(cloudVariable);
-if (cloudEndpoint is null && !string.IsNullOrWhiteSpace(cloudVariable))
-    await Console.Error.WriteLineAsync($"{Bohm.Runtime.Host.Llm.CloudAccount.Variable} is not an https address (or http on this computer) without a user name, query or fragment; no Bohm account this run.");
+if (cloudNote is not null)
+    await Console.Error.WriteLineAsync(cloudNote);
 string? companyEndpoint = null;
 string? companyModelName = null;
 string? companyModelsJson = null;
@@ -187,7 +187,9 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
     ReviewModel = reviewModel,
     CloudEndpoint = cloudEndpoint,
-    CloudClientId = cloudEndpoint is null ? null : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.ClientIdVariable) is { Length: > 0 } cloudClient ? cloudClient : null,
+    // A build with its own address signs in as Bohm's own client only; a debug build may name a test identity service's.
+    CloudClientId = cloudEndpoint is null || Bohm.Runtime.Host.Llm.CloudAccount.BuiltInAddress is not null ? null
+        : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.ClientIdVariable) is { Length: > 0 } cloudClient ? cloudClient : null,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,

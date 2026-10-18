@@ -7,13 +7,19 @@
     <RootNamespace>Bohm.Runtime.Host</RootNamespace>
   </PropertyGroup>
 
-  <!-- The Bohm account (an AI the cloud service pays for) is read from BOHM_CLOUD only in builds that carry it: Debug by
-       default, never a release build until the cloud service is ready. `-p:BohmCloud=true` puts it into a release build
-       for a staging run; `-p:BohmCloud=false` takes it out of a debug one. -->
+  <!-- The Bohm account (an AI the cloud service pays for) is in builds that carry it: Debug by default, never a release
+       build until the cloud service is ready. A debug build reads the cloud's address from BOHM_CLOUD; a release build that
+       carries the account has its address built in (BohmCloudUrl) and ignores the variable, so nothing on the computer can
+       send the person's session elsewhere. `-p:BohmCloud=true -p:BohmCloudUrl=<address>` makes a release build for a
+       staging cloud; `-p:BohmCloud=false` takes the account out of a debug one. -->
   <PropertyGroup>
     <BohmCloud Condition="'$(BohmCloud)' == '' and '$(Configuration)' == 'Debug'">true</BohmCloud>
+    <BohmCloudUrl Condition="'$(BohmCloudUrl)' == ''">https://cloud.bohmbrowser.com/</BohmCloudUrl>
     <DefineConstants Condition="'$(BohmCloud)' == 'true'">$(DefineConstants);BOHM_CLOUD</DefineConstants>
   </PropertyGroup>
+  <ItemGroup Condition="'$(BohmCloud)' == 'true' and '$(Configuration)' != 'Debug'">
+    <AssemblyMetadata Include="BohmCloudUrl" Value="$(BohmCloudUrl)" />
+  </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Adoption\shim.js" LogicalName="Bohm.Runtime.Host.shim.js" />
