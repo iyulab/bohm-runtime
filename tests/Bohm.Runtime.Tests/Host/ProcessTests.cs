@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using Bohm.Runtime.Credentials;
+using Bohm.Runtime.Host.Credentials;
 using Bohm.Runtime.Host;
 using System.Text;
 using System.Text.Json;
