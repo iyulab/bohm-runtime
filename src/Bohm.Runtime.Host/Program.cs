@@ -37,7 +37,8 @@ using TauriKit.Sidecar.Loopback;
 // The provider's key is the one connected in the vault; without it, or when the review cannot be had, no review.
 // BOHM_CLOUD is the Bohm cloud's base address (https, or http on this computer): with it the person may choose a model
 // their Bohm account pays for — see CloudAccount. Without it (the default) nothing is ever sent there. Only builds that carry
-// the account read it (Debug by default; BohmCloud in the project file) — a release build ignores it.
+// the account read it (Debug by default; BohmCloud in the project file) — a release build ignores it. BOHM_CLOUD_CLIENT_ID
+// (a test identity service) signs the account in as another client than Bohm's own.
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
@@ -181,6 +182,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
     ReviewModel = reviewModel,
     CloudEndpoint = cloudEndpoint,
+    CloudClientId = cloudEndpoint is null ? null : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.ClientIdVariable) is { Length: > 0 } cloudClient ? cloudClient : null,
     Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
         ? new WindowsCredentialVault(vaultPrefix)
         : null,

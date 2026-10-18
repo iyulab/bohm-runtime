@@ -59,6 +59,12 @@ public sealed record RuntimeHostOptions
     public Uri? CloudEndpoint { get; init; }
 
     /// <summary>
+    /// The client the Bohm account signs in as at the identity service the cloud names (<see cref="Llm.CloudAccount"/>) —
+    /// <see langword="null"/> (the default): Bohm's own, <see cref="Llm.CloudAccount.DefaultClientId"/>.
+    /// </summary>
+    public string? CloudClientId { get; init; }
+
+    /// <summary>
     /// A model on this computer that answers applications' AI chat requests when no key is connected
     /// for the provider they call, fixed for this run. <see langword="null"/> (the default): the
     /// person chooses one, or none, through the control API.
