@@ -1370,7 +1370,9 @@ internal static partial class ControlPlane
                 var (balance, problem) = !account.SignedIn
                     ? (null, "signedOut")
                     : await account.BalanceAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount)), cancel).ConfigureAwait(false);
-                await WriteAsync(response, new CloudAccountView(account.Host!, account.SignedIn, balance, signInProblem ?? problem), cancel).ConfigureAwait(false);
+                // Whether «send as a link» is offered: the cloud says whether it keeps links.
+                var links = problem is null && (await account.MeAsync(cancel).ConfigureAwait(false)).Links;
+                await WriteAsync(response, new CloudAccountView(account.Host!, account.SignedIn, balance, signInProblem ?? problem, links), cancel).ConfigureAwait(false);
                 break;
 
             // A saved screen kept as a read-only link under the Bohm account (the shell seals the page first).
@@ -2175,10 +2177,10 @@ internal static partial class ControlPlane
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
 
     /// <summary>
-    /// The Bohm account: the cloud's host, whether an access token is kept for it, and its credits — or why they could not be
-    /// told (<see cref="Llm.CloudAccount.BalanceAsync"/>).
+    /// The Bohm account: the cloud's host, whether someone is signed in, and its credits — or why they could not be told
+    /// (<see cref="Llm.CloudAccount.BalanceAsync"/>) — and whether the cloud keeps links (<see cref="Llm.CloudAccount.MeAsync"/>).
     /// </summary>
-    internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem);
+    internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem, bool Links);
 
     /// <summary>The address to sign in at, or why a sign-in could not begin (<see cref="Llm.CloudAccount.BeginSignInAsync"/>).</summary>
     internal sealed record CloudSignInView(string? Url, string? Problem);
