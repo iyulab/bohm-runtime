@@ -42,6 +42,13 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// <summary>How long a sign-in waits for the browser to come back.</summary>
     public static readonly TimeSpan SignInTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How long learning the identity service may take when a person has just asked to sign in. The cloud may scale to
+    /// zero while nobody uses it, and its first answer then waits for it to start (about 20 seconds measured) — longer
+    /// than a balance is worth waiting for, short enough that a cloud that is really down still says so.
+    /// </summary>
+    public static readonly TimeSpan WakeTimeout = TimeSpan.FromSeconds(60);
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private NativeClient? _client;
     private PendingSignIn? _pending;
@@ -189,7 +196,7 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
         if (Endpoint is not { } endpoint) return null;
         var http = clients.CreateClient(nameof(CloudAccount));
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        limit.CancelAfter(BalanceTimeout);
+        limit.CancelAfter(WakeTimeout);
         var metadata = new Uri(endpoint, "/.well-known/oauth-protected-resource" + endpoint.AbsolutePath.TrimEnd('/'));
         using var response = await http.GetAsync(metadata, limit.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) return null;
