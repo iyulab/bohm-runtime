@@ -44,10 +44,10 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
 
     /// <summary>
     /// How long learning the identity service may take when a person has just asked to sign in. The cloud may scale to
-    /// zero while nobody uses it, and its first answer then waits for it to start (about 20 seconds measured) — longer
+    /// zero while nobody uses it, and its first answer then waits for a new instance (20 to 50 seconds measured) — longer
     /// than a balance is worth waiting for, short enough that a cloud that is really down still says so.
     /// </summary>
-    public static readonly TimeSpan WakeTimeout = TimeSpan.FromSeconds(60);
+    public static readonly TimeSpan WakeTimeout = TimeSpan.FromSeconds(90);
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private NativeClient? _client;
