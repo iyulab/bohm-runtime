@@ -77,9 +77,17 @@
   </ItemGroup>
 
   <Target Name="KeepOnnxRuntimeBesideTheExecutable" AfterTargets="ComputeResolvedFilesToPublishList">
+    <PropertyGroup>
+      <_PublishesForWindows>$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))</_PublishesForWindows>
+    </PropertyGroup>
     <ItemGroup>
+      <!-- The package's props add its win-x64 libraries to every x64/AnyCPU output, whatever the runtime identifier: a
+           publish for another system takes its own library (libonnxruntime.dylib, .so) from runtimes/<rid>/native and
+           must not carry the Windows ones. -->
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="'$(_PublishesForWindows)' != 'true' And '%(Extension)' == '.dll' And $([System.String]::Copy('%(Filename)').StartsWith('onnxruntime'))" />
       <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
-        Condition="'%(Extension)' == '.dll' And $([System.String]::Copy('%(Filename)').StartsWith('onnxruntime'))"
+        Condition="('%(Extension)' == '.dll' Or '%(Extension)' == '.dylib' Or '%(Extension)' == '.so') And ($([System.String]::Copy('%(Filename)').StartsWith('onnxruntime')) Or $([System.String]::Copy('%(Filename)').StartsWith('libonnxruntime')))"
         ExcludeFromSingleFile="true" />
       <!-- The import libraries are for linking against it, not for running. -->
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
