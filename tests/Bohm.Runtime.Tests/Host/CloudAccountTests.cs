@@ -117,6 +117,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         var looked = await AccountAsync(await _host.ControlClient().GetAsync("/__control/cloud/account"));
         Assert.Equal(187, looked.GetProperty("balance").GetInt64());
         Assert.True(looked.GetProperty("links").GetBoolean());   // the cloud says it keeps links
+        Assert.Equal("a", looked.GetProperty("account").GetString());   // the account id the cloud names, for the person to read out
 
         // A cloud that does not keep links: «send as a link» is not offered.
         _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri }, links = false });
@@ -128,6 +129,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         var asked = CloudCalls.Count;
         var signedOut = await AccountAsync(await _host.ControlClient().DeleteAsync("/__control/cloud/account/session"));
         Assert.Equal("signedOut", signedOut.GetProperty("problem").GetString());
+        Assert.Equal(JsonValueKind.Null, signedOut.GetProperty("account").ValueKind);
         Assert.Equal(asked, CloudCalls.Count);   // signed out, the cloud is not asked
     }
 

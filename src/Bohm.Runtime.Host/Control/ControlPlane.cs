@@ -1371,8 +1371,9 @@ internal static partial class ControlPlane
                     ? (null, "signedOut")
                     : await account.BalanceAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(Llm.CloudAccount)), cancel).ConfigureAwait(false);
                 // Whether «send as a link» is offered: the cloud says whether it keeps links.
-                var links = problem is null && (await account.MeAsync(cancel).ConfigureAwait(false)).Links;
-                await WriteAsync(response, new CloudAccountView(account.Host!, account.SignedIn, balance, signInProblem ?? problem, links), cancel).ConfigureAwait(false);
+                // The account's id comes with it, for the person to read out when asking for help.
+                var (_, links, accountId, _) = problem is null ? await account.MeAsync(cancel).ConfigureAwait(false) : (null, false, null, null);
+                await WriteAsync(response, new CloudAccountView(account.Host!, account.SignedIn, balance, signInProblem ?? problem, links, accountId), cancel).ConfigureAwait(false);
                 break;
 
             // A saved screen kept as a read-only link under the Bohm account (the shell seals the page first).
@@ -2178,9 +2179,9 @@ internal static partial class ControlPlane
 
     /// <summary>
     /// The Bohm account: the cloud's host, whether someone is signed in, and its credits — or why they could not be told
-    /// (<see cref="Llm.CloudAccount.BalanceAsync"/>) — and whether the cloud keeps links (<see cref="Llm.CloudAccount.MeAsync"/>).
+    /// (<see cref="Llm.CloudAccount.BalanceAsync"/>) — whether the cloud keeps links and the account's id (<see cref="Llm.CloudAccount.MeAsync"/>).
     /// </summary>
-    internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem, bool Links);
+    internal sealed record CloudAccountView(string Host, bool SignedIn, long? Balance, string? Problem, bool Links, string? Account);
 
     /// <summary>The address to sign in at, or why a sign-in could not begin (<see cref="Llm.CloudAccount.BeginSignInAsync"/>).</summary>
     internal sealed record CloudSignInView(string? Url, string? Problem);

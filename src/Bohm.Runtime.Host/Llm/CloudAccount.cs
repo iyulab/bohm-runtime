@@ -446,18 +446,18 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
     /// </summary>
     public async Task<(Uri? Anthropic, string? Problem)> AiAsync(CancellationToken cancellationToken)
     {
-        var (anthropic, _, problem) = await MeAsync(cancellationToken).ConfigureAwait(false);
+        var (anthropic, _, _, problem) = await MeAsync(cancellationToken).ConfigureAwait(false);
         return (anthropic, problem);
     }
 
     /// <summary>
     /// What the cloud tells of the account (<c>GET me</c>): where its AI calls go (<see cref="AiAsync"/>), and whether the
-    /// cloud keeps read-only links (<c>links</c> — «send as a link» is offered only then) — or why it could not be told.
+    /// cloud keeps read-only links (<c>links</c> — «send as a link» is offered only then), and the account's id (<c>account</c>) — or why it could not be told.
     /// </summary>
-    public async Task<(Uri? Anthropic, bool Links, string? Problem)> MeAsync(CancellationToken cancellationToken)
+    public async Task<(Uri? Anthropic, bool Links, string? Account, string? Problem)> MeAsync(CancellationToken cancellationToken)
     {
         var (token, notSignedIn) = await TokenAsync(cancellationToken).ConfigureAwait(false);
-        if (token is null) return (null, false, notSignedIn);
+        if (token is null) return (null, false, null, notSignedIn);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(BalanceTimeout);
         try
@@ -465,21 +465,22 @@ internal sealed class CloudAccount(RuntimeHostOptions options, ICredentialVault 
             using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Endpoint!, "me"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var response = await clients.CreateClient(nameof(CloudAccount)).SendAsync(request, limit.Token).ConfigureAwait(false);
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, false, "unauthorized");
-            if (!response.IsSuccessStatusCode) return (null, false, "unreachable");
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) return (null, false, null, "unauthorized");
+            if (!response.IsSuccessStatusCode) return (null, false, null, "unreachable");
             using var answer = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false));
             var root = answer.RootElement;
             return root.ValueKind == JsonValueKind.Object
                 && root.TryGetProperty("ai", out var ai) && ai.ValueKind == JsonValueKind.Object
                 && ai.TryGetProperty("anthropic", out var path) && path.ValueKind == JsonValueKind.String
                 && EndpointOf(path.GetString()) is { } anthropic
-                    ? (anthropic, root.TryGetProperty("links", out var links) && links.ValueKind == JsonValueKind.True, null)
-                    : (null, false, "unreachable");
+                    ? (anthropic, root.TryGetProperty("links", out var links) && links.ValueKind == JsonValueKind.True,
+                        root.TryGetProperty("account", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null, null)
+                    : (null, false, null, "unreachable");
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException
             || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            return (null, false, "unreachable");
+            return (null, false, null, "unreachable");
         }
     }
 
