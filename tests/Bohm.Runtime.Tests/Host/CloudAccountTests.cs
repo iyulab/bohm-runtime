@@ -343,6 +343,18 @@ public sealed class CloudAccountTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_cloud_still_waking_up_is_waited_for_when_a_person_asks_to_sign_in()
+    {
+        // A cloud that scaled to zero answers its first request only once it has started — longer than a balance is waited for.
+        _cloud.AnswerDelay = CloudAccount.BalanceTimeout + TimeSpan.FromSeconds(1);
+
+        var begun = await AccountAsync(await _host.ControlClient().PostAsync("/__control/cloud/account/sign-in", null));
+
+        Assert.Equal(JsonValueKind.Null, begun.GetProperty("problem").ValueKind);
+        Assert.NotNull(begun.GetProperty("url").GetString());
+    }
+
+    [Fact]
     public async Task When_the_cloud_names_no_identity_service_signing_in_cannot_begin()
     {
         _cloud.Answers.TryRemove("/.well-known/oauth-protected-resource", out _);

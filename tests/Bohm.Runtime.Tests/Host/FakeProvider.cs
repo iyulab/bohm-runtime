@@ -31,6 +31,9 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>JSON answers to <c>GET</c> requests by path — a service's own routes beside a model API's.</summary>
     public ConcurrentDictionary<string, string> Answers { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>How long a <c>GET</c> in <see cref="Answers"/> waits before it is answered — a service still starting up.</summary>
+    public TimeSpan AnswerDelay { get; set; }
+
     /// <summary>Answers to <c>POST</c> requests by path — a status and a JSON body — for a service's own routes.</summary>
     public ConcurrentDictionary<string, (int Status, string Body)> Posted { get; } = new(StringComparer.Ordinal);
 
@@ -137,6 +140,7 @@ public sealed class FakeProvider : IAsyncDisposable
 
             if (context.Request.Method == "GET" && self.Answers.TryGetValue(context.Request.Path.Value ?? "", out var answer))
             {
+                if (self.AnswerDelay > TimeSpan.Zero) await Task.Delay(self.AnswerDelay);
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(answer);
                 return;
