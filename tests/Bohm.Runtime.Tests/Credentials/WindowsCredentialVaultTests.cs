@@ -37,6 +37,39 @@ public sealed class WindowsCredentialVaultTests
     }
 
     [Fact]
+    public void A_signed_in_session_larger_than_one_credential_entry_round_trips_and_leaves_nothing_behind()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("The Windows Credential Manager exists only on Windows.");
+            return;
+        }
+
+        // An OIDC session as the account keeps it — an ID token and an access token (JWTs) and a refresh token —
+        // passes the 2,560 bytes one Credential Manager entry holds; it was refused before the vault kept it in parts.
+        static string Jwt(int claims) => string.Join('.', Convert.ToBase64String(new byte[64]), Convert.ToBase64String(new byte[claims]), Convert.ToBase64String(new byte[256]));
+        var session = System.Text.Json.JsonSerializer.Serialize(new { id_token = Jwt(900), access_token = Jwt(700), refresh_token = Guid.NewGuid().ToString("n") + Guid.NewGuid().ToString("n"), expires_at = 1792412751 });
+        Assert.True(session.Length * 2 > 2560);
+
+        var vault = new WindowsCredentialVault("BohmTest-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            vault.Write("cloud/session", session);
+            Assert.Equal(session, vault.Read("cloud/session"));
+
+            vault.Write("cloud/session", "short"); // a shorter secret takes the parts the long one left
+            Assert.Equal("short", vault.Read("cloud/session"));
+            vault.Write("cloud/session", session);
+        }
+        finally
+        {
+            vault.Delete("cloud/session");
+        }
+
+        Assert.Null(vault.Read("cloud/session"));
+    }
+
+    [Fact]
     public void A_key_kept_by_an_earlier_version_is_copied_to_the_shared_entry_and_kept_until_the_key_is_changed_or_removed()
     {
         if (!OperatingSystem.IsWindows())
