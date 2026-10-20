@@ -18,6 +18,8 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
         """;
 
     private static readonly string[] BrokenProblems = ["Uncaught ReferenceError: documnt is not defined (line 1)"];
+    private static readonly string[] Measured = ["\"Add\" (button) is #ffffff on #d2691e — contrast 3.6:1, needs 4.5:1"];
+    private static readonly string[] Blank = [" "];
 
     private const string Instruction = """{"question":"A reading log for the books I borrow","lang":"en"}""";
 
@@ -173,6 +175,37 @@ public sealed class AppProposalStreamTests : IAsyncLifetime
     public async Task A_look_without_a_picture_is_refused()
     {
         var request = JsonSerializer.Serialize(new { question = "A reading log", lang = "en", review = new { html = "<!doctype html><title>Log</title>", image = "https://example.com/shot.png" } });
+
+        using var response = await ProposalLinesAsync(request);
+
+        HttpAssert.Status(HttpStatusCode.BadRequest, response);
+    }
+
+    [Fact]
+    public async Task With_no_picture_only_what_was_measured_is_asked_for_and_no_picture_question_is_put()
+    {
+        const string Made = """<!doctype html><title>Reading log</title><button style="color:#fff;background:#d2691e">Add</button>""";
+        _server.StreamedCalls.Enqueue(("replace", JsonSerializer.Serialize(new { old_text = "#d2691e", new_text = "#a0501a" })));
+        var request = JsonSerializer.Serialize(new
+        {
+            question = "A reading log for the books I borrow",
+            lang = "en",
+            review = new { html = Made, measured = Measured },
+        });
+
+        using var response = await ProposalLinesAsync(request);
+
+        var lines = await LinesAsync(response);
+        Assert.Contains("#a0501a", lines[^1].GetProperty("html").GetString(), StringComparison.Ordinal);
+        Assert.Empty(_server.PictureQuestions);
+        var asked = JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("messages").EnumerateArray().Last(m => m.GetProperty("role").GetString() == "user");
+        Assert.Contains("Change nothing else", asked.GetProperty("content").ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_look_with_neither_a_picture_nor_anything_measured_is_refused()
+    {
+        var request = JsonSerializer.Serialize(new { question = "A reading log", lang = "en", review = new { html = "<!doctype html><title>Log</title>", measured = Blank } });
 
         using var response = await ProposalLinesAsync(request);
 

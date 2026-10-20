@@ -32,9 +32,10 @@ internal static class PromotionEndpoints
             // A failed proposal is fixed only for an application made from what was asked — one reading pages is made again.
             || request.Broken is { } broken && (!request.FromInstruction || string.IsNullOrWhiteSpace(broken.Html) || broken.Problems is null
                 || !broken.Problems.Any(p => !string.IsNullOrWhiteSpace(p)))
-            // A look over the version just written, the same: an application made from what was asked, with a picture of it.
+            // A look over the version just written, the same: an application made from what was asked, with a picture of it —
+            // or, with no picture, what was still measured short on it (only those colours are changed).
             || request.Review is { } review && (!request.FromInstruction || request.Broken is not null || string.IsNullOrWhiteSpace(review.Html)
-                || !AppProposals.IsImageDataUrl(review.Image) || review.Image.Length > MaxReviewImage))
+                || (string.IsNullOrEmpty(review.Image) ? !review.OnlyColours : !AppProposals.IsImageDataUrl(review.Image) || review.Image.Length > MaxReviewImage)))
         {
             response.StatusCode = StatusCodes.Status400BadRequest;
             return;
@@ -98,7 +99,8 @@ internal static class PromotionEndpoints
                 ? await AppProposals.FixAsync(model.Client, model.Limits, request, cancel, onProgress, skills).ConfigureAwait(false)
                 : request.Review is not null
                 ? await AppProposals.ReviewAsync(model.Client, model.Limits, request, cancel, onProgress, skills, editModel.Reviewer()?.Client,
-                    await context.RequestServices.GetRequiredService<Llm.ImageInput>().SeesAsync(model, cancel).ConfigureAwait(false) == true).ConfigureAwait(false)
+                    // Only the measured colours goes with no picture — the model is not asked whether it takes one in.
+                    !request.Review.OnlyColours && await context.RequestServices.GetRequiredService<Llm.ImageInput>().SeesAsync(model, cancel).ConfigureAwait(false) == true).ConfigureAwait(false)
                 : await AppProposals.ProposeAsync(model.Client, model.Limits, request, cancel,
                     request.FromInstruction ? AppAi.Line(p => !string.IsNullOrEmpty(vault.Read(p.VaultName)), keyless, editModel.Chosen, speechWithoutKey) : null,
                     onProgress, skills, await McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false)).ConfigureAwait(false);

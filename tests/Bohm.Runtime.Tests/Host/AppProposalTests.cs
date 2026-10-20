@@ -617,6 +617,34 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task With_no_picture_and_something_measured_only_those_colours_are_asked_for_without_a_second_reviewer()
+    {
+        var reviewer = new FakeChatModel { Reply = "- No first-time hint." };
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Darkened the button."));
+        const string Pair = "\"Add\" (button) is #ffffff on #d2691e — contrast 3.6:1, needs 4.5:1";
+
+        await AppProposals.ReviewAsync(model, ModelLimits.Unknown, Instruction with { Review = new ReviewedVersion(LogHtml, null, [Pair, " "]) },
+            TestContext.Current.CancellationToken, reviewer: reviewer);
+
+        var asked = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User);
+        Assert.Empty(asked.Contents.OfType<DataContent>());
+        Assert.Contains("- " + Pair, asked.Text, StringComparison.Ordinal);
+        Assert.Contains("Change nothing else", asked.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("layout, spacing", asked.Text, StringComparison.Ordinal);   // not another look at the whole application
+        Assert.DoesNotContain("- \n", asked.Text, StringComparison.Ordinal);
+        Assert.Empty(reviewer.Calls);
+    }
+
+    [Fact]
+    public async Task A_look_with_neither_a_picture_nor_anything_measured_is_refused()
+    {
+        var looked = Instruction with { Review = new ReviewedVersion(LogHtml, null, [" "]) };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => AppProposals.ReviewAsync(new FakeChatModel(), ModelLimits.Unknown, looked, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task The_line_an_error_names_is_shown_as_it_is_now_beside_the_error()
     {
         var model = new FakeChatModel();
