@@ -43,9 +43,11 @@ internal sealed record BrokenVersion(string Html, IReadOnlyList<string> Problems
 
 /// <summary>
 /// The proposal just written for a request, opened without problems: its HTML and a picture of how it looks
-/// (a <c>data:image/…;base64,</c> URL) — looked at once more against what a good application has.
+/// (a <c>data:image/…;base64,</c> URL) — looked at once more against what a good application has. <paramref name="Measured"/>:
+/// what the host measured on that screen and found short of what a good application has (text whose contrast with what is
+/// behind it is too low), one line each — told to the model beside the picture, which a model cannot measure from.
 /// </summary>
-internal sealed record ReviewedVersion(string Html, string Image);
+internal sealed record ReviewedVersion(string Html, string Image, IReadOnlyList<string>? Measured = null);
 
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
 internal sealed record ProposedSource(string Name, int Page, SourceRule Rule);
@@ -316,6 +318,7 @@ internal static partial class AppProposals
         if (!IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
         var (advice, reviewerUse, reviewerStopped) = reviewer is null ? (null, null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
         var instruction = (sees ? ReviewInstruction(request.Question) : CodeReviewInstruction(request.Question))
+            + MeasuredNote(review.Measured)
             + (advice is { Length: > 0 } ? "\n\nAnother reviewer read the application's code against the request and said:\n" + advice
                 + "\nWeigh what it says with what you see; change only what you agree falls short." : "");
         var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
@@ -400,6 +403,14 @@ internal static partial class AppProposals
         + "layout, spacing, sizes, colours and how well text stands out from what is behind it, a name on every field, the first-time hint, wording — with exact replacements (the a-finished-look skill "
         + "offers a checklist if you want one). Keep every feature, every element id, every localStorage key and the shape of "
         + "what is stored as it is. When nothing falls short, change nothing and say so in one sentence.";
+
+    /// <summary>What was measured on the screen, for the look — empty when nothing was found short.</summary>
+    internal static string MeasuredNote(IReadOnlyList<string>? measured) =>
+        measured is { Count: > 0 }
+            ? "\n\nMeasured on that screen — text that does not stand out enough from what is behind it (a contrast of at least 4.5:1 is "
+                + "needed, 3:1 for large text):\n" + string.Join("\n", measured.Select(m => "- " + m))
+                + "\nChange those colours so each pair passes — a deeper shade of the same hue keeps the look."
+            : "";
 
     /// <summary>The same look for a model that takes no pictures in: from the code, with nothing attached.</summary>
     internal static string CodeReviewInstruction(string question) =>

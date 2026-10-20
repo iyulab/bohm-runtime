@@ -43,6 +43,9 @@ internal static class PromotionEndpoints
         // The first problems, each cut short — the rest usually follow from them.
         if (request.Broken is { } told)
             request = request with { Broken = told with { Problems = [.. told.Problems.Where(p => !string.IsNullOrWhiteSpace(p)).Take(10).Select(p => p.Trim() is { Length: > 500 } t ? t[..500] : p.Trim())] } };
+        // What the host measured on the screen it pictured, the same: a few lines, each cut short.
+        if (request.Review is { Measured: { } measured } looked)
+            request = request with { Review = looked with { Measured = [.. measured.Where(m => !string.IsNullOrWhiteSpace(m)).Take(5).Select(m => m.Trim() is { Length: > 300 } t ? t[..300] : m.Trim())] } };
 
         var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
         Edit.ChosenEditModel? model;

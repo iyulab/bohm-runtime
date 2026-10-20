@@ -516,6 +516,23 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task What_the_host_measured_on_the_screen_is_told_with_the_picture_and_nothing_is_added_when_it_found_nothing()
+    {
+        var model = new FakeChatModel();
+        model.Script.Enqueue(new TextContent("Darkened the button."));
+        model.Script.Enqueue(new TextContent("Nothing falls short."));
+        const string Pair = "\"Add\" (button) is #ffffff on #d2691e — contrast 3.6:1, needs 4.5:1";
+
+        await AppProposals.ReviewAsync(model, ModelLimits.Unknown, Instruction with { Review = new ReviewedVersion(LogHtml, Picture, [Pair]) }, TestContext.Current.CancellationToken);
+        await AppProposals.ReviewAsync(model, ModelLimits.Unknown, Instruction with { Review = new ReviewedVersion(LogHtml, Picture) }, TestContext.Current.CancellationToken);
+
+        var told = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("Measured on that screen", told, StringComparison.Ordinal);
+        Assert.Contains("- " + Pair, told, StringComparison.Ordinal);
+        Assert.DoesNotContain("Measured on that screen", model.Calls[1].Messages.Last(m => m.Role == ChatRole.User).Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_model_that_takes_no_pictures_in_looks_over_the_new_application_from_its_code_with_nothing_attached()
     {
         var model = new FakeChatModel();
