@@ -53,14 +53,14 @@
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
   -->
   <ItemGroup>
-    <PackageReference Include="IronHive.Agent" Version="0.70.0" />
-    <PackageReference Include="IronHive.Extensions.AI" Version="0.67.0" />
-    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.67.0" />
-    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.67.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.67.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.67.0" />
+    <PackageReference Include="IronHive.Agent" Version="0.70.1" />
+    <PackageReference Include="IronHive.Extensions.AI" Version="0.68.0" />
+    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.68.0" />
+    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.68.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.68.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.68.0" />
     <PackageReference Include="IronProw.LMSupply" Version="0.16.2" />
-    <PackageReference Include="LMSupply.Generator" Version="0.127.0" />
+    <PackageReference Include="LMSupply.Generator" Version="0.131.0" />
     <PackageReference Include="Markdig" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
   </ItemGroup>
@@ -72,7 +72,7 @@
     loads from the runtime's directory.
   -->
   <ItemGroup>
-    <PackageReference Include="LMSupply.Transcriber" Version="0.127.0" />
+    <PackageReference Include="LMSupply.Transcriber" Version="0.131.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
   </ItemGroup>
 
