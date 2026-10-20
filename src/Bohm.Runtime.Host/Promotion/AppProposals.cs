@@ -45,13 +45,13 @@ internal sealed record BrokenVersion(string Html, IReadOnlyList<string> Problems
 /// The proposal just written for a request, opened without problems: its HTML and a picture of how it looks
 /// (a <c>data:image/…;base64,</c> URL) — looked at once more against what a good application has. <paramref name="Measured"/>:
 /// what the host measured on that screen and found short of what a good application has (text whose contrast with what is
-/// behind it is too low), one line each — told to the model beside the picture, which a model cannot measure from.
-/// With no picture the look is narrower: only the colours of what was measured — the round after a look that left some of it short.
+/// behind it is too low, a field with no name), one line each — told to the model beside the picture, which a model cannot measure from.
+/// With no picture the look is narrower: only what was measured — the round after a look that left some of it short.
 /// </summary>
 internal sealed record ReviewedVersion(string Html, string? Image, IReadOnlyList<string>? Measured = null)
 {
-    /// <summary>Whether this asks only for the measured colours to be changed — no picture, something measured.</summary>
-    public bool OnlyColours => string.IsNullOrEmpty(Image) && Measured is { } measured && measured.Any(m => !string.IsNullOrWhiteSpace(m));
+    /// <summary>Whether this asks only for what was measured to be mended — no picture, something measured.</summary>
+    public bool OnlyMeasured => string.IsNullOrEmpty(Image) && Measured is { } measured && measured.Any(m => !string.IsNullOrWhiteSpace(m));
 }
 
 /// <summary>A source of a proposed application: its name, the page (1-based) its rule was made from, and the rule.</summary>
@@ -320,17 +320,17 @@ internal static partial class AppProposals
         Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null, SkillsConfig? skills = null, IChatClient? reviewer = null, bool sees = true)
     {
         var review = request.Review ?? throw new ArgumentException("No version to look at.", nameof(request));
-        var onlyColours = review.OnlyColours;
-        if (!onlyColours && !IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
-        // Only the measured colours: no second reviewer — its advice is about the whole application, which this round leaves as it is.
-        var (advice, reviewerUse, reviewerStopped) = reviewer is null || onlyColours ? (null, null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
-        var instruction = onlyColours ? ColoursInstruction(request.Question, review.Measured!)
+        var onlyMeasured = review.OnlyMeasured;
+        if (!onlyMeasured && !IsImageDataUrl(review.Image)) throw new ArgumentException("The picture is not a data URL of an image.", nameof(request));
+        // Only what was measured: no second reviewer — its advice is about the whole application, which this round leaves as it is.
+        var (advice, reviewerUse, reviewerStopped) = reviewer is null || onlyMeasured ? (null, null, null) : await AdviceAsync(reviewer, request.Question, review.Html, cancellationToken).ConfigureAwait(false);
+        var instruction = onlyMeasured ? MeasuredInstruction(request.Question, review.Measured!)
             : (sees ? ReviewInstruction(request.Question) : CodeReviewInstruction(request.Question))
             + MeasuredNote(review.Measured)
             + (advice is { Length: > 0 } ? "\n\nAnother reviewer read the application's code against the request and said:\n" + advice
                 + "\nWeigh what it says with what you see; change only what you agree falls short." : "");
         var reviewed = await Edit.EditProposals.ProposeAsync(model, onThisComputer: false, limits, review.Html, new Edit.EditTarget("<body>", null),
-            instruction, null, cancellationToken, onProgress, sees && !onlyColours ? [new DataContent(review.Image!)] : [], skills).ConfigureAwait(false);
+            instruction, null, cancellationToken, onProgress, sees && !onlyMeasured ? [new DataContent(review.Image!)] : [], skills).ConfigureAwait(false);
         var title = TitleOf().Match(reviewed.Html) is { Success: true } named ? WebUtility.HtmlDecode(named.Groups["title"].Value).Trim() : "";
         var (problems, _) = Check(request with { Review = null }, title, null, reviewed.Html);
         if (problems.Count > 0) throw new Edit.ProposalFailedException("The looked-over version cannot be kept: " + string.Join(" ", problems));
@@ -415,21 +415,26 @@ internal static partial class AppProposals
     /// <summary>What was measured on the screen, for the look — empty when nothing was found short.</summary>
     internal static string MeasuredNote(IReadOnlyList<string>? measured) =>
         measured is { Count: > 0 }
-            ? "\n\nMeasured on that screen — text that does not stand out enough from what is behind it (a contrast of at least 4.5:1 is "
-                + "needed, 3:1 for large text):\n" + string.Join("\n", measured.Select(m => "- " + m))
-                + "\nChange those colours so each pair passes — a deeper shade of the same hue keeps the look."
+            ? "\n\nMeasured on that screen — what falls short of what a good application has:\n" + string.Join("\n", measured.Select(m => "- " + m))
+                + "\n" + HowToMend
             : "";
 
     /// <summary>
-    /// The round after a look whose screen still measured short: only those colours, everything else kept — measuring decides
-    /// whether a pair passes, so it is not left to another look at the whole application.
+    /// The round after a look whose screen still measured short: only what was measured, everything else kept — measuring decides
+    /// whether it passes, so it is not left to another look at the whole application.
     /// </summary>
-    internal static string ColoursInstruction(string question, IReadOnlyList<string> measured) =>
+    internal static string MeasuredInstruction(string question, IReadOnlyList<string> measured) =>
         "This is the application you just wrote for this request: «" + question.Trim() + "». Measured on its first screen after your "
-        + "last change — text that still does not stand out enough from what is behind it (a contrast of at least 4.5:1 is needed, 3:1 "
-        + "for large text):\n" + string.Join("\n", measured.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => "- " + m))
-        + "\nChange the colours of those pairs so each passes — a deeper shade of the same hue keeps the look, and a colour named once "
-        + "and used in several places changes in each. Change nothing else.";
+        + "last change — what still falls short of what a good application has:\n"
+        + string.Join("\n", measured.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => "- " + m))
+        + "\n" + HowToMend + " Change nothing else.";
+
+    /// <summary>How each kind of measured line is mended — one sentence per kind, the same in the look and in the round after it.</summary>
+    private const string HowToMend =
+        "Text that does not stand out enough needs a contrast of at least 4.5:1 (3:1 for large text): change the colours of that pair "
+        + "so it passes — a deeper shade of the same hue keeps the look, and a colour named once and used in several places changes in "
+        + "each. A field with no name gets a visible <label for=\"…\"> that says what goes in it (aria-label only where a visible "
+        + "label would not fit).";
 
     /// <summary>The same look for a model that takes no pictures in: from the code, with nothing attached.</summary>
     internal static string CodeReviewInstruction(string question) =>

@@ -529,6 +529,7 @@ public sealed class AppProposalTests
         var told = model.Calls[0].Messages.Last(m => m.Role == ChatRole.User).Text;
         Assert.Contains("Measured on that screen", told, StringComparison.Ordinal);
         Assert.Contains("- " + Pair, told, StringComparison.Ordinal);
+        Assert.Contains("<label for=", told, StringComparison.Ordinal);   // how a field with no name is mended, beside how a colour pair is
         Assert.DoesNotContain("Measured on that screen", model.Calls[1].Messages.Last(m => m.Role == ChatRole.User).Text, StringComparison.Ordinal);
     }
 
@@ -617,7 +618,7 @@ public sealed class AppProposalTests
     }
 
     [Fact]
-    public async Task With_no_picture_and_something_measured_only_those_colours_are_asked_for_without_a_second_reviewer()
+    public async Task With_no_picture_and_something_measured_only_that_is_asked_for_without_a_second_reviewer()
     {
         var reviewer = new FakeChatModel { Reply = "- No first-time hint." };
         var model = new FakeChatModel();
