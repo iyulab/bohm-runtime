@@ -38,9 +38,9 @@
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
   <ItemGroup>
     <PackageReference Include="LocalOrigin.AspNetCore" Version="0.4.1" />
-    <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.23.0" />
+    <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.24.0" />
     <!-- The Windows Credential Manager entries a tauri-kit shell shares (Credentials/WindowsCredentialVault.cs). -->
-    <PackageReference Include="TauriKit.Credentials" Version="0.23.0" />
+    <PackageReference Include="TauriKit.Credentials" Version="0.24.0" />
   </ItemGroup>
 
   <!-- Signing in to the Bohm account: OAuth 2.0 for native apps (RFC 8252) against the identity service the cloud names. -->
