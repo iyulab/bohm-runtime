@@ -84,6 +84,66 @@ public sealed class AppExportTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_folder_this_computer_will_not_let_it_write_to_is_said_so_for_each_way_out()
+    {
+        var id = await _host.AdoptAsync("<!doctype html><title>Kept</title>");
+        var page = await _host.LoadAsync(id);
+        // A record, so that the tables have something to write.
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"books","value":"[{\"title\":\"A\"}]"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+        var closed = Directory.CreateDirectory(Path.Combine(_out, "closed")).FullName;
+        DenyWriting(closed);
+        try
+        {
+            foreach (var (route, target) in new[]
+                     {
+                         ($"apps/{id}/export", Path.Combine(closed, "Kept (Bohm)")),
+                         ($"apps/{id}/tables", Path.Combine(closed, "Kept tables")),
+                         ($"apps/{id}/package?data=none", Path.Combine(closed, "Kept.bohm")),
+                     })
+            {
+                using var response = await _host.ControlClient().PostAsync($"/__control/{route}", new StringContent(target, Encoding.UTF8));
+                HttpAssert.Status(HttpStatusCode.Conflict, response);
+                Assert.Equal("not-writable", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+            }
+        }
+        finally
+        {
+            AllowWriting(closed);
+        }
+    }
+
+    // A folder the person may read but not write to: no write permission for anyone (Unix), or a denied write for this user (Windows).
+    private static void DenyWriting(string folder)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var acl = new DirectoryInfo(folder).GetAccessControl();
+            acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User!,
+                System.Security.AccessControl.FileSystemRights.CreateDirectories | System.Security.AccessControl.FileSystemRights.CreateFiles,
+                System.Security.AccessControl.AccessControlType.Deny));
+            new DirectoryInfo(folder).SetAccessControl(acl);
+        }
+        else
+        {
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        }
+    }
+
+    private static void AllowWriting(string folder)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var acl = new DirectoryInfo(folder).GetAccessControl();
+            acl.PurgeAccessRules(System.Security.Principal.WindowsIdentity.GetCurrent().User!);
+            new DirectoryInfo(folder).SetAccessControl(acl);
+        }
+        else
+        {
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public async Task An_archived_app_can_be_exported_too()
     {
         var id = await _host.AdoptAsync("<p>put away</p>");

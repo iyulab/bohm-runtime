@@ -603,6 +603,11 @@ internal static partial class ControlPlane
                     var withData = request.Query["data"] != "leave";
                     exported = await WhileNotFetchingAsync(open, () => catalog.ExportAsync(exportId, target, open?.Storage, withData, cancel), cancel).ConfigureAwait(false);
                 }
+                catch (UnauthorizedAccessException)
+                {
+                    await RefuseNotWritableAsync(response).ConfigureAwait(false);
+                    break;
+                }
                 catch (IOException)
                 {
                     response.StatusCode = StatusCodes.Status409Conflict;
@@ -633,6 +638,11 @@ internal static partial class ControlPlane
                         ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(tablesId).ConfigureAwait(false)
                         : null;
                     tables = await catalog.ExportTablesAsync(tablesId, tablesTarget, openForTables?.Storage, cancel).ConfigureAwait(false);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    await RefuseNotWritableAsync(response).ConfigureAwait(false);
+                    break;
                 }
                 catch (IOException)
                 {
@@ -666,6 +676,11 @@ internal static partial class ControlPlane
                         : null;
                     packed = await WhileNotFetchingAsync(openToPack,
                         () => catalog.PackAsync(packId, packageTarget, packageData.Value, AiServices, openToPack?.Storage, cancel), cancel).ConfigureAwait(false);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    await RefuseNotWritableAsync(response).ConfigureAwait(false);
+                    break;
                 }
                 catch (IOException)
                 {
@@ -1729,6 +1744,17 @@ internal static partial class ControlPlane
     /// <summary>Each AI service an application may call, with the text that names it in a page — its host, or the path its calls to the organization's model server arrive under.</summary>
     private static readonly IReadOnlyDictionary<string, string> AiServices = LlmProviders.All.ToDictionary(p => p.Id, p => p.Host)
         .Append(KeyValuePair.Create(LlmProxy.CompanyModelSegment, "/__bohm/llm/" + LlmProxy.CompanyModelSegment + "/")).ToDictionary();
+
+    /// <summary>
+    /// A place the caller named that this computer will not let the runtime write to (a folder without write permission, a
+    /// protected folder): not «already there» (a plain conflict) but somewhere else to choose.
+    /// </summary>
+    private static Task RefuseNotWritableAsync(HttpResponse response)
+    {
+        response.StatusCode = StatusCodes.Status409Conflict;
+        return ControlProblems.RefuseAsync(response, "not-writable",
+            new { detail = "This computer does not allow writing there — choose another folder, or allow writing to it." });
+    }
 
     internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
