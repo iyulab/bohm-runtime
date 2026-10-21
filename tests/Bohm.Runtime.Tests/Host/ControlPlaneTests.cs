@@ -378,7 +378,7 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.True(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = Path.Combine(".", Path.GetFileName(stub)), WorkingDirectory = Path.GetDirectoryName(stub) }));
         Assert.True(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig
         {
-            Command = Path.GetFileNameWithoutExtension(stub),
+            Command = OperatingSystem.IsWindows() ? Path.GetFileNameWithoutExtension(stub) : Path.GetFileName(stub),   // as typed on each system
             Environment = new Dictionary<string, string> { ["PATH"] = Path.GetDirectoryName(stub)! },
         }));
         Assert.False(AppMcp.CommandExists(new IronHive.Agent.Mcp.McpPluginConfig { Command = "bohm-no-such-command-6f1d" }));

@@ -153,8 +153,9 @@ llamaServer ??= File.Exists(shipped) ? shipped : null;
 
 // The native ONNX Runtime the speech model runs on ships next to the runtime (kept out of the single file so it can be
 // loaded from a directory); a build without it runs no speech model.
-var speechRuntime = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native") }
-    .FirstOrDefault(d => File.Exists(Path.Combine(d, OperatingSystem.IsWindows() ? "onnxruntime.dll" : "libonnxruntime.so")));
+var onnxRuntime = OperatingSystem.IsWindows() ? "onnxruntime.dll" : OperatingSystem.IsMacOS() ? "libonnxruntime.dylib" : "libonnxruntime.so";
+var speechRuntime = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "runtimes", System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier, "native") }
+    .FirstOrDefault(d => File.Exists(Path.Combine(d, onnxRuntime)));
 
 // A parent that is already gone: say so and stop before serving anything (the watch below would stop the host
 // too, but only after it had started and announced itself ready).
