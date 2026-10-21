@@ -255,12 +255,11 @@ public sealed class CompanyModelTests : IAsyncLifetime
         await using var host = await RunningHost.StartAsync();
         using (var none = await host.ControlClient().PostAsync("/__control/llm/company-model/check", null)) HttpAssert.Status(HttpStatusCode.NotFound, none);
 
-        // A port bound but not listening: a connection is refused, and no other test's server can take the port meanwhile
-        // (a listener stopped right away let a parallel test's server bind the same port, and the check then answered).
-        using var closed = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
-        closed.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-        var port = ((IPEndPoint)closed.LocalEndPoint!).Port;
-        using (var set = await SetAsync(host, $"http://127.0.0.1:{port}/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
+        // Port 1 on loopback: nothing listens there, so a connection is refused, and no other test's server can take it
+        // meanwhile — servers here ask for a port from the ephemeral range, which never hands out port 1 (a listener stopped
+        // right away let a parallel test's server bind the same port, and the check then answered). A port bound but not
+        // listening is not the same everywhere: macOS drops the connection attempt instead of refusing it.
+        using (var set = await SetAsync(host, "http://127.0.0.1:1/v1", "m")) HttpAssert.Status(HttpStatusCode.OK, set);
         var check = await CheckAsync(host);
         Assert.Equal("unreachable", check.GetProperty("result").GetString());
         Assert.Equal("connection-refused", check.GetProperty("unreached").GetString());
