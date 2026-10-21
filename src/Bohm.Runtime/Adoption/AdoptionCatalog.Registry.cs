@@ -140,14 +140,14 @@ public sealed partial class AdoptionCatalog
     private const string PublishingPrefix = ".publishing-";
     private const string IndexLock = "index.lock";
 
-    /// <summary>A lock older than this was left by a publisher that stopped; it is taken over.</summary>
-    private static readonly TimeSpan StaleLock = TimeSpan.FromMinutes(2);
+    /// <summary>The registry lock's timing — shortened by tests.</summary>
+    internal RegistryLockTiming LockTiming { get; set; } = RegistryLockTiming.Default;
 
     /// <summary>Lists <paramref name="entry"/>'s version in the index — the application's other versions kept — under the lock, and checks it is there after.</summary>
     private async Task UpdateIndexAsync(string root, string name, RegistryApp entry, TimeSpan validFor, CancellationToken cancellationToken)
     {
         var lockPath = Path.Combine(root, IndexLock);
-        await using var held = await TakeLockAsync(lockPath, cancellationToken).ConfigureAwait(false);
+        await using var held = await RegistryLock.TakeAsync(lockPath, LockTiming, _clock, cancellationToken).ConfigureAwait(false);
         var indexPath = Path.Combine(root, AppRegistry.IndexFile);
         RegistryIndex? current = null;
         if (File.Exists(indexPath))
@@ -213,43 +213,6 @@ public sealed partial class AdoptionCatalog
             catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && attempt < 50)
             {
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-            }
-        }
-    }
-
-    /// <summary>Creates the lock file — only one creator wins, on a local drive or a share — waiting for a holder, and taking over a stale one.</summary>
-    private async Task<IAsyncDisposable> TakeLockAsync(string path, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
-                return stream;
-            }
-            // A lock its holder has just closed is on its way out, and until it is gone Windows refuses to create it again
-            // with "access denied", not "exists" — the same wait as a held lock. (Reaching here, this computer has already
-            // written the package to the folder, so a denial is not a folder it may not write to.)
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                if (attempt >= 200) throw new RegistryRefusedException(RegistryRefusedException.Busy);
-                if (!File.Exists(path)) continue;   // released between the two looks
-                // The time is the share's clock against this computer's, so a share whose clock runs behind makes a held
-                // lock look stale: the delete then fails, and that is waited out like any held lock, not retried at once.
-                if (_clock.GetUtcNow() - File.GetLastWriteTimeUtc(path) > StaleLock)
-                {
-                    try
-                    {
-                        File.Delete(path);
-                        continue;
-                    }
-                    catch (Exception again) when (again is IOException or UnauthorizedAccessException)
-                    {
-                        // Still held open, or already on its way out: not stale after all.
-                    }
-                }
-
-                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
             }
         }
     }

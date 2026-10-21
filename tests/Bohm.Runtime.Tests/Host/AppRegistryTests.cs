@@ -271,9 +271,7 @@ public sealed class AppRegistryTests : IAsyncLifetime
     [Fact]
     public async Task A_held_lock_that_looks_stale_by_a_skewed_clock_is_waited_for_not_given_up_on()
     {
-        // TODO: elsewhere an open file can be deleted, so a held lock that looks stale is taken over — the lock needs a
-        // liveness check that does not rest on Windows refusing to delete a file still open.
-        Assert.SkipUnless(OperatingSystem.IsWindows(), "Only Windows refuses to delete a lock file its holder has open.");
+        // A lock with no owner mark, as an earlier version wrote: Windows refuses to delete it while held, and elsewhere it is never taken over.
         var data = Directory.CreateTempSubdirectory("bohm-skewed-").FullName;
         try
         {
@@ -298,6 +296,63 @@ public sealed class AppRegistryTests : IAsyncLifetime
         {
             Directory.Delete(data, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task A_lock_whose_holder_keeps_beating_is_waited_for_past_the_stale_time_and_one_that_stopped_is_taken_over()
+    {
+        var data = Directory.CreateTempSubdirectory("bohm-beat-").FullName;
+        try
+        {
+            var timing = new RegistryLockTiming(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(600), TimeSpan.FromSeconds(10));
+            // A clock ten minutes ahead: file times never decide whether a marked lock is alive.
+            var catalog = new AdoptionCatalog(data, new Storage.ManualClock(DateTimeOffset.UtcNow.AddMinutes(10))) { LockTiming = timing };
+            var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>beat</p>"), cancellationToken: TestContext.Current.CancellationToken);
+            var registry = Path.Combine(_registry, "beating");
+            Directory.CreateDirectory(registry);
+            var lockPath = Path.Combine(registry, "index.lock");
+
+            // Another publisher holds the lock and keeps rewriting its mark: waited for, well past the stale time.
+            var holder = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
+            var publishing = catalog.PublishToRegistryAsync(registry, app.Id, "Team apps", new Dictionary<string, string>(), TimeSpan.FromDays(7),
+                TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            Assert.False(publishing.IsCompleted, publishing.Exception?.ToString());
+            await holder.DisposeAsync();
+            Assert.NotNull(await publishing);
+            Assert.False(File.Exists(lockPath));
+
+            // A publisher that stopped left its mark behind, unchanged: taken over after the stale time.
+            await File.WriteAllTextAsync(lockPath, """{"format":"bohm.registry.lock/1","owner":"elsewhere/1/stopped","beat":7}""", TestContext.Current.CancellationToken);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            Assert.NotNull(await catalog.PublishToRegistryAsync(registry, app.Id, "Team apps", new Dictionary<string, string>(), TimeSpan.FromDays(7),
+                TestContext.Current.CancellationToken));
+            Assert.InRange(watch.Elapsed, timing.Stale, timing.Wait);
+            Assert.Equal(["index.json"], Directory.GetFiles(registry).Select(Path.GetFileName).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(data, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_holder_whose_lock_was_taken_over_leaves_the_new_holders_lock_in_place()
+    {
+        var timing = new RegistryLockTiming(TimeSpan.FromMinutes(5), TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(10));
+        var registry = Path.Combine(_registry, "taken");
+        Directory.CreateDirectory(registry);
+        var lockPath = Path.Combine(registry, "index.lock");
+
+        // The first holder stalls (its beat is five minutes away), so the second takes the lock over.
+        var stalled = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
+        var second = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
+        var secondMark = await File.ReadAllTextAsync(lockPath, TestContext.Current.CancellationToken);
+
+        await stalled.DisposeAsync();
+        Assert.Equal(secondMark, await File.ReadAllTextAsync(lockPath, TestContext.Current.CancellationToken));
+        await second.DisposeAsync();
+        Assert.False(File.Exists(lockPath));
     }
 
     [Fact]
