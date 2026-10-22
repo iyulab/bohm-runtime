@@ -52,7 +52,7 @@ internal static class WebAgent
             "Reads one open tab: its title, address, the text the person selected, and the page's main text from its top, whatever is in view. A long page comes in parts: the end of a part says where to go on with from.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id, from list_tabs or from the question."},"from":{"type":"integer","description":"Where to go on reading a long page, as the end of the last part says (optional)."}},"required":["tab"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("snapshot_page",
-            "Lists what can be clicked or filled in one open tab, each with a ref (e1, e2, ...). Refs from an earlier snapshot no longer work.",
+            "Lists what can be clicked or filled in one open tab, each with a ref (e1, e2, ...). An element keeps its ref while it stays on the page; the ref of an element no longer listed does not work.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("click",
             "Clicks an element by its ref from the latest snapshot_page of that tab, then returns the new snapshot. With button right it right-clicks (a context menu); with hold_ms it keeps the button down that long before letting go (press and hold). Before a click that submits, pays, posts, sends or deletes, the shell itself asks the person to confirm, so when they asked for it, call click instead of asking them again in your answer.",
