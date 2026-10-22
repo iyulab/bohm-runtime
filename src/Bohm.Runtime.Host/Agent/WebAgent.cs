@@ -155,7 +155,8 @@ internal static class WebAgent
 
     /// <summary>What the model is told on the caller's last round for a question (<c>last</c> in the request).</summary>
     internal const string LastRoundNote =
-        "This question has used all the steps it may take. Call no tool: answer now from what you have read, and say what you could not find or do.";
+        "This question has used all the steps it may take. Call no tool: answer now from what you have read, and say what you could not find or do. " +
+        "For a task with several parts, say which parts the pages showed as done and which are left — count a part as done only when the page showed it — and that the person can say to go on.";
 
     private const string SystemPrompt = """
         You work in the person's web browser: you answer questions about the pages open in it, and when
@@ -202,7 +203,12 @@ internal static class WebAgent
         the day, then check the field shows that date. Before you say it is done, check the result the page shows: read it, and when it is a
         chart, a picture or a layout, look at the tab. Say it is done only when the page shows it; if it does not, say
         what the page shows instead. Leave the page showing what the person asked for: a chart stays a chart — if you
-        switch to another view to read the values, switch back. Do not hand the steps back to the person and do not answer from memory when the
+        switch to another view to read the values, switch back. After you save or send, read the message the page shows
+        and check that it says what was asked: a message that says otherwise (nothing selected, a field missing, the
+        opposite of the change asked for) means it did not work — fix it and save again. When the same step is refused or
+        changes nothing twice, do not repeat it or press keys to get around it: take a new snapshot, deal with what is in
+        the way (an open list, menu or dialog, or another element holding the focus), or use another control; if it still
+        does not work, stop and tell the person what is in the way. Do not hand the steps back to the person and do not answer from memory when the
         page can show the answer. A cookie or consent banner in the way: choose the option that allows only what is
         necessary, or close it, and go on. Stop before the result only when the site blocks you, asks the person to
         sign in or to prove they are not a robot, or the person must decide; then say exactly what stopped you and
