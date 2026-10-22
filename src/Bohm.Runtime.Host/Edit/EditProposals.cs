@@ -130,9 +130,9 @@ internal static partial class EditProposals
     public const int MaxStorageOutputTokensProvider = 16000;
 
     private const string ReplaceRules = """
-        Call read_source for other lines if you need them. Call replace with a piece of the source
-        copied exactly (without line numbers) and its replacement; the piece must appear only once, so
-        include enough surrounding text.
+        Call read_source for other lines if you need them — every range you need in one call (more). Call
+        replace with a piece of the source copied exactly (without line numbers) and its replacement; the
+        piece must appear only once, so include enough surrounding text.
         """;
 
     private const string Closing = """
@@ -512,9 +512,14 @@ internal static partial class EditProposals
         var edits = new List<SourceEdit>();
 
         var readSource = AIFunctionFactory.Create(
-            (int start_line, int end_line) => Numbered(draft.Split('\n'), start_line, end_line),
+            (int start_line, int end_line, string? more = null) =>
+            {
+                var current = draft.Split('\n');
+                return string.Join("\n…\n", new[] { (start_line, end_line) }.Concat(SourceMap.Ranges(more)).Select(r => Numbered(current, r.Item1, r.Item2)));
+            },
             "read_source",
-            "Returns lines start_line to end_line (1-based, inclusive) of the application's current source, with line numbers.");
+            "Returns lines start_line to end_line (1-based, inclusive) of the application's current source, with line numbers. "
+            + "more: other ranges to return in the same call, like \"120-160, 300-340\" — read every place you need at once.");
         var replace = AIFunctionFactory.Create(
             (string old_text, string new_text) =>
             {
@@ -636,6 +641,9 @@ internal static partial class EditProposals
             prompt.Append(":\n<element>\n").Append(Truncate(target.Html, 2000)).Append("\n</element>\n\n");
         }
         prompt.Append(CultureInfo.InvariantCulture, $"Source lines {from}–{to} of {lines.Length}:\n<app-source>\n").Append(Numbered(lines, from, to)).Append("\n</app-source>\n\n");
+        // Only part shown: where the rest is, so the model reads the lines it needs rather than the file a range at a time.
+        if (!whole && SourceMap.Describe(lines, ReferenceEquals(target, EditTarget.Whole) ? "" : target.Html, from, to) is { Length: > 0 } map)
+            prompt.Append("<app-source-map>\n").Append(map).Append("</app-source-map>\n\n");
         prompt.Append("The person asks: ").Append(instruction);
         if (problems is { Count: > 0 })
         {
