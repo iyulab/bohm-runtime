@@ -242,6 +242,7 @@ internal static partial class AppProposals
                 if (ModelLimits.Of(model, limits).Reasoning == true) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
             })
             .UseTextToolCallRecovery()   // a call written as text runs as the call it meant — inside the options, so it sees them
+            .Use(inner => new TransientRetryChatClient(inner))   // a gateway blip on one round is tried again, not the end of the work
             .Build();
         var knewItThinks = ModelLimits.Of(model, limits).Reasoning == true;
         var system = !request.FromInstruction ? SystemPrompt : appAi is null ? InstructionPrompt : InstructionPrompt + "\n- " + appAi;

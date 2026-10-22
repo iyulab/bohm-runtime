@@ -312,6 +312,7 @@ internal static class WebAgent
                 if (last) options.ToolMode = ChatToolMode.None;
             })
             .UseTextToolCallRecovery()   // inside the options, so it sees the round's tool mode
+            .Use(inner => new TransientRetryChatClient(inner))   // a gateway blip on one round is tried again, not the end of the work
             .Build();
         var written = new System.Text.StringBuilder();
         var cutShort = false;

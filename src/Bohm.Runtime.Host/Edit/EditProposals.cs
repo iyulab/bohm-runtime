@@ -575,6 +575,7 @@ internal static partial class EditProposals
                 options.MaxOutputTokens ??= maxOutputTokens;
             })
             .UseTextToolCallRecovery()   // a call written as text runs as the call it meant — inside the options, so it sees them
+            .Use(inner => new TransientRetryChatClient(inner))   // a gateway blip on one round is tried again, not the end of the work
             .Build();
         var loader = skills is null ? null : SkillsLoader.Create(skills);
         if (loader?.Contributor.GetInstructions() is { Length: > 0 } catalog) systemPrompt += "\n\n" + catalog;

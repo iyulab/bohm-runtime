@@ -1,6 +1,5 @@
 using System.Text.Json;
 using DesktopHost.Files;
-using IronProw.LMSupply;
 using LMSupply.Generator.Abstractions;
 using LMSupply.Generator;
 using LMSupply.Llama.Server;
@@ -196,7 +195,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
 
             LastFailure = null;
-            _client = new ModelFitChatClient(new GeneratorChatClient(_generator), new ModelLimits(settings.ContextLength));
+            _client = new ModelFitChatClient(_generator.AsChatClient(), new ModelLimits(settings.ContextLength));
             // Without a length set here the model library sizes the context itself (the model's trained length,
             // bounded by memory) and says what it started the model with — the length every request must fit.
             if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } started)

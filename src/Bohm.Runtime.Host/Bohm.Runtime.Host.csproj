@@ -38,9 +38,9 @@
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
   <ItemGroup>
     <PackageReference Include="LocalOrigin.AspNetCore" Version="0.4.1" />
-    <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.25.0" />
+    <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.26.0" />
     <!-- The Windows Credential Manager entries a tauri-kit shell shares (Credentials/WindowsCredentialVault.cs). -->
-    <PackageReference Include="TauriKit.Credentials" Version="0.25.0" />
+    <PackageReference Include="TauriKit.Credentials" Version="0.26.0" />
   </ItemGroup>
 
   <!-- Durable files: settings replaced whole (temp sibling, flushed, one rename) and folders sent to the platform's trash. -->
@@ -58,14 +58,13 @@
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
   -->
   <ItemGroup>
-    <PackageReference Include="IronHive.Agent" Version="0.70.1" />
-    <PackageReference Include="IronHive.Extensions.AI" Version="0.68.0" />
-    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.68.0" />
-    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.68.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.68.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.68.0" />
-    <PackageReference Include="IronProw.LMSupply" Version="0.16.2" />
-    <PackageReference Include="LMSupply.Generator" Version="0.134.0" />
+    <PackageReference Include="IronHive.Agent" Version="0.72.0" />
+    <PackageReference Include="IronHive.Extensions.AI" Version="0.69.0" />
+    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.69.0" />
+    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.69.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.69.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.69.0" />
+    <PackageReference Include="LMSupply.Generator" Version="0.136.0" />
     <PackageReference Include="Markdig" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
   </ItemGroup>
@@ -77,7 +76,7 @@
     loads from the runtime's directory.
   -->
   <ItemGroup>
-    <PackageReference Include="LMSupply.Transcriber" Version="0.134.0" />
+    <PackageReference Include="LMSupply.Transcriber" Version="0.136.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
   </ItemGroup>
 

@@ -217,6 +217,7 @@ public sealed class ModelDownloadsTests : IDisposable
         ];
 
         public bool IsDownloaded(string model) => File.Exists(Path.Combine(cache, model + ".gguf"));
+        public Task<bool> IsDownloadedAsync(string model, CancellationToken cancellationToken) => Task.FromResult(IsDownloaded(model));
 
         public Task<long> DownloadSizeAsync(string model, CancellationToken cancellationToken)
         {
@@ -237,6 +238,9 @@ public sealed class ModelDownloadsTests : IDisposable
             public Task<bool> IsAvailableOfflineAsync(string modelId, CancellationToken cancellationToken = default) => Task.FromResult(source.IsDownloaded(modelId));
 
             public Task<long> GetRemainingDownloadBytesAsync(string modelId, CancellationToken cancellationToken = default) => source.DownloadSizeAsync(modelId, cancellationToken);
+
+            public async Task<RemainingDownload> GetRemainingDownloadAsync(string modelId, CancellationToken cancellationToken = default) =>
+                new(await source.DownloadSizeAsync(modelId, cancellationToken), 0L);
 
             public async Task DownloadAsync(string modelId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
             {

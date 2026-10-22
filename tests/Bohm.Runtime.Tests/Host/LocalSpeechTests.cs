@@ -229,6 +229,9 @@ public sealed class LocalSpeechTests
 
             public Task<long> GetRemainingDownloadBytesAsync(string modelId, CancellationToken cancellationToken = default) => Task.FromResult(source.Downloaded ? 0L : 253L);
 
+            public Task<RemainingDownload> GetRemainingDownloadAsync(string modelId, CancellationToken cancellationToken = default) =>
+                Task.FromResult(new RemainingDownload(source.Downloaded ? 0L : 253L, 0L));
+
             public Task DownloadAsync(string modelId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
             {
                 Interlocked.Increment(ref source.Fetched);
