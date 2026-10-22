@@ -41,11 +41,25 @@ internal static class ProposalStream
         IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken,
         IReadOnlyList<AIContent>? attachments = null)
     {
+        var message = new ChatMessage(ChatRole.User, [new TextContent(prompt), .. attachments ?? []]);
+        return await FollowAsync(loop.RunStreamingAsync(message, cancellationToken), written, refused, onProgress, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Continues <paramref name="loop"/> from its history — which must end with an answer to every call of its last
+    /// round — with <paramref name="options"/> for this turn, passed on as <see cref="RunAsync"/> passes a turn on.
+    /// </summary>
+    public static Task<TurnRecord> ContinueAsync(AgentLoop loop, ChatOptions options, IReadOnlyDictionary<string, string> written,
+        IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken) =>
+        FollowAsync(loop.ContinueStreamingAsync(options, cancellationToken), written, refused, onProgress, cancellationToken);
+
+    private static async Task<TurnRecord> FollowAsync(IAsyncEnumerable<AgentResponseChunk> turnChunks, IReadOnlyDictionary<string, string> written,
+        IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken)
+    {
         var calls = new Dictionary<string, ToolArgumentText?>(StringComparer.Ordinal);
         var told = refused?.Count ?? 0;
         TurnRecord? record = null;
-        var message = new ChatMessage(ChatRole.User, [new TextContent(prompt), .. attachments ?? []]);
-        await foreach (var chunk in loop.RunStreamingAsync(message, cancellationToken).ConfigureAwait(false))
+        await foreach (var chunk in turnChunks.ConfigureAwait(false))
         {
             if (chunk.Turn is { } turn) record = turn;
             if (onProgress is null) continue;

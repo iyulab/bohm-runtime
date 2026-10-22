@@ -572,9 +572,46 @@ internal static partial class EditProposals
         });
 
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
+        var messages = response.Messages.ToList();
+        var usage = Llm.ModelUse.Of(response);
+        // Out of rounds before any change: what the model read is still in the conversation, and a failure here would throw
+        // it away — the person's «try again» pays for the same reading from the start. The calls the limit left unrun are
+        // answered instead (a replacement among them is made — often the change itself, written in the last round), and the
+        // same conversation goes on for one more turn with only the tool that changes the source: the model makes the change
+        // from what it has read, finishes what it began, or says what it is missing.
+        var wrappedUp = false;
+        if (response.StopReason == TurnStopReason.StepLimit && edits.Count == 0 && UnrunCalls(loop.History) is { Count: > 0 } unrun)
+        {
+            wrappedUp = true;
+            var answers = new List<AIContent>();
+            foreach (var call in unrun)
+            {
+                var result = call.Name == replace.Name
+                    ? await replace.InvokeAsync(new AIFunctionArguments(call.Arguments), cancellationToken).ConfigureAwait(false)
+                    : RoundsUsed;
+                answers.Add(new FunctionResultContent(call.CallId, result));
+            }
+            loop.InitializeHistory([.. loop.History, new ChatMessage(ChatRole.Tool, answers)]);
+            response = await ProposalStream.ContinueAsync(loop, new ChatOptions { Tools = [replace] }, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false);
+            messages.AddRange(response.Messages);
+            usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
+        }
+
+        // Still no change after the closing turn: the rounds are what stopped it.
+        var stopped = wrappedUp && edits.Count == 0 ? ProposalFailedException.StepLimit : ProposalFailedException.StoppedBy(response.StopReason);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
-            Stopped: ProposalFailedException.StoppedBy(response.StopReason), Usage: Llm.ModelUse.Of(response), Rounds: ProposalRounds.Of(response.Messages, edits.Count));
+            Stopped: stopped, Usage: usage, Rounds: ProposalRounds.Of(messages, edits.Count));
     }
+
+    /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement: the turn that follows has only <c>replace</c>.</summary>
+    internal const string RoundsUsed = """
+        Not run: the rounds for reading are used up. Make the change now with replace, from what you have read. If you
+        cannot, say in one sentence what you would still need.
+        """;
+
+    /// <summary>The calls of the last round, which the round limit left unrun — none when the conversation ends otherwise.</summary>
+    internal static IReadOnlyList<FunctionCallContent> UnrunCalls(IReadOnlyList<ChatMessage> history) =>
+        history.Count > 0 && history[^1].Role == ChatRole.Assistant ? [.. history[^1].Contents.OfType<FunctionCallContent>()] : [];
 
     /// <summary>
     /// Whether a proposal starts from the whole source rather than the lines around the element: given only the part, a

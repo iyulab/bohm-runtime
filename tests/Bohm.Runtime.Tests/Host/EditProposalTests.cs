@@ -268,6 +268,33 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_model_out_of_rounds_before_any_change_keeps_its_last_replacement_and_finishes_on_what_it_read()
+    {
+        var id = await _host.AdoptAsync(App);
+        for (var i = 0; i < EditProposals.MaxRounds; i++)
+            _model.Script.Enqueue(new FunctionCallContent("r" + i, "read_source", new Dictionary<string, object?> { ["start_line"] = 1, ["end_line"] = 2 }));
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "Add Task</button>",
+            ["new_text"] = "Save</button>",
+        }));
+        _model.Reply = "Renamed the button.";
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Single(proposal.GetProperty("edits").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, proposal.GetProperty("stopped").ValueKind);
+        // The replacement the limit left unrun was made, and the closing turn continued the same conversation — what was read
+        // is still there, the prompt is not sent twice — with only the tool that changes the source.
+        var closing = _model.Calls[EditProposals.MaxRounds + 1];
+        Assert.Equal(["replace"], closing.Options!.Tools!.Select(t => t.Name));
+        Assert.Single(closing.Messages, m => m.Role == ChatRole.User);
+        Assert.Equal(EditProposals.MaxRounds, closing.Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Count(r => r.CallId.StartsWith('r')));
+    }
+
+    [Fact]
     public async Task Changes_made_before_the_model_used_all_its_rounds_are_proposed_and_say_it_stopped()
     {
         var id = await _host.AdoptAsync(App);
