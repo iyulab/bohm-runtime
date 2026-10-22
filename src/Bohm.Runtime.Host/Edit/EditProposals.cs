@@ -40,8 +40,12 @@ internal sealed record SourceEdit(string Old, string New);
 /// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, <c>step-limit</c> when it used all its rounds, otherwise <see langword="null"/>.</param>
 /// <param name="Usage">What the model calls behind the proposal came to, as the provider reported — <see langword="null"/> when it reported nothing.</param>
 /// <param name="Rounds">Where the model's rounds of tool calls went — what a stop at the round limit is read against.</param>
+/// <param name="Unresolved">
+/// What the change makes the application call that nothing gives it — a function no script defines, an element id the page
+/// never has (<see cref="AppScripts.Dangling"/>) — still there after the model was told once. <see langword="null"/> when none.
+/// </param>
 internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null, Llm.ModelUse? Usage = null,
-    ProposalRounds? Rounds = null);
+    ProposalRounds? Rounds = null, IReadOnlyList<string>? Unresolved = null);
 
 /// <summary>Where a proposal's rounds of tool calls went.</summary>
 /// <param name="Rounds">Rounds in which the model called tools.</param>
@@ -206,13 +210,13 @@ internal static partial class EditProposals
         try
         {
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, read, use).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole, problems), cancellationToken, onProgress, attachments, read, use, checkUses: true).ConfigureAwait(false);
         }
         catch (ContextOverflowException) when (whole)
         {
             // Too much for a model whose window nobody gave: once more with the part around the element.
             proposal = await RunAsync(model, onThisComputer, limits, text.Lf, SystemPrompt, MaxRounds, onThisComputer ? MaxOutputTokensPerRound : null,
-                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, read, use).ConfigureAwait(false);
+                Prompt(lines, target, instruction, whole: false, problems), cancellationToken, onProgress, attachments, read, use, checkUses: true).ConfigureAwait(false);
         }
 
         StoppedBeforeAnyChange(proposal);
@@ -499,6 +503,10 @@ internal static partial class EditProposals
     /// <summary>What a change writes while it is shown: each replacement's new text.</summary>
     private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["replace"] = "new_text" };
 
+    /// <param name="checkUses">
+    /// Whether what the change uses that nothing gives it goes back to the model once (<see cref="AppScripts.Dangling"/>) — for a
+    /// change the person asked for. A storage move has its own pass for the names it took away (<see cref="RemovedButUsed"/>).
+    /// </param>
     /// <param name="skills">
     /// Whether the model may read a built-in skill (printing, records, files, AI inside the application — see
     /// <see cref="Promotion.AppProposals.SkillsRoot"/>) for a change that needs one. Not for the model on this computer,
@@ -506,7 +514,7 @@ internal static partial class EditProposals
     /// </param>
     private static async Task<EditProposal> RunAsync(IChatClient model, bool onThisComputer, ModelLimits limits, string source, string systemPrompt, int maxRounds, int? maxOutputTokens, string prompt,
         CancellationToken cancellationToken, Func<ProposalProgress, CancellationToken, Task>? onProgress = null, IReadOnlyList<AIContent>? attachments = null,
-        SkillsConfig? skills = null, Promotion.McpUse? mcp = null)
+        SkillsConfig? skills = null, Promotion.McpUse? mcp = null, bool checkUses = false)
     {
         var draft = source;
         var edits = new List<SourceEdit>();
@@ -596,9 +604,38 @@ internal static partial class EditProposals
 
         // Still no change after the closing turn: the rounds are what stopped it. A closing turn that ended on its own finished.
         var stopped = wrappedUp && edits.Count == 0 ? ProposalFailedException.StepLimit : ProposalFailedException.StoppedBy(response.StopReason);
+
+        // A change made in several replacements where one missed — the button added, the function it calls not — reads as
+        // finished and fails only when the person presses it (measured: three of a small model's six broken changes). What the
+        // change calls that nothing gives it goes back to the model once, in the same conversation, with the tools it had;
+        // what is still missing after that travels with the proposal instead of being found by the person.
+        var unresolved = checkUses && edits.Count > 0 ? AppScripts.Dangling(source, draft) : [];
+        if (unresolved.Count > 0)
+        {
+            response = await ProposalStream.RunAsync(loop, Unresolved + "\n" + string.Join("\n", unresolved), WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false);
+            messages.AddRange(response.Messages);
+            usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
+            if (await ProposalStream.CloseAtRoundLimitAsync(loop, response, replace, RoundsUsed, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false) is { } fixedUp)
+            {
+                response = fixedUp;
+                messages.AddRange(response.Messages);
+                usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
+            }
+
+            stopped = ProposalFailedException.StoppedBy(response.StopReason);
+            unresolved = AppScripts.Dangling(source, draft);
+        }
+
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
-            Stopped: stopped, Usage: usage, Rounds: ProposalRounds.Of(messages, edits.Count));
+            Stopped: stopped, Usage: usage, Rounds: ProposalRounds.Of(messages, edits.Count), Unresolved: unresolved.Count > 0 ? unresolved : null);
     }
+
+    /// <summary>What the model is told when its change calls what nothing gives (<see cref="AppScripts.Dangling"/>), before the list.</summary>
+    internal const string Unresolved = """
+        Your change is not finished: the page now uses something that is not there, so it would fail when this part is used.
+        Often a replacement that would have added it did not apply. With replace, add what is missing (read_source first if
+        you need to see where), then say in one sentence what you changed. What is missing:
+        """;
 
     /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement (<see cref="ProposalStream.CloseAtRoundLimitAsync"/>).</summary>
     internal const string RoundsUsed = """

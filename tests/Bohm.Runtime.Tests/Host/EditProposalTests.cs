@@ -715,6 +715,59 @@ public sealed class EditProposalTests : IAsyncLifetime
     private Task<HttpResponseMessage> PostAsync(string id, Dictionary<string, object?> body) =>
         _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"));
 
+    // The button went in, the replacement that would add its function missed: the model is told once, in the same
+    // conversation, adds it — and the proposal is whole.
+    [Fact]
+    public async Task A_change_that_calls_what_nothing_defines_goes_back_to_the_model_once()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = """<button onclick="addTask()">Add Task</button>""",
+            ["new_text"] = """<button onclick="addTask()">Add Task</button><button onclick="exportToCSV()">CSV</button>""",
+        }));
+        _model.Script.Enqueue(new TextContent("I added a CSV button."));
+        _model.Script.Enqueue(new FunctionCallContent("c2", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "function addTask() {",
+            ["new_text"] = "function exportToCSV() {}\nfunction addTask() {",
+        }));
+        _model.Script.Enqueue(new TextContent("I added exportToCSV."));
+
+        using var response = await ProposeAsync(id, "<body>", null, "Add a button that downloads the records as CSV");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Contains("function exportToCSV() {}", proposal.GetProperty("html").GetString(), StringComparison.Ordinal);
+        Assert.Equal(2, proposal.GetProperty("edits").GetArrayLength());
+        Assert.Equal("I added exportToCSV.", proposal.GetProperty("summary").GetString());
+        Assert.False(proposal.TryGetProperty("unresolved", out var left) && left.ValueKind != JsonValueKind.Null);
+        var told = _model.Calls[2].Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.StartsWith("Your change is not finished", told, StringComparison.Ordinal);
+        Assert.Contains("uses exportToCSV ", told, StringComparison.Ordinal);
+    }
+
+    // Told once and still missing: the proposal carries what is missing, so the person is not the one to find it.
+    [Fact]
+    public async Task What_is_still_missing_after_the_model_was_told_travels_with_the_proposal()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = """<button onclick="addTask()">Add Task</button>""",
+            ["new_text"] = """<button onclick="addTask()">Add Task</button><button onclick="exportToCSV()">CSV</button>""",
+        }));
+        _model.Script.Enqueue(new TextContent("I added a CSV button."));
+        _model.Script.Enqueue(new TextContent("It is defined elsewhere."));
+
+        using var response = await ProposeAsync(id, "<body>", null, "Add a button that downloads the records as CSV");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Contains("uses exportToCSV ", Assert.Single(proposal.GetProperty("unresolved").EnumerateArray()).GetString(), StringComparison.Ordinal);
+        Assert.Equal(3, _model.Calls.Count); // told once, not again
+    }
+
     private Task<HttpResponseMessage> ProposeAsync(string id, string html, string? text, string instruction) =>
         _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(
             JsonSerializer.Serialize(new Dictionary<string, object?> { ["instruction"] = instruction, ["target"] = new Dictionary<string, string?> { ["html"] = html, ["text"] = text } }),
