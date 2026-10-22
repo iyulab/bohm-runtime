@@ -15,7 +15,14 @@ namespace Bohm.Runtime.Host.Llm;
 /// <param name="License">The licence's name, when known.</param>
 /// <param name="LicenseTier">How freely the licence lets it be used, as the library sorts them (<c>MIT</c>, <c>Conditional</c>, <c>ResearchOnly</c>).</param>
 /// <param name="SizeBytes">About how much a download takes, when the library estimates it.</param>
-public sealed record ModelCatalogEntry(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes);
+/// <param name="Fit">
+/// Whether it runs on this computer, as the model library judges its memory: <c>gpu</c> (fits the graphics memory — runs at
+/// its speed), <c>memory</c> (fits only the system memory — runs, slowly), <c>no</c> (too large), or <see langword="null"/>
+/// when the library judges only some of its models and not this one.
+/// </param>
+/// <param name="Recommended">The one the library would choose for this computer.</param>
+public sealed record ModelCatalogEntry(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes,
+    string? Fit = null, bool Recommended = false);
 
 /// <summary>How far a download has come.</summary>
 /// <param name="Bytes">Bytes received so far.</param>
@@ -70,7 +77,21 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
     /// and a repository alone downloads its default file, not the variant the alias picks. <c>gguf:auto</c> is left out: what it
     /// picks depends on the computer, so there is nothing to show before it is asked.
     /// </remarks>
-    public IReadOnlyList<ModelCatalogEntry> Catalog() =>
+    public IReadOnlyList<ModelCatalogEntry> Catalog()
+    {
+        // The library's own choice for this computer and its judgement of each model it chooses among — memory only, read
+        // without the network. It judges the models it may choose automatically; the others are listed without a judgement.
+        // TODO(upstream: LMSupply — a fit judgement for any catalog model, as a stable contract): judge every entry once it is there.
+        var selection = GgufModelRegistry.GetAutoSelection(ExecutionProvider.Auto);
+        var fits = selection.Candidates.ToDictionary(c => c.Model.AliasName, c => c.Fits ? "gpu" : c.FitsInSystemRam ? "memory" : "no", StringComparer.OrdinalIgnoreCase);
+        return [.. Entries().Select(e => e with
+        {
+            Fit = fits.GetValueOrDefault(e.Id),
+            Recommended = selection.Reason != ModelSelectionReason.FallbackToSmallest && string.Equals(selection.Selected.AliasName, e.Id, StringComparison.OrdinalIgnoreCase),
+        })];
+    }
+
+    private static IEnumerable<ModelCatalogEntry> Entries() =>
         GgufModelRegistry.GetAliases()
             .Select(alias => alias.StartsWith("gguf:", StringComparison.OrdinalIgnoreCase) ? alias : "gguf:" + alias)
             .Where(id => !string.Equals(id, "gguf:auto", StringComparison.OrdinalIgnoreCase))
@@ -84,8 +105,7 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
                 FormatParameters(m.Info.ParameterCount),
                 m.Info.LicenseName,
                 m.Info.License.ToString(),
-                m.Info.EstimatedSizeBytes))
-            .ToList();
+                m.Info.EstimatedSizeBytes));
 
     /// <summary>«4B» for four billion parameters, «600M» below a billion; <see langword="null"/> when the catalog says none.</summary>
     internal static string? FormatParameters(long count) =>
@@ -169,7 +189,7 @@ internal sealed class ModelDownloads
 
     /// <summary>The catalog, each with whether it is on this computer already.</summary>
     public IReadOnlyList<CatalogView> Catalog() =>
-        _source.Catalog().Select(e => new CatalogView(e.Id, e.Name, e.Description, e.Parameters, e.License, e.LicenseTier, e.SizeBytes, _source.IsDownloaded(e.Id))).ToList();
+        _source.Catalog().Select(e => new CatalogView(e.Id, e.Name, e.Description, e.Parameters, e.License, e.LicenseTier, e.SizeBytes, _source.IsDownloaded(e.Id), e.Fit, e.Recommended)).ToList();
 
     /// <summary>What getting <paramref name="model"/> would take — asks the host once for its size.</summary>
     public async Task<Description> DescribeAsync(string model, CancellationToken cancellationToken)
@@ -343,7 +363,10 @@ internal sealed class ModelDownloads
     }
 
     /// <param name="Downloaded">Whether it is on this computer already — getting it again takes no download.</param>
-    internal sealed record CatalogView(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes, bool Downloaded);
+    /// <param name="Fit">Whether it runs on this computer — <c>gpu</c>, <c>memory</c> (slowly), <c>no</c>, or <see langword="null"/> when not judged (<see cref="ModelCatalogEntry.Fit"/>).</param>
+    /// <param name="Recommended">The one the model library would choose for this computer.</param>
+    internal sealed record CatalogView(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes, bool Downloaded,
+        string? Fit, bool Recommended);
 
     /// <param name="Result">One of <see cref="Ok"/>, <see cref="NotFound"/> (the host has no such model) or <see cref="Unreachable"/>.</param>
     /// <param name="SizeBytes">What the download takes, when the host said.</param>

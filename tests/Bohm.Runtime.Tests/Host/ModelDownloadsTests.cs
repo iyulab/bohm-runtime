@@ -41,6 +41,9 @@ public sealed class ModelDownloadsTests : IDisposable
 
         var entries = catalog.EnumerateArray().Select(e => (e.GetProperty("id").GetString(), e.GetProperty("license").GetString(), e.GetProperty("sizeBytes").GetInt64(), e.GetProperty("downloaded").GetBoolean())).ToList();
         Assert.Equal([("small", "MIT", 1_000L, true), ("large", "Gemma", 9_000L, false)], entries);
+        // Whether it runs here, as the library judges it — and the one it would choose; a model it does not judge says nothing.
+        var fits = catalog.EnumerateArray().Select(e => (e.GetProperty("fit").ValueKind == JsonValueKind.Null ? null : e.GetProperty("fit").GetString(), e.GetProperty("recommended").GetBoolean())).ToList();
+        Assert.Equal([("gpu", true), (null, false)], fits);
         Assert.Equal(0, source.Asked);
         Assert.Empty(Sent(await EgressAsync(host)));
     }
@@ -209,7 +212,7 @@ public sealed class ModelDownloadsTests : IDisposable
 
         public IReadOnlyList<ModelCatalogEntry> Catalog() =>
         [
-            new("small", "Small", "A small model.", "1B", "MIT", "MIT", 1_000),
+            new("small", "Small", "A small model.", "1B", "MIT", "MIT", 1_000, Fit: "gpu", Recommended: true),
             new("large", "Large", "A larger model.", "9B", "Gemma", "Conditional", 9_000),
         ];
 
