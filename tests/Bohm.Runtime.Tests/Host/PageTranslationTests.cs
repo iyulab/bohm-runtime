@@ -15,15 +15,16 @@ public sealed class PageTranslationTests
     private const string Instruction = "You translate the text of a web page";
 
     [Fact]
-    public void An_answer_counts_only_with_one_string_per_piece()
+    public void An_answer_is_read_by_the_numbers_asked()
     {
-        Assert.Equal(["가", "나"], PageTranslation.Read("""{"texts":["가","나"]}""", 2));
-        Assert.Equal(["가", "나"], PageTranslation.Read("""["가","나"]""", 2));
-        Assert.Equal(["가", "나"], PageTranslation.Read("```json\n{\"texts\":[\"가\",\"나\"]}\n```", 2));
-        Assert.Null(PageTranslation.Read("""{"texts":["가나"]}""", 2));
-        Assert.Null(PageTranslation.Read("""{"texts":["가",2]}""", 2));
-        Assert.Null(PageTranslation.Read("가, 나", 2));
-        Assert.Null(PageTranslation.Read(null, 2));
+        Assert.Equal([("1", "가"), ("2", "나")], PageTranslation.Read("""{"1":"가","2":"나"}""", ["1", "2"]));
+        Assert.Equal([("2", "나")], PageTranslation.Read("""{"2":"나","9":"엉뚱","1":3}""", ["1", "2"]));
+        Assert.Equal([("1", "가")], PageTranslation.Read("```json\n{\"1\":\"가\"}\n```", ["1", "2"]));
+        Assert.Empty(PageTranslation.Read("""["가","나"]""", ["1", "2"]));
+        Assert.Empty(PageTranslation.Read("가, 나", ["1", "2"]));
+        Assert.Empty(PageTranslation.Read(null, ["1"]));
+        // Cut short at the model's length bound: the pairs that arrived whole still count.
+        Assert.Equal([("1", "가 \"인용\""), ("2", "나")], PageTranslation.Read("{\n\"1\": \"가 \\\"인용\\\"\",\n\"2\": \"나\",\n\"3\": \"다는 끝나지", ["1", "2", "3"]));
     }
 
     [Fact]
@@ -33,7 +34,7 @@ public sealed class PageTranslationTests
     public async Task The_pieces_come_back_translated_in_order_from_the_chosen_model()
     {
         await using var server = await FakeProvider.StartAsync();
-        server.TextsWhen[Instruction] = """{"texts":["안녕하세요","세계"]}""";
+        server.TextsWhen[Instruction] = """{"1":"안녕하세요","2":"세계"}""";
         await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")) });
 
         using var response = await TranslateAsync(host, """{"texts":["Hello"," world"],"to":"ko"}""");
@@ -51,10 +52,28 @@ public sealed class PageTranslationTests
     }
 
     [Fact]
-    public async Task An_answer_that_merges_pieces_is_asked_once_more_then_refused()
+    public async Task A_piece_the_model_left_out_is_asked_alone_once_more_and_otherwise_stays_unanswered()
     {
         await using var server = await FakeProvider.StartAsync();
-        server.TextsWhen[Instruction] = """{"texts":["안녕하세요 세계"]}""";
+        server.TextsWhen[Instruction] = """{"1":"안녕하세요 세계"}""";
+        await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")) });
+
+        using var response = await TranslateAsync(host, """{"texts":["Hello"," world"],"to":"ko"}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var texts = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("texts");
+        Assert.Equal("안녕하세요 세계", texts[0].GetString());
+        Assert.Equal(JsonValueKind.Null, texts[1].ValueKind);
+        var asked = server.Asked.Where(r => r.Body.Contains(Instruction, StringComparison.Ordinal)).ToList();
+        Assert.Equal(2, asked.Count);
+        Assert.DoesNotContain("Hello", asked[1].Body, StringComparison.Ordinal);   // the second asks only for what was missing
+    }
+
+    [Fact]
+    public async Task An_answer_with_no_piece_is_refused_after_one_more_try()
+    {
+        await using var server = await FakeProvider.StartAsync();
+        server.TextsWhen[Instruction] = "안녕하세요, 세계";
         await using var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")) });
 
         using var response = await TranslateAsync(host, """{"texts":["Hello"," world"],"to":"ko"}""");
@@ -92,11 +111,24 @@ public sealed class PageTranslationTests
 
         using var response = await TranslateAsync(host, """{"texts":["Weather forecast","Tomorrow will be sunny with a high of 21 degrees.","Contact us","Seoul"],"to":"ko"}""");
 
-        HttpAssert.Status(HttpStatusCode.OK, response);
-        var texts = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("texts").EnumerateArray().Select(e => e.GetString()!).ToList();
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+        var texts = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("texts").EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.Equal(4, texts.Count);
-        Assert.All(texts.Take(3), text => Assert.Matches("[가-힣]", text));
-        Assert.Contains("21", texts[1], StringComparison.Ordinal);
+        Assert.All(texts.Take(3), text => Assert.Matches("[가-힣]", text ?? ""));
+        Assert.Contains("21", texts[1] ?? "", StringComparison.Ordinal);
+
+        // A long batch — the size a page sends: most pieces come back translated, each on its own number.
+        var many = Enumerable.Range(1, 60).Select(i => $"Section {i}: Members may reserve a study room for up to three hours.").ToList();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        using var batch = await TranslateAsync(host, JsonSerializer.Serialize(new { texts = many, to = "ko" }));
+        Assert.True(batch.IsSuccessStatusCode, await batch.Content.ReadAsStringAsync());
+        var back = JsonDocument.Parse(await batch.Content.ReadAsStringAsync()).RootElement.GetProperty("texts").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Equal(60, back.Count);
+        var korean = back.Count(text => text is not null && System.Text.RegularExpressions.Regex.IsMatch(text, "[가-힣]"));
+        TestContext.Current.SendDiagnosticMessage($"60 pieces: {korean} translated in {started.Elapsed.TotalSeconds:0} s");
+        Assert.True(korean >= 45, $"{korean} of 60 translated");
+        // Each translation stays on its own piece: the section number it carries is its own.
+        Assert.All(back.Select((text, i) => (text, i)).Where(p => p.text is not null), p => Assert.Contains((p.i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), p.text!, StringComparison.Ordinal));
     }
 
     private static Task<HttpResponseMessage> TranslateAsync(RunningHost host, string body) =>
