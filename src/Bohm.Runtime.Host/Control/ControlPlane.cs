@@ -2195,7 +2195,7 @@ internal static partial class ControlPlane
     /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
     /// <param name="Stopped"><c>output-limit</c> when the model's answer reached its length limit after making these edits, <c>step-limit</c> when it used all its rounds — they may not be all it meant to make; otherwise <see langword="null"/>.</param>
     /// <param name="Rounds">Where the model's rounds of tool calls went.</param>
-    /// <param name="Unresolved">What the change calls that nothing gives it, still there after the model was told once — a proposal to look at before applying.</param>
+    /// <param name="Unresolved">What the change leaves unfinished — a script it broke, or what it calls that nothing gives it — still there after the model was told once — a proposal to look at before applying.</param>
     internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null,
