@@ -28,6 +28,12 @@ public sealed class FakeProvider : IAsyncDisposable
     /// <summary>When set, every request is refused with this status and body — as a provider refuses one it cannot serve.</summary>
     public (int Status, string Body)? Refusal { get; set; }
 
+    /// <summary>
+    /// What a plain (not streamed) chat answer says instead of <see cref="Reply"/> when the request contains the key — keyed by
+    /// what the request says, since the host asks its own questions (a connection check, whether the model thinks) in between.
+    /// </summary>
+    public ConcurrentDictionary<string, string> TextsWhen { get; } = new(StringComparer.Ordinal);
+
     /// <summary>JSON answers to <c>GET</c> requests by path — a service's own routes beside a model API's.</summary>
     public ConcurrentDictionary<string, string> Answers { get; } = new(StringComparer.Ordinal);
 
@@ -294,7 +300,9 @@ public sealed class FakeProvider : IAsyncDisposable
             context.Response.Headers["x-provider-request-id"] = "req-1";
             var finish = self.FinishReason is { } reason ? $",\"finish_reason\":\"{reason}\"" : "";
             var thought = self.Thinks ? ",\"reasoning_content\":\"The person wants one word.\"" : "";
-            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":\"{Reply}\"{thought}}}{finish}}}]}}");
+            var said = self.TextsWhen.FirstOrDefault(t => body.Contains(t.Key, StringComparison.Ordinal)).Value;
+            var content = said is not null ? JsonSerializer.Serialize(said) : $"\"{Reply}\"";
+            await context.Response.WriteAsync($"{{\"choices\":[{{\"message\":{{\"role\":\"assistant\",\"content\":{content}{thought}}}{finish}}}]}}");
         });
         await app.StartAsync();
         var address = new Uri(app.Urls.First() + "/");

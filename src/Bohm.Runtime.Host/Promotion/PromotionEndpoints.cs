@@ -11,7 +11,7 @@ namespace Bohm.Runtime.Host.Promotion;
 
 /// <summary>
 /// Making a new application — from what the person asked, or from an answer and the pages behind it — for the
-/// control API: <c>POST /__control/apps/proposals</c> (a proposal), <c>POST /__control/previews</c> (a look at it
+/// control API: <c>POST /__control/apps/interview</c> (what to ask first), <c>POST /__control/apps/proposals</c> (a proposal), <c>POST /__control/previews</c> (a look at it
 /// with the rows just read) and <c>POST /__control/apps/promotions</c> (taking it in). Nothing is kept before the
 /// last — taking it in is the person's permission to read its sources, if it has any.
 /// </summary>
@@ -134,6 +134,54 @@ internal static class PromotionEndpoints
                 new AppProposalLine("done", proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage, proposal.ReviewerUsage, proposal.ReviewerStopped), PromotionJson.Default.AppProposalLine, cancel).ConfigureAwait(false);
         else
             await WriteAsync(response, new AppProposalView(proposal.Title, proposal.Html, proposal.Sources, proposal.Summary, model.Name, proposal.Refused, proposal.Keeps, proposal.Usage, proposal.ReviewerUsage, proposal.ReviewerStopped), cancel).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <c>POST /__control/apps/interview</c> <c>{ question, lang }</c> → <c>{ questions: [{ question, options }], usage? }</c>: what the model that
+    /// writes applications would ask before making one from <c>question</c> (<see cref="AppInterview"/>) — an empty list when the request is
+    /// clear enough, when no model that writes applications is chosen (the proposal then says what is missing), or when the model could
+    /// not be asked (the proposal meets the same failure and reports it).
+    /// </summary>
+    public static async Task InterviewAsync(HttpContext context, CancellationToken cancel)
+    {
+        var response = context.Response;
+        if (await ReadAsync(context.Request, PromotionJson.Default.InterviewRequest, cancel).ConfigureAwait(false) is not { Question: { } question } request
+            || string.IsNullOrWhiteSpace(question))
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var none = new InterviewView([], null);
+        Edit.ChosenEditModel? model;
+        try
+        {
+            model = await context.RequestServices.GetRequiredService<Edit.EditModel>().GetAsync(cancel).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException)
+        {
+            await WriteAsync(response, none, cancel).ConfigureAwait(false);
+            return;
+        }
+
+        if (model is null || model.OnThisComputer)
+        {
+            await WriteAsync(response, none, cancel).ConfigureAwait(false);
+            return;
+        }
+
+        InterviewView view;
+        try
+        {
+            var (questions, use) = await AppInterview.AskAsync(model.Client, question, request.Lang, cancel).ConfigureAwait(false);
+            view = new InterviewView(questions, use);
+        }
+        catch (Exception) when (!cancel.IsCancellationRequested)
+        {
+            view = none;
+        }
+
+        await WriteAsync(response, view, cancel).ConfigureAwait(false);
     }
 
     public static async Task PreviewAsync(HttpContext context, int port, CancellationToken cancel)
@@ -264,6 +312,13 @@ internal static class PromotionEndpoints
     internal sealed record OneTimeTaskLine(string Status, string Task, string Model, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
 
     /// <summary>The last line of a proposal the model could not make: the fields of the 503's body, with the status <c>failed</c>.</summary>
+    internal sealed record InterviewRequest(string? Question, string? Lang);
+
+    /// <param name="Questions">What to ask, in order — empty when nothing needs asking.</param>
+    /// <param name="Usage">The tokens the call came to, as the provider reported — left out when it reported none.</param>
+    internal sealed record InterviewView(IReadOnlyList<InterviewQuestion> Questions,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
+
     internal sealed record ProposalFailedLine(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped);
 
     /// <summary>What was read for one source: the page, the columns and the rows, one cell per column.</summary>
@@ -278,6 +333,8 @@ internal static class PromotionEndpoints
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(AppRequest))]
+[JsonSerializable(typeof(PromotionEndpoints.InterviewRequest))]
+[JsonSerializable(typeof(PromotionEndpoints.InterviewView))]
 [JsonSerializable(typeof(PromotionEndpoints.AppProposalView))]
 [JsonSerializable(typeof(PromotionEndpoints.AppProposalLine))]
 [JsonSerializable(typeof(PromotionEndpoints.ProposalFailedLine))]
