@@ -574,14 +574,15 @@ internal static partial class EditProposals
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         var messages = response.Messages.ToList();
         var usage = Llm.ModelUse.Of(response);
-        // Out of rounds before any change: what the model read is still in the conversation, and a failure here would throw
-        // it away — the person's «try again» pays for the same reading from the start. The calls the limit left unrun are
-        // answered instead (a replacement among them is made — often the change itself, written in the last round), and the
-        // same conversation goes on for one more turn with only the tool that changes the source: the model makes the change
-        // from what it has read, finishes what it began, or says what it is missing.
+        // Out of rounds: what the model read is still in the conversation. Ending here would throw it away — with no change
+        // yet, the person's «try again» pays for the same reading from the start; with some, the proposal may be half a change
+        // (a button added, its handler not). The calls the limit left unrun are answered instead (a replacement among them is
+        // made — often the change itself, written in the last round), and the same conversation goes on for one more turn
+        // with only the tool that changes the source: the model makes or finishes the change from what it has read, or says
+        // what it is missing.
         // TODO(upstream: IronHive.Agent — a closing round at the iteration cap that the loop serves): move onto it and drop this.
         var wrappedUp = false;
-        if (response.StopReason == TurnStopReason.StepLimit && edits.Count == 0 && UnrunCalls(loop.History) is { Count: > 0 } unrun)
+        if (response.StopReason == TurnStopReason.StepLimit && UnrunCalls(loop.History) is { Count: > 0 } unrun)
         {
             wrappedUp = true;
             var answers = new List<AIContent>();
@@ -598,7 +599,7 @@ internal static partial class EditProposals
             usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
         }
 
-        // Still no change after the closing turn: the rounds are what stopped it.
+        // Still no change after the closing turn: the rounds are what stopped it. A closing turn that ended on its own finished.
         var stopped = wrappedUp && edits.Count == 0 ? ProposalFailedException.StepLimit : ProposalFailedException.StoppedBy(response.StopReason);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
             Stopped: stopped, Usage: usage, Rounds: ProposalRounds.Of(messages, edits.Count));
@@ -606,8 +607,8 @@ internal static partial class EditProposals
 
     /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement: the turn that follows has only <c>replace</c>.</summary>
     internal const string RoundsUsed = """
-        Not run: the rounds for reading are used up. Make the change now with replace, from what you have read. If you
-        cannot, say in one sentence what you would still need.
+        Not run: the rounds for reading are used up. With replace, make or finish the change now from what you have read,
+        then say in one sentence what you changed. If you cannot, say in one sentence what you would still need.
         """;
 
     /// <summary>The calls of the last round, which the round limit left unrun — none when the conversation ends otherwise.</summary>

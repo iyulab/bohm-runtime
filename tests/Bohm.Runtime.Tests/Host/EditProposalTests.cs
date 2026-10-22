@@ -295,6 +295,33 @@ public sealed class EditProposalTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_change_cut_short_by_the_round_limit_is_finished_on_the_same_conversation()
+    {
+        var id = await _host.AdoptAsync(App);
+        _model.Script.Enqueue(new FunctionCallContent("c1", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "Add Task</button>",
+            ["new_text"] = "Save</button>",
+        }));
+        for (var i = 1; i <= EditProposals.MaxRounds; i++)
+            _model.Script.Enqueue(new FunctionCallContent("r" + i, "read_source", new Dictionary<string, object?> { ["start_line"] = 1, ["end_line"] = 2 }));
+        _model.Script.Enqueue(new FunctionCallContent("c2", "replace", new Dictionary<string, object?>
+        {
+            ["old_text"] = "<title>Tasks</title>",
+            ["new_text"] = "<title>My tasks</title>",
+        }));
+        _model.Reply = "Renamed the button and the title.";
+
+        using var response = await ProposeAsync(id, "<button>", null, "Change it");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(2, proposal.GetProperty("edits").GetArrayLength());
+        Assert.Equal(JsonValueKind.Null, proposal.GetProperty("stopped").ValueKind);
+        Assert.Equal(["replace"], _model.Calls[EditProposals.MaxRounds + 1].Options!.Tools!.Select(t => t.Name));
+    }
+
+    [Fact]
     public async Task Changes_made_before_the_model_used_all_its_rounds_are_proposed_and_say_it_stopped()
     {
         var id = await _host.AdoptAsync(App);
