@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using DesktopHost.Files;
 using IronHive.Agent.Skills;
 
 namespace Bohm.Runtime.Host.Promotion;
@@ -66,10 +67,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
             else off.Add(name);
             Directory.CreateDirectory(options.DataRoot);
             var path = Path.Combine(options.DataRoot, OffFile);
-            var aside = path + ".tmp";
-            await File.WriteAllTextAsync(aside, JsonSerializer.Serialize(off.ToArray(), SkillsJson.Default.StringArray) + "\n", new UTF8Encoding(false), cancellationToken)
-                .ConfigureAwait(false);
-            File.Move(aside, path, overwrite: true);
+            await AtomicFile.WriteAllTextAsync(path, JsonSerializer.Serialize(off.ToArray(), SkillsJson.Default.StringArray) + "\n", cancellationToken).ConfigureAwait(false);
         }
         finally
         {

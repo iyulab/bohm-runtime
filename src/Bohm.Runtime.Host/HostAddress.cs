@@ -1,6 +1,6 @@
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
+using DesktopHost.Files;
 using LocalOrigin.Origins;
 
 namespace Bohm.Runtime.Host;
@@ -40,15 +40,12 @@ internal static class HostAddress
         return null;
     }
 
-    /// <summary>Remembers <paramref name="port"/>. Written aside and moved into place, so a reader never sees half a file.</summary>
+    /// <summary>Remembers <paramref name="port"/>. Replaced whole (<see cref="AtomicFile"/>), so a reader never sees half a file.</summary>
     public static void Write(string dataRoot, int port)
     {
         Directory.CreateDirectory(dataRoot);
         var path = Path.Combine(dataRoot, FileName);
-        var aside = path + ".tmp";
-        var json = string.Create(CultureInfo.InvariantCulture, $"{{ \"format\": \"{Format}\", \"port\": {port} }}\n");
-        File.WriteAllText(aside, json, new UTF8Encoding(false));
-        File.Move(aside, path, overwrite: true);
+        AtomicFile.WriteAllText(path, string.Create(CultureInfo.InvariantCulture, $"{{ \"format\": \"{Format}\", \"port\": {port} }}\n"));
     }
 }
 

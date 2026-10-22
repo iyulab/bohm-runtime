@@ -1,12 +1,12 @@
-using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
 using Bohm.Runtime.Host.Llm;
+using DesktopHost.Files;
 using IronHive.Extensions.AI;
 using IronHive.Providers.Anthropic;
 using IronHive.Providers.GoogleAI;
-using IronHive.Providers.OpenAI;
 using IronHive.Providers.OpenAI.Compatible;
+using IronHive.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Host.Edit;
@@ -101,11 +101,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             {
                 choice = choice with { Model = choice.Model.Trim() };
                 Directory.CreateDirectory(options.DataRoot);
-                var aside = path + ".tmp";
-                await File.WriteAllTextAsync(aside,
-                    JsonSerializer.Serialize(new Stored(Format, choice.Provider, choice.Model), EditModelJson.Default.Stored) + "\n",
-                    new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-                File.Move(aside, path, overwrite: true);
+                await AtomicFile.WriteAllTextAsync(path,
+                    JsonSerializer.Serialize(new Stored(Format, choice.Provider, choice.Model), EditModelJson.Default.Stored) + "\n", cancellationToken).ConfigureAwait(false);
             }
 
             Remembered = choice;
