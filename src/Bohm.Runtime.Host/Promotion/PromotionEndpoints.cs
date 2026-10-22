@@ -319,7 +319,8 @@ internal static class PromotionEndpoints
     internal sealed record InterviewView(IReadOnlyList<InterviewQuestion> Questions,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
 
-    internal sealed record ProposalFailedLine(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped);
+    internal sealed record ProposalFailedLine(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
 
     /// <summary>What was read for one source: the page, the columns and the rows, one cell per column.</summary>
     internal sealed record ReadingInput(string? Source, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<string>>? Rows);

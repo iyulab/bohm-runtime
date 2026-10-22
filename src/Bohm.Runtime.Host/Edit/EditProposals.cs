@@ -39,7 +39,34 @@ internal sealed record SourceEdit(string Old, string New);
 /// <param name="Left">For a named fix that did not finish, what is left — so the person, and a measurement, can see why.</param>
 /// <param name="Stopped"><c>output-limit</c> when the model's last answer reached its length limit before it finished, <c>step-limit</c> when it used all its rounds, otherwise <see langword="null"/>.</param>
 /// <param name="Usage">What the model calls behind the proposal came to, as the provider reported — <see langword="null"/> when it reported nothing.</param>
-internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null, Llm.ModelUse? Usage = null);
+/// <param name="Rounds">Where the model's rounds of tool calls went — what a stop at the round limit is read against.</param>
+internal sealed record EditProposal(string Html, string Summary, IReadOnlyList<SourceEdit> Edits, bool? Complete = null, StorageLeft? Left = null, string? Stopped = null, Llm.ModelUse? Usage = null,
+    ProposalRounds? Rounds = null);
+
+/// <summary>Where a proposal's rounds of tool calls went.</summary>
+/// <param name="Rounds">Rounds in which the model called tools.</param>
+/// <param name="Calls">Calls by tool name (<c>read_source</c>, <c>replace</c>, a skill or MCP tool's name).</param>
+/// <param name="Missed">Replacements that changed nothing — the piece was not found, or found more than once.</param>
+internal sealed record ProposalRounds(int Rounds, IReadOnlyDictionary<string, int> Calls, int Missed)
+{
+    /// <summary>Counted from the messages a turn added; <paramref name="kept"/> is how many replacements the source took.</summary>
+    public static ProposalRounds Of(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, int kept)
+    {
+        var calls = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var rounds = 0;
+        foreach (var message in messages)
+        {
+            var any = false;
+            foreach (var call in message.Contents.OfType<Microsoft.Extensions.AI.FunctionCallContent>())
+            {
+                calls[call.Name] = calls.GetValueOrDefault(call.Name) + 1;
+                any = true;
+            }
+            if (any) rounds++;
+        }
+        return new ProposalRounds(rounds, calls, Math.Max(0, calls.GetValueOrDefault("replace") - kept));
+    }
+}
 
 /// <summary>What a storage move left: lines that still load or call the online database, and names still used whose declaration it removed.</summary>
 /// <param name="OnlineLines">1-based line numbers in the proposed source.</param>
@@ -245,9 +272,9 @@ internal static partial class EditProposals
         switch (proposal.Stopped)
         {
             case ProposalFailedException.OutputLimit:
-                throw new ProposalFailedException("The model's answer reached its length limit before it proposed a change.", ProposalFailedException.OutputLimit);
+                throw new ProposalFailedException("The model's answer reached its length limit before it proposed a change.", ProposalFailedException.OutputLimit, proposal.Rounds);
             case ProposalFailedException.StepLimit:
-                throw new ProposalFailedException("The model used all its rounds before it proposed a change.", ProposalFailedException.StepLimit);
+                throw new ProposalFailedException("The model used all its rounds before it proposed a change.", ProposalFailedException.StepLimit, proposal.Rounds);
         }
     }
 
@@ -546,7 +573,7 @@ internal static partial class EditProposals
 
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         return new EditProposal(draft, response.Content?.Trim() ?? "", edits,
-            Stopped: ProposalFailedException.StoppedBy(response.StopReason), Usage: Llm.ModelUse.Of(response));
+            Stopped: ProposalFailedException.StoppedBy(response.StopReason), Usage: Llm.ModelUse.Of(response), Rounds: ProposalRounds.Of(response.Messages, edits.Count));
     }
 
     /// <summary>

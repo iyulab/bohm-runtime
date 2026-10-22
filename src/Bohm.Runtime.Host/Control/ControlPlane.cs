@@ -2169,22 +2169,22 @@ internal static partial class ControlPlane
         {
             // The model stopped without finishing — the local server's request limit, or a provider's refusal,
             // which carries the provider's own status and message so the person can see why.
-            var (detail, provider, stopped) = (e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped);
+            var (detail, provider, stopped, rounds) = (e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped, (e as Edit.ProposalFailedException)?.Rounds);
             if (lines)
             {
-                await WriteLineAsync(response, new Promotion.PromotionEndpoints.ProposalFailedLine("failed", null, detail, provider, stopped), Promotion.PromotionJson.Default.ProposalFailedLine, cancel).ConfigureAwait(false);
+                await WriteLineAsync(response, new Promotion.PromotionEndpoints.ProposalFailedLine("failed", null, detail, provider, stopped, rounds), Promotion.PromotionJson.Default.ProposalFailedLine, cancel).ConfigureAwait(false);
                 return;
             }
 
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, detail, provider, stopped)).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, detail, provider, stopped, rounds)).ConfigureAwait(false);
             return;
         }
 
         if (lines)
-            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage), cancel).ConfigureAwait(false);
+            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds), cancel).ConfigureAwait(false);
         else
-            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds), cancel).ConfigureAwait(false);
     }
 
     /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
@@ -2194,12 +2194,15 @@ internal static partial class ControlPlane
     /// <param name="Complete">For a named fix, whether it finished — a proposal that stopped halfway is not one to apply. <c>null</c> for a change the person asked for.</param>
     /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
     /// <param name="Stopped"><c>output-limit</c> when the model's answer reached its length limit after making these edits, <c>step-limit</c> when it used all its rounds — they may not be all it meant to make; otherwise <see langword="null"/>.</param>
+    /// <param name="Rounds">Where the model's rounds of tool calls went.</param>
     internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
 
     /// <summary>The last line of a change proposed as it goes: <see cref="ProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
     internal sealed record ProposalLine(string Status, string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
@@ -2217,7 +2220,9 @@ internal static partial class ControlPlane
     /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
     /// <param name="Provider">The provider's refusal — its status and own message — when a provider refused.</param>
     /// <param name="Stopped">What ended the model's answer before it finished, when that is known: <c>output-limit</c> (its length limit) or <c>step-limit</c> (its rounds of tool calls).</param>
-    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped = null);
+    /// <param name="Rounds">Where the model's rounds went, when it stopped at a limit.</param>
+    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
 
     private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, IServiceProvider services) =>
         new(provider.Id, provider.DisplayName, provider.Host, connected,
