@@ -1207,7 +1207,7 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["llm", "local-model", "catalog"]):
-                await WriteAsync(response, context.RequestServices.GetRequiredService<ModelDownloads>().Catalog(), cancel).ConfigureAwait(false);
+                await WriteAsync(response, await context.RequestServices.GetRequiredService<ModelDownloads>().CatalogAsync(cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
 
             case ("POST", ["llm", "local-model", "describe"]):

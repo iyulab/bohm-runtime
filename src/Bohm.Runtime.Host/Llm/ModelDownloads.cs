@@ -41,8 +41,8 @@ public interface IModelSource
     /// <summary>The models the library knows by a short name. Read without the network.</summary>
     IReadOnlyList<ModelCatalogEntry> Catalog();
 
-    /// <summary>Whether <paramref name="model"/> is on this computer already. Read without the network.</summary>
-    bool IsDownloaded(string model);
+    /// <summary>Whether <paramref name="model"/> is on this computer already — getting it would download nothing. Read without the network.</summary>
+    Task<bool> IsDownloadedAsync(string model, CancellationToken cancellationToken);
 
     /// <summary>How many bytes getting <paramref name="model"/> would take. Asks the host once.</summary>
     /// <exception cref="KeyNotFoundException">The host has no such model.</exception>
@@ -113,7 +113,8 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
         : count >= 1_000_000_000 ? (count / 1e9).ToString(count % 1_000_000_000 == 0 ? "0" : "0.#", System.Globalization.CultureInfo.InvariantCulture) + "B"
         : (count / 1e6).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "M";
 
-    public bool IsDownloaded(string model) => LocalGenerator.IsModelDownloaded(model, null);
+    public Task<bool> IsDownloadedAsync(string model, CancellationToken cancellationToken) =>
+        LocalGenerator.IsModelDownloadedAsync(model, null, cancellationToken);
 
     public async Task<long> DownloadSizeAsync(string model, CancellationToken cancellationToken)
     {
@@ -188,14 +189,20 @@ internal sealed class ModelDownloads
     }
 
     /// <summary>The catalog, each with whether it is on this computer already.</summary>
-    public IReadOnlyList<CatalogView> Catalog() =>
-        _source.Catalog().Select(e => new CatalogView(e.Id, e.Name, e.Description, e.Parameters, e.License, e.LicenseTier, e.SizeBytes, _source.IsDownloaded(e.Id), e.Fit, e.Recommended)).ToList();
+    public async Task<IReadOnlyList<CatalogView>> CatalogAsync(CancellationToken cancellationToken)
+    {
+        var views = new List<CatalogView>();
+        foreach (var e in _source.Catalog())
+            views.Add(new(e.Id, e.Name, e.Description, e.Parameters, e.License, e.LicenseTier, e.SizeBytes,
+                await _source.IsDownloadedAsync(e.Id, cancellationToken).ConfigureAwait(false), e.Fit, e.Recommended));
+        return views;
+    }
 
     /// <summary>What getting <paramref name="model"/> would take — asks the host once for its size.</summary>
     public async Task<Description> DescribeAsync(string model, CancellationToken cancellationToken)
     {
         var entry = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase));
-        var downloaded = _source.IsDownloaded(model);
+        var downloaded = await _source.IsDownloadedAsync(model, cancellationToken).ConfigureAwait(false);
         _egress.Sent(_source.Host);
         try
         {
@@ -237,7 +244,7 @@ internal sealed class ModelDownloads
         lock (_lock)
             if (_running is { Ended: false }) return Started.Busy;
 
-        if (_source.IsDownloaded(model) && await LocalPathAsync(model, cancellationToken).ConfigureAwait(false) is { } here)
+        if (await _source.IsDownloadedAsync(model, cancellationToken).ConfigureAwait(false) && await LocalPathAsync(model, cancellationToken).ConfigureAwait(false) is { } here)
         {
             await _local.ChooseAsync(here, cancellationToken).ConfigureAwait(false);
             lock (_lock)
