@@ -2067,9 +2067,11 @@ internal static partial class ControlPlane
             else
             {
                 instruction = root.GetProperty("instruction").GetString() ?? "";
-                var element = root.GetProperty("target");
-                target = new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
-                    element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null);
+                // No target: a request about the whole application, asked in words without pointing at an element.
+                target = root.TryGetProperty("target", out var element)
+                    ? new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
+                        element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null)
+                    : Edit.EditTarget.Whole;
                 if (string.IsNullOrWhiteSpace(instruction))
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
@@ -2084,6 +2086,19 @@ internal static partial class ControlPlane
                     problems = broken.GetProperty("problems").EnumerateArray().Select(p => p.GetString()?.Trim() ?? "").Where(p => p.Length > 0)
                         .Take(MaxProblemsTold).Select(p => p.Length > 500 ? p[..500] : p).ToList();
                     if (string.IsNullOrWhiteSpace(html) || problems.Count == 0)
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        return;
+                    }
+
+                    source = html;
+                }
+                // A change on top of an earlier proposal the person has not applied yet (changes made one after another,
+                // applied once): made from that version, as for a new request.
+                else if (root.TryGetProperty("base", out var draft))
+                {
+                    var html = draft.GetProperty("html").GetString();
+                    if (string.IsNullOrWhiteSpace(html))
                     {
                         response.StatusCode = StatusCodes.Status400BadRequest;
                         return;
