@@ -580,21 +580,11 @@ internal static partial class EditProposals
         // made — often the change itself, written in the last round), and the same conversation goes on for one more turn
         // with only the tool that changes the source: the model makes or finishes the change from what it has read, or says
         // what it is missing.
-        // TODO(upstream: IronHive.Agent — a closing round at the iteration cap that the loop serves): move onto it and drop this.
         var wrappedUp = false;
-        if (response.StopReason == TurnStopReason.StepLimit && UnrunCalls(loop.History) is { Count: > 0 } unrun)
+        if (await ProposalStream.CloseAtRoundLimitAsync(loop, response, replace, RoundsUsed, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false) is { } closed)
         {
             wrappedUp = true;
-            var answers = new List<AIContent>();
-            foreach (var call in unrun)
-            {
-                var result = call.Name == replace.Name
-                    ? await replace.InvokeAsync(new AIFunctionArguments(call.Arguments), cancellationToken).ConfigureAwait(false)
-                    : RoundsUsed;
-                answers.Add(new FunctionResultContent(call.CallId, result));
-            }
-            loop.InitializeHistory([.. loop.History, new ChatMessage(ChatRole.Tool, answers)]);
-            response = await ProposalStream.ContinueAsync(loop, new ChatOptions { Tools = [replace] }, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false);
+            response = closed;
             messages.AddRange(response.Messages);
             usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
         }
@@ -605,15 +595,12 @@ internal static partial class EditProposals
             Stopped: stopped, Usage: usage, Rounds: ProposalRounds.Of(messages, edits.Count));
     }
 
-    /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement: the turn that follows has only <c>replace</c>.</summary>
+    /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement (<see cref="ProposalStream.CloseAtRoundLimitAsync"/>).</summary>
     internal const string RoundsUsed = """
         Not run: the rounds for reading are used up. With replace, make or finish the change now from what you have read,
         then say in one sentence what you changed. If you cannot, say in one sentence what you would still need.
         """;
 
-    /// <summary>The calls of the last round, which the round limit left unrun — none when the conversation ends otherwise.</summary>
-    internal static IReadOnlyList<FunctionCallContent> UnrunCalls(IReadOnlyList<ChatMessage> history) =>
-        history.Count > 0 && history[^1].Role == ChatRole.Assistant ? [.. history[^1].Contents.OfType<FunctionCallContent>()] : [];
 
     /// <summary>
     /// Whether a proposal starts from the whole source rather than the lines around the element: given only the part, a

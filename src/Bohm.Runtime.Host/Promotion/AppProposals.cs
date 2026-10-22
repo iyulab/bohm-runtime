@@ -94,6 +94,12 @@ internal static partial class AppProposals
     /// <summary>How many rounds of tool calls one proposal may take — a skill or two read, a proposal and a few corrections.</summary>
     public const int MaxRounds = 6;
 
+    /// <summary>What a call the round limit left unrun is answered with, when it is not the proposal (<see cref="Edit.ProposalStream.CloseAtRoundLimitAsync"/>).</summary>
+    internal const string RoundsUsed = """
+        Not run: the rounds are used up. Propose the application now with propose_app, from what you have. If you cannot,
+        say in one sentence what you would still need.
+        """;
+
 
     /// <summary>What a proposal writes while it is shown: the application's HTML.</summary>
     private static readonly Dictionary<string, string> WrittenFields = new(StringComparer.Ordinal) { ["propose_app"] = "html" };
@@ -242,8 +248,9 @@ internal static partial class AppProposals
         // What only some applications need (printing, say) is a skill: its name and when to read it are said here, its body read on demand.
         var loader = SkillsLoader.Create(skills ?? AppSkills.Builtin);
         if (loader.Contributor.GetInstructions() is { Length: > 0 } catalog) system += "\n\n" + catalog;
+        AgentLoop loop = null!;
         Task<TurnRecord> RunAsync() => Edit.ProposalStream.RunAsync(
-            new AgentLoop(client, new AgentOptions
+            loop = new AgentLoop(client, new AgentOptions
             {
                 Tools = [propose, .. request.FromInstruction ? new[] { oneTime } : [], Edit.ToldSkillLoad.Of(loader.LoadTool, onProgress), .. mcp?.Functions ?? []],
                 SystemPrompt = system,
@@ -262,6 +269,17 @@ internal static partial class AppProposals
             use = Llm.ModelUse.Add(use, Llm.ModelUse.Of(response));
         }
 
+        // Out of rounds before an application was proposed (reading skills, a refused proposal or two): one more turn on the same
+        // conversation, offered only the proposal — what the model gathered is not thrown away with a failure.
+        var wrappedUp = false;
+        if (accepted is null && task is null
+            && await Edit.ProposalStream.CloseAtRoundLimitAsync(loop, response, propose, RoundsUsed, WrittenFields, refusals, onProgress, cancellationToken).ConfigureAwait(false) is { } closed)
+        {
+            wrappedUp = true;
+            response = closed;
+            use = Llm.ModelUse.Add(use, Llm.ModelUse.Of(response));
+        }
+
         var closing = response.Content?.Trim() ?? "";
         // An application written after all wins — the model changed its mind, and the person asked to make one.
         if (accepted is null && task is not null) return task with { Usage = use };
@@ -270,6 +288,8 @@ internal static partial class AppProposals
             if (refusals.Count > 0) throw new ProposalFailedException("The model proposed no application that could be kept: " + refusals[^1]);
             if (response.StopReason == TurnStopReason.OutputLimit)
                 throw new ProposalFailedException("The model's answer reached its length limit before it proposed an application.", ProposalFailedException.OutputLimit);
+            if (wrappedUp || response.StopReason == TurnStopReason.StepLimit)
+                throw new ProposalFailedException("The model used all its rounds before it proposed an application." + (closing.Length > 0 ? " It said: " + closing : ""), ProposalFailedException.StepLimit);
             throw new ProposalFailedException("The model proposed no application." + (closing.Length > 0 ? " It said: " + closing : ""));
         }
 

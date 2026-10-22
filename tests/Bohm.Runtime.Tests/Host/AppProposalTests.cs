@@ -86,6 +86,38 @@ public sealed class AppProposalTests
     }
 
     [Fact]
+    public async Task A_proposal_written_as_the_round_limit_is_reached_is_kept_and_the_turn_closes_on_the_same_conversation()
+    {
+        var model = new FakeChatModel();
+        for (var i = 0; i < AppProposals.MaxRounds; i++)
+            model.Script.Enqueue(new FunctionCallContent("s" + i, IronHive.Agent.Skills.SkillsLoader.LoadToolName, new Dictionary<string, object?> { ["name"] = "printable-page" }));
+        model.Script.Enqueue(Propose("c1", PricesFrom(2, "Item", "Price")));
+        model.Script.Enqueue(new TextContent("Done."));
+
+        var made = Assert.IsType<AppProposal>(await AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
+
+        Assert.Equal("Prices", made.Title);
+        var closing = model.Calls[^1];
+        Assert.Equal(["propose_app"], closing.Options!.Tools!.Select(t => t.Name));
+        Assert.Single(closing.Messages, m => m.Role == ChatRole.User);
+    }
+
+    [Fact]
+    public async Task Out_of_rounds_with_nothing_proposed_after_the_closing_turn_says_the_rounds_stopped_it()
+    {
+        var model = new FakeChatModel();
+        for (var i = 0; i <= AppProposals.MaxRounds; i++)
+            model.Script.Enqueue(new FunctionCallContent("s" + i, IronHive.Agent.Skills.SkillsLoader.LoadToolName, new Dictionary<string, object?> { ["name"] = "printable-page" }));
+        model.Reply = "I would need the price column.";
+
+        var failure = await Assert.ThrowsAsync<Bohm.Runtime.Host.Edit.ProposalFailedException>(() =>
+            AppProposals.ProposeAsync(model, ModelLimits.Unknown, Request, TestContext.Current.CancellationToken));
+
+        Assert.Equal("step-limit", failure.Stopped);
+        Assert.Contains("price column", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Each_skill_the_model_reads_is_told_on_the_requests_lines()
     {
         var model = new FakeChatModel();
