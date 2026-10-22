@@ -15,7 +15,11 @@ namespace Bohm.Runtime.Host.Edit;
 /// <summary>What a person pointed at in a running application: the element as the page has it.</summary>
 /// <param name="Html">The element's markup, as the page serialized it.</param>
 /// <param name="Text">Its visible text, if any.</param>
-internal sealed record EditTarget(string Html, string? Text);
+internal sealed record EditTarget(string Html, string? Text)
+{
+    /// <summary>No element: the request is about the application as a whole.</summary>
+    public static readonly EditTarget Whole = new("<body>", null);
+}
 
 /// <summary>One change in a proposal: an exact piece of the source and what replaces it.</summary>
 internal sealed record SourceEdit(string Old, string New);
@@ -568,9 +572,16 @@ internal static partial class EditProposals
             ? (Math.Max(1, found - ContextLines), Math.Min(lines.Length, found + ContextLines))
             : (1, Math.Min(lines.Length, 2 * ContextLines));
         var prompt = new StringBuilder();
-        prompt.Append("The person pointed at this element");
-        prompt.Append(line is { } at ? string.Create(CultureInfo.InvariantCulture, $" (around line {at})") : " (not found in the source as written; the page may have built it)");
-        prompt.Append(":\n<element>\n").Append(Truncate(target.Html, 2000)).Append("\n</element>\n\n");
+        if (ReferenceEquals(target, EditTarget.Whole))
+        {
+            prompt.Append("The person did not point at one element: the request is about the application as a whole.\n\n");
+        }
+        else
+        {
+            prompt.Append("The person pointed at this element");
+            prompt.Append(line is { } at ? string.Create(CultureInfo.InvariantCulture, $" (around line {at})") : " (not found in the source as written; the page may have built it)");
+            prompt.Append(":\n<element>\n").Append(Truncate(target.Html, 2000)).Append("\n</element>\n\n");
+        }
         prompt.Append(CultureInfo.InvariantCulture, $"Source lines {from}–{to} of {lines.Length}:\n<app-source>\n").Append(Numbered(lines, from, to)).Append("\n</app-source>\n\n");
         prompt.Append("The person asks: ").Append(instruction);
         if (problems is { Count: > 0 })

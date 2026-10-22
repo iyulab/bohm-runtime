@@ -500,9 +500,10 @@ public sealed class EditProposalTests : IAsyncLifetime
     [Theory]
     [InlineData("""{"target":{"html":"<b>"}}""")]
     [InlineData("""{"instruction":"  ","target":{"html":"<b>"}}""")]
-    [InlineData("""{"instruction":"x"}""")]
+    [InlineData("""{"instruction":"  "}""")]
+    [InlineData("""{"instruction":"x","target":{}}""")]
     [InlineData("not json")]
-    public async Task A_request_without_an_instruction_and_a_target_is_refused(string body)
+    public async Task A_request_without_an_instruction_or_with_a_target_without_its_element_is_refused(string body)
     {
         var id = await _host.AdoptAsync(App);
 
@@ -620,6 +621,45 @@ public sealed class EditProposalTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.BadRequest, response);
         Assert.Empty(_model.Calls);
     }
+
+    [Fact]
+    public async Task A_request_without_a_target_is_about_the_whole_application()
+    {
+        var id = await _host.AdoptAsync("<h1>Tasks</h1>\n<button>Add</button>");
+        _model.Script.Enqueue(new TextContent("Nothing to change."));
+
+        using var response = await PostAsync(id, new Dictionary<string, object?> { ["instruction"] = "Use a darker theme" });
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var asked = Assert.Single(_model.Calls).Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("did not point at one element", asked, StringComparison.Ordinal);
+        Assert.DoesNotContain("<element>", asked, StringComparison.Ordinal);
+        Assert.Contains("Use a darker theme", asked, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_change_on_top_of_an_unapplied_proposal_is_made_from_that_version_and_nothing_is_applied()
+    {
+        var id = await _host.AdoptAsync("<h1>Tasks</h1>\n<button>Add</button>");
+        _model.Script.Enqueue(new TextContent("Nothing to change."));
+
+        using var response = await PostAsync(id, new Dictionary<string, object?>
+        {
+            ["instruction"] = "Make the heading bigger",
+            ["base"] = new Dictionary<string, string> { ["html"] = "<h1>My tasks</h1>\n<button>Add</button>" },
+        });
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var asked = Assert.Single(_model.Calls).Messages.Last(m => m.Role == ChatRole.User).Text;
+        Assert.Contains("My tasks", asked, StringComparison.Ordinal);
+        Assert.DoesNotContain("failed", asked, StringComparison.Ordinal);   // not the «fix what broke» request
+        Assert.Contains("<h1>Tasks</h1>", await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/source", TestContext.Current.CancellationToken), StringComparison.Ordinal);   // the saved one is untouched
+        using var empty = await PostAsync(id, new Dictionary<string, object?> { ["instruction"] = "x", ["base"] = new Dictionary<string, string> { ["html"] = " " } });
+        HttpAssert.Status(HttpStatusCode.BadRequest, empty);
+    }
+
+    private Task<HttpResponseMessage> PostAsync(string id, Dictionary<string, object?> body) =>
+        _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"));
 
     private Task<HttpResponseMessage> ProposeAsync(string id, string html, string? text, string instruction) =>
         _host.ControlClient().PostAsync($"/__control/apps/{id}/proposals", new StringContent(
