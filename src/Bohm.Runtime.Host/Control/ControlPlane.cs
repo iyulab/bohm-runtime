@@ -2182,9 +2182,9 @@ internal static partial class ControlPlane
         }
 
         if (lines)
-            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds), cancel).ConfigureAwait(false);
+            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds, proposal.Unresolved), cancel).ConfigureAwait(false);
         else
-            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds), cancel).ConfigureAwait(false);
+            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds, proposal.Unresolved), cancel).ConfigureAwait(false);
     }
 
     /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
@@ -2195,14 +2195,17 @@ internal static partial class ControlPlane
     /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
     /// <param name="Stopped"><c>output-limit</c> when the model's answer reached its length limit after making these edits, <c>step-limit</c> when it used all its rounds — they may not be all it meant to make; otherwise <see langword="null"/>.</param>
     /// <param name="Rounds">Where the model's rounds of tool calls went.</param>
+    /// <param name="Unresolved">What the change calls that nothing gives it, still there after the model was told once — a proposal to look at before applying.</param>
     internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Unresolved = null);
 
     /// <summary>The last line of a change proposed as it goes: <see cref="ProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
     internal sealed record ProposalLine(string Status, string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Unresolved = null);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
