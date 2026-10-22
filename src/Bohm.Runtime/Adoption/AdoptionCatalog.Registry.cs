@@ -177,7 +177,13 @@ public sealed partial class AdoptionCatalog
         var temporary = Path.Combine(root, ".index-" + Guid.NewGuid().ToString("n")[..8] + ".json");
         try
         {
-            await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(index, RegistryJson.Default.RegistryIndex), cancellationToken).ConfigureAwait(false);
+            // On disk before it takes the index's name — a power cut after the rename must not leave readers an empty index.
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await output.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(index, RegistryJson.Default.RegistryIndex), cancellationToken).ConfigureAwait(false);
+                output.Flush(flushToDisk: true);
+            }
+
             await ReplaceAsync(temporary, indexPath, cancellationToken).ConfigureAwait(false);
         }
         finally

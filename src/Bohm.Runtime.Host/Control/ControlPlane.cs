@@ -1764,17 +1764,23 @@ internal static partial class ControlPlane
     internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
         {
-            if (Bohm.Runtime.Files.RecycleBin.Available)
+            // The platform's trash, where the person restores it with the system's own tools. Where there is none (macOS for now,
+            // or a drive the trash does not keep — a network share) the folder is kept aside in the data root, never deleted.
+            if (OperatingSystem.IsWindows())
             {
-                Bohm.Runtime.Files.RecycleBin.Send(folder);
-            }
-            else
-            {
-                var discarded = Path.Combine(options.DataRoot, "discarded");
-                Directory.CreateDirectory(discarded);
-                Directory.Move(folder, Path.Combine(discarded, DiscardedName(folder)));
+                try
+                {
+                    DesktopHost.Files.Trash.Move(folder);
+                    return Task.CompletedTask;
+                }
+                catch (DesktopHost.Files.TrashException e) when (e.Reason == DesktopHost.Files.TrashException.NotRecyclable)
+                {
+                }
             }
 
+            var discarded = Path.Combine(options.DataRoot, "discarded");
+            Directory.CreateDirectory(discarded);
+            Directory.Move(folder, Path.Combine(discarded, DiscardedName(folder)));
             return Task.CompletedTask;
         });
 

@@ -1,6 +1,6 @@
-using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Credentials;
+using DesktopHost.Files;
 using IronHive.Abstractions.Models;
 using IronHive.Extensions.AI;
 using IronHive.Providers.OpenAI.Compatible;
@@ -159,13 +159,10 @@ internal sealed partial class CompanyModel : IDisposable
             else
             {
                 Directory.CreateDirectory(_options.DataRoot);
-                var aside = path + ".tmp";
-                await File.WriteAllTextAsync(aside,
+                await AtomicFile.WriteAllTextAsync(path,
                     JsonSerializer.Serialize(new Stored(Format, choice.Endpoint.AbsoluteUri, choice.Model,
                         choice.Limits.ContextWindow, choice.Limits.MaxOutputTokens, choice.Limits.Reasoning,
-                        string.IsNullOrEmpty(choice.Server) ? null : choice.Server), CompanyModelJson.Default.Stored) + "\n",
-                    new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-                File.Move(aside, path, overwrite: true);
+                        string.IsNullOrEmpty(choice.Server) ? null : choice.Server), CompanyModelJson.Default.Stored) + "\n", cancellationToken).ConfigureAwait(false);
             }
 
             _current = choice;
@@ -335,9 +332,7 @@ internal sealed partial class CompanyModel : IDisposable
         {
             Directory.CreateDirectory(_options.DataRoot);
             var path = Path.Combine(_options.DataRoot, LearnedFileName);
-            var aside = path + ".tmp";
-            File.WriteAllText(aside, JsonSerializer.Serialize(new Learned(LearnedFormat, thinks), CompanyModelJson.Default.Learned) + "\n", new UTF8Encoding(false));
-            File.Move(aside, path, overwrite: true);
+            AtomicFile.WriteAllText(path, JsonSerializer.Serialize(new Learned(LearnedFormat, thinks), CompanyModelJson.Default.Learned) + "\n");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

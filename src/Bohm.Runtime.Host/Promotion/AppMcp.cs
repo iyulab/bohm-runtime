@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using DesktopHost.Files;
 using IronHive.Agent.Mcp;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -447,9 +448,7 @@ internal sealed class AppMcp(RuntimeHostOptions options, ILoggerFactory loggers)
     private async Task WriteAsync(string path, string text, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(options.DataRoot);
-        var aside = path + ".tmp";
-        await File.WriteAllTextAsync(aside, text, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-        File.Move(aside, path, overwrite: true);
+        await AtomicFile.WriteAllTextAsync(path, text, cancellationToken).ConfigureAwait(false);
     }
 }
 

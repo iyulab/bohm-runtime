@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.Json;
+using DesktopHost.Files;
 using IronProw.LMSupply;
-using LMSupply.Generator;
 using LMSupply.Generator.Abstractions;
+using LMSupply.Generator;
 using LMSupply.Llama.Server;
 using Microsoft.Extensions.AI;
 
@@ -133,11 +133,8 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             else
             {
                 Directory.CreateDirectory(options.DataRoot);
-                var aside = path + ".tmp";
-                await File.WriteAllTextAsync(aside,
-                    JsonSerializer.Serialize(new Stored(Format, modelPath), LocalModelJson.Default.Stored) + "\n",
-                    new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-                File.Move(aside, path, overwrite: true);
+                await AtomicFile.WriteAllTextAsync(path,
+                    JsonSerializer.Serialize(new Stored(Format, modelPath), LocalModelJson.Default.Stored) + "\n", cancellationToken).ConfigureAwait(false);
                 _chosen = WithServer(modelPath);
             }
 
