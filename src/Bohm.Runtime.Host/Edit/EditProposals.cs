@@ -579,6 +579,7 @@ internal static partial class EditProposals
         // answered instead (a replacement among them is made — often the change itself, written in the last round), and the
         // same conversation goes on for one more turn with only the tool that changes the source: the model makes the change
         // from what it has read, finishes what it began, or says what it is missing.
+        // TODO(upstream: IronHive.Agent — a closing round at the iteration cap that the loop serves): move onto it and drop this.
         var wrappedUp = false;
         if (response.StopReason == TurnStopReason.StepLimit && edits.Count == 0 && UnrunCalls(loop.History) is { Count: > 0 } unrun)
         {
