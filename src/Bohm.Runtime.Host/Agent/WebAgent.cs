@@ -78,6 +78,9 @@ internal static class WebAgent
         AIFunctionFactory.CreateDeclaration("go_back",
             "Goes back one page in a tab's history, waits for it to load, then returns its snapshot.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"}},"required":["tab"]}""").RootElement),
+        AIFunctionFactory.CreateDeclaration("change_app",
+            "Suggests a change to the app the person has open in front (an app made in Bohm), as they asked for it in words. The browser makes the suggestion in that app's edit panel, where the person reviews it, can ask for more changes on top of it, and applies it — nothing changes until they apply. Call it once, only when they ask to change that app.",
+            JsonDocument.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"What to change, in the person's own words and language."}},"required":["request"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("make_page",
             "Opens a new tab with a page you write — a summary, a comparison, notes or a report made from what you read. The tabs you read for this question are listed on it as its sources; the person can keep it or close it.",
             JsonDocument.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""").RootElement),
@@ -215,6 +218,9 @@ internal static class WebAgent
         what is left to do.
         Refs (e1, e2, ...) and tab ids are for your tool calls only: never write them in your answer;
         name an element by its label or the text on it instead.
+        When the person is looking at an app made in Bohm and asks to change it (how it looks, its fields, what it does),
+        call change_app once with what they asked, in their words, and answer in one short sentence that the suggestion is
+        being made in the app's edit panel.
         When the person asks for a page, a document, a report or a summary made from the pages, read them,
         then call make_page once with the whole content, and answer in one short sentence that it is open.
         When they ask for an app, a tool or a tracker that keeps reading the pages, do not look for a way to
