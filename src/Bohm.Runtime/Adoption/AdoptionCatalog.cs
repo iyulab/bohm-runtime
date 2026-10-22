@@ -601,7 +601,7 @@ public sealed partial class AdoptionCatalog
     /// Goes back to the code of revision <paramref name="revision"/> — any earlier one, not only the one before —
     /// by taking it in as a new revision: the data stays exactly as it is now, and the revision left stays in the
     /// history, so <see cref="RevertAsync"/> undoes this in one step. Going back further than one step does not
-    /// wind the data back, because what was entered since belongs to the person, not to the code (<c>D-56</c>).
+    /// wind the data back, because what was entered since belongs to the person, not to the code.
     /// </summary>
     /// <remarks><paramref name="storage"/> must be this application's open storage — the one writer of its files.</remarks>
     /// <exception cref="KeyNotFoundException">There is no such revision.</exception>
