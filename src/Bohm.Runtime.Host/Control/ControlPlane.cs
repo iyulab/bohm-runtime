@@ -93,6 +93,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
 /// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>POST /__control/agent/translate</c></term><description>A web page translated where it stands: <c>{ texts: [string], to }</c> — the page's text pieces in order and a language tag — answers <c>{ texts, model }</c>, each piece in that language in the same order, from the model chosen at <c>/__control/agent/model</c>, as page material (no tools). At most 80 pieces and 6000 characters a request (413 past that — the caller sends batches); 409 and 503 as for <c>/__control/agent/turns</c>, and 503 <c>translate-failed</c> when the model does not answer one translation per piece.</description></item>
 /// <item><term><c>GET /__control/agent/mcp?name=</c></term><description>What the caller shows the person before a web question's call to an MCP tool named <c>name</c>: <c>{ server, tool, remote, description }</c> — <c>remote</c> when the server is at an address, <c>description</c> the first line of what the server says the tool does (null when it says nothing). 404 when no connected server has it.</description></item>
 /// <item><term><c>POST /__control/agent/mcp</c></term><description>Makes a web question's call to an MCP tool after the person allowed it, from <c>{ name, arguments }</c>: <c>{ text, failed }</c> — the text parts of what the tool returned (or the result as JSON), <c>failed</c> when the tool reported an error or threw. 404 when no connected server has that tool, 400 for a body not in that shape.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
@@ -382,6 +383,10 @@ internal static partial class ControlPlane
 
             case ("POST", ["agent", "turns"]):
                 await AgentTurnAsync(context, cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["agent", "translate"]):
+                await AgentTranslateAsync(context, cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["agent", "mcp"]):
@@ -2011,6 +2016,69 @@ internal static partial class ControlPlane
         }
     }
 
+    /// <summary>The pieces of a web page to translate where they stand, and into which language.</summary>
+    internal sealed record TranslateRequest(IReadOnlyList<string> Texts, string To);
+
+    /// <summary>The pieces translated, in the order they were sent.</summary>
+    internal sealed record Translated(IReadOnlyList<string> Texts, string Model);
+
+    private static async Task AgentTranslateAsync(HttpContext context, CancellationToken cancel)
+    {
+        var response = context.Response;
+        TranslateRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false), ControlJson.Default.TranslateRequest);
+        }
+        catch (JsonException)
+        {
+            request = null;
+        }
+
+        if (request is not { Texts.Count: > 0, To.Length: > 0 } || request.Texts.Any(text => text is null))
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (request.Texts.Count > Agent.PageTranslation.MaxPieces || request.Texts.Sum(text => text.Length) > Agent.PageTranslation.MaxCharacters)
+        {
+            response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+
+        var agentModel = context.RequestServices.GetRequiredService<Edit.AgentModel>();
+        Edit.ChosenEditModel? model;
+        try
+        {
+            model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
+            return;
+        }
+
+        if (model is not { } chosen)
+        {
+            response.StatusCode = StatusCodes.Status409Conflict;
+            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var texts = await Agent.PageTranslation.TranslateAsync(chosen.Client, chosen.Limits, chosen.OnThisComputer, request.Texts, request.To, cancel).ConfigureAwait(false);
+            await WriteAsync(response, new Translated(texts, chosen.Name), cancel).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await ControlProblems.RefuseAsync(response, "translate-failed", new TurnFailure("failed", null, e.Message, Edit.ProviderRefusal.Of(e))).ConfigureAwait(false);
+        }
+    }
+
     internal const string NdJson = "application/x-ndjson";
 
     private static readonly byte[] NewLine = [(byte)'\n'];
@@ -2375,4 +2443,6 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(IReadOnlyList<ModelDownloads.CatalogView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ModelDownloads.Description))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TranslateRequest))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.Translated))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;
