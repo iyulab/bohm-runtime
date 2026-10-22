@@ -58,6 +58,19 @@ public sealed class AppScriptsTests
         Assert.StartsWith("Script 3 does not parse as JavaScript, at line 3 of the file: ", Assert.Single(AppScripts.SyntaxProblems(html)), StringComparison.Ordinal);
     }
 
+    // A quote of the attribute's own kind inside a handler ends the attribute early: the page loads, and the button fails
+    // only when pressed. Handlers a script builds as text are the script's, not the page's.
+    [Fact]
+    public void An_event_handler_that_does_not_parse_is_told_with_its_line_in_the_file()
+    {
+        const string html = "<p>hi</p>\n<button onclick=\"go('[data-action=\"save\"]')\">Save</button>\n<button onClick='go(1)'>Ok</button>\n"
+            + "<script>function go() {}\nlist.innerHTML = '<a onclick=\"a b c\">x</a>';</script>";
+
+        var problem = Assert.Single(AppScripts.SyntaxProblems(html));
+
+        Assert.StartsWith("The onclick attribute at line 2 of the file does not parse as JavaScript: ", problem, StringComparison.Ordinal);
+    }
+
     // A change in several replacements where one missed: the button calls a function no script has. Measured as the most
     // common way a small model's change broke the page it was asked to change.
     [Fact]
@@ -66,10 +79,25 @@ public sealed class AppScriptsTests
         const string before = "<button onclick=\"addTask()\">Add</button>\n<script>function addTask() {}</script>";
         var after = before.Replace("</button>", "</button><button onclick=\"exportToCSV()\">CSV</button>", StringComparison.Ordinal);
 
-        var problem = Assert.Single(AppScripts.Dangling(before, after));
+        var problem = Assert.Single(AppScripts.Unfinished(before, after));
 
         Assert.Contains("uses exportToCSV ", problem, StringComparison.Ordinal);
-        Assert.Empty(AppScripts.Dangling(before, after.Replace("</script>", " function exportToCSV() {}</script>", StringComparison.Ordinal)));
+        Assert.Empty(AppScripts.Unfinished(before, after.Replace("</script>", " function exportToCSV() {}</script>", StringComparison.Ordinal)));
+    }
+
+    // A script the change left unreadable: the handlers it defined all read as missing, so the broken line is what is named,
+    // not the names (measured: a stray tag in a script, seventeen handlers named instead of the one line).
+    [Fact]
+    public void A_script_the_change_breaks_is_named_instead_of_the_names_it_defined()
+    {
+        const string before = "<button onclick=\"addTask()\">Add</button>\n<script>function addTask() {}\nfunction save() {}</script>";
+        var after = before.Replace("function save() {}", "function save() {}\n<button>CSV</button>", StringComparison.Ordinal);
+
+        var problem = Assert.Single(AppScripts.Unfinished(before, after));
+
+        Assert.StartsWith("Script 1 does not parse as JavaScript, at line 4 of the file: ", problem, StringComparison.Ordinal);
+        // A script that was already unreadable is not the change's: what the change calls is named as before.
+        Assert.Contains("uses exportToCSV ", Assert.Single(AppScripts.Unfinished(after, after.Replace("</button>\n<script>", "</button><button onclick=\"exportToCSV()\">x</button>\n<script>", StringComparison.Ordinal))), StringComparison.Ordinal);
     }
 
     // Handed to a handler rather than called: the page fails the same way when the person presses it.
@@ -79,7 +107,7 @@ public sealed class AppScriptsTests
         const string before = "<button id=\"csv\">CSV</button>\n<script>const list = [];</script>";
         var after = before.Replace("</script>", " document.getElementById('csv').onclick = downloadCsv;</script>", StringComparison.Ordinal);
 
-        Assert.Contains("uses downloadCsv ", Assert.Single(AppScripts.Dangling(before, after)), StringComparison.Ordinal);
+        Assert.Contains("uses downloadCsv ", Assert.Single(AppScripts.Unfinished(before, after)), StringComparison.Ordinal);
     }
 
     // A member's name, a property's key, a class member and a label are not names the page reads.
@@ -93,7 +121,7 @@ public sealed class AppScriptsTests
              </script>
             """, StringComparison.Ordinal);
 
-        Assert.Empty(AppScripts.Dangling(before, after));
+        Assert.Empty(AppScripts.Unfinished(before, after));
     }
 
     [Fact]
@@ -102,9 +130,9 @@ public sealed class AppScriptsTests
         const string before = "<div id=\"list\"></div>\n<script>document.getElementById('list').textContent = '';</script>";
         var after = before.Replace("</script>", " document.querySelector('#view-export').hidden = false;</script>", StringComparison.Ordinal);
 
-        Assert.Contains("\"view-export\"", Assert.Single(AppScripts.Dangling(before, after)), StringComparison.Ordinal);
+        Assert.Contains("\"view-export\"", Assert.Single(AppScripts.Unfinished(before, after)), StringComparison.Ordinal);
         // An id the page builds in a script counts as there.
-        Assert.Empty(AppScripts.Dangling(before, after + "<script>const s = document.createElement('section'); s.id = 'view-export';</script>"));
+        Assert.Empty(AppScripts.Unfinished(before, after + "<script>const s = document.createElement('section'); s.id = 'view-export';</script>"));
     }
 
     // What the language and the browser give, what any scope binds (parameters, destructuring, catch), a global made by
@@ -123,7 +151,7 @@ public sealed class AppScriptsTests
              </script>
             """, StringComparison.Ordinal);
 
-        Assert.Empty(AppScripts.Dangling(before, after));
+        Assert.Empty(AppScripts.Unfinished(before, after));
     }
 }
 

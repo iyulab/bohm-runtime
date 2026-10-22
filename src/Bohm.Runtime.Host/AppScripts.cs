@@ -5,7 +5,7 @@ using Acornima.Ast;
 namespace Bohm.Runtime.Host;
 
 /// <summary>
-/// Whether an application's inline scripts read as JavaScript — checked before a proposal is accepted, so a
+/// Whether an application's inline scripts and event handler attributes read as JavaScript — checked before a proposal is accepted, so a
 /// syntax error goes back to the model in the same turn instead of surfacing only when the page opens.
 /// Only syntax: whether the code works is the preview's to find. Scripts loaded by <c>src</c> and blocks
 /// whose type is not JavaScript (JSON data, templates, import maps) are not read.
@@ -24,7 +24,7 @@ internal static partial class AppScripts
         },
     };
 
-    /// <summary>One line per inline script that does not parse: which script, the line in the file, and the parser's message.</summary>
+    /// <summary>One line per inline script or event handler attribute that does not parse: which one, the line in the file, and the parser's message.</summary>
     internal static List<string> SyntaxProblems(string html)
     {
         var problems = new List<string>();
@@ -53,20 +53,39 @@ internal static partial class AppScripts
             }
         }
 
+        // An event handler attribute is code too, and one the page only runs when the person acts — a quote of the
+        // attribute's own kind inside it ends it early (measured: onclick="…querySelector('[data-action="…").
+        // Handlers inside scripts are text the scripts build, not the page's.
+        var scripts = InlineScript().Matches(html).Select(m => (m.Index, End: m.Index + m.Length)).ToList();
+        foreach (Match handler in EventHandler().Matches(html))
+        {
+            if (scripts.Any(s => handler.Index >= s.Index && handler.Index < s.End)) continue;
+            try { new Parser(Options).ParseScript("function handler(event) {\n" + System.Net.WebUtility.HtmlDecode(handler.Groups["code"].Value) + "\n}"); }
+            catch (ParseErrorException e)
+            {
+                var line = Lines(html.AsSpan(0, handler.Index + 1)) + 1;
+                problems.Add($"The {handler.Groups["event"].Value.ToLowerInvariant()} attribute at line {line} of the file does not parse as JavaScript: {e.Description}. A quote of the attribute's own kind ends it — use the other kind inside. Correct it.");
+            }
+        }
+
         return problems;
     }
 
     /// <summary>
-    /// What a change makes the application use that nothing gives it: a name called or read (a function handed to
+    /// What a change leaves unfinished. First a script it left unreadable: every name that script defines then reads as
+    /// missing, so the one line that broke is the cause to give, not the names (measured: one stray tag in a script, seventeen
+    /// handlers it held reported as undefined). Otherwise what the change makes the application use that nothing gives it: a name called or read (a function handed to
     /// <c>onclick</c>, say) that no script, handler or element id defines, and an element looked up by id (<c>getElementById("x")</c>, <c>querySelector("#x")</c>) that
     /// the page never has. Only what <paramref name="after"/> lacks and <paramref name="before"/> did not already lack — a
     /// change made in several replacements where one missed (the button added, its function not) leaves exactly this, and
     /// the page fails only when the person presses it. Read by name, not by scope: a name defined anywhere counts as defined,
-    /// so this misses some faults and invents none a browser would not also hit. Scripts that do not parse are skipped
-    /// (<see cref="SyntaxProblems"/> says so).
+    /// so this misses some faults and invents none a browser would not also hit.
     /// </summary>
-    internal static List<string> Dangling(string before, string after)
+    internal static List<string> Unfinished(string before, string after)
     {
+        var broken = SyntaxProblems(after);
+        if (broken.Count > SyntaxProblems(before).Count) return broken;
+
         var (namesBefore, idsBefore) = Missing(before);
         var (names, ids) = Missing(after);
         var problems = new List<string>();
@@ -223,7 +242,7 @@ internal static partial class AppScripts
     private static partial Regex SimpleId();
 
     // An inline event handler attribute, quoted either way.
-    [GeneratedRegex(@"\son[a-z]+\s*=\s*(?:""(?<code>[^""]*)""|'(?<code>[^']*)')", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\s(?<event>on[a-z]+)\s*=\s*(?:""(?<code>[^""]*)""|'(?<code>[^']*)')", RegexOptions.IgnoreCase)]
     private static partial Regex EventHandler();
 
     private static int Lines(ReadOnlySpan<char> text) => text.Count('\n');
