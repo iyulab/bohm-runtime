@@ -7,8 +7,12 @@ namespace Bohm.Runtime.Host.Edit;
 /// the runtime could keep, or none at all.
 /// </summary>
 /// <param name="stopped">What stopped the model first — <c>output-limit</c> or <c>step-limit</c> — otherwise <see langword="null"/>.</param>
-internal sealed class ProposalFailedException(string message, string? stopped = null) : Exception(message)
+/// <param name="rounds">Where the model's rounds went, when it stopped at a limit.</param>
+internal sealed class ProposalFailedException(string message, string? stopped = null, ProposalRounds? rounds = null) : Exception(message)
 {
+    /// <summary>Where the model's rounds went, when it stopped at a limit.</summary>
+    public ProposalRounds? Rounds { get; } = rounds;
+
     /// <summary>The answer's length limit stopped the model: <see cref="OutputLimit"/>.</summary>
     public const string OutputLimit = "output-limit";
 
