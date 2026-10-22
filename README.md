@@ -61,6 +61,19 @@ Contributions are accepted under the Individual Contributor License Agreement in
 which the dual license requires. A pull request is checked for a signature on record; the
 "Signing" section of that file describes how to add one. Only bots are exempt.
 
+Everything committed here is public, commit messages included. Before pushing, run the public-text
+check with [scripts/public-text.config.js](scripts/public-text.config.js) — local paths and private
+hosts — and, if you work from a private workspace, once more with your own list of names kept
+outside this repository:
+
+```sh
+npx @iyulab/tauri-kit-dev@0.11.1 public-text --config scripts/public-text.config.js .
+npx @iyulab/tauri-kit-dev@0.11.1 public-text --config <your private config> .
+```
+
+A workaround waiting on a dependency is marked with the package it waits on, and what it needs:
+`TODO(upstream: <package> — <what>)`.
+
 ## License
 
 AGPL-3.0-or-later — see [LICENSE](LICENSE). A commercial license is available for uses that cannot
