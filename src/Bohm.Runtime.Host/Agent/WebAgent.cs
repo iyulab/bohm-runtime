@@ -201,9 +201,11 @@ internal static class WebAgent
         search box do not limit the results. A request for the most popular, highest rated, latest or cheapest
         needs the matching sort order. Finish on the page that shows the result with those conditions applied (the
         filtered, sorted list or the item's own page), not on a page you went to afterwards. After you type, the result says what the field now holds — if the page changed it,
-        fix it before going on. When a field offers suggestions as you type, click the one you mean. A date the page
-        picks from a calendar it draws (not a date field you can type into): open the calendar, move to the month, click
-        the day, then check the field shows that date. Before you say it is done, check the result the page shows: read it, and when it is a
+        fix it before going on. When a field offers suggestions as you type, click the one you mean. A date in a text
+        field that shows its format (such as MM/DD/YYYY): type the date in that format instead of picking it in the
+        calendar the field opens — the day buttons of a drawn calendar repeat across months and are easy to mix up. Only
+        when there is no field to type the date into: open the calendar the page draws, move to the month, click the
+        day. Either way, check the field shows that date. Before you say it is done, check the result the page shows: read it, and when it is a
         chart, a picture or a layout, look at the tab. Say it is done only when the page shows it; if it does not, say
         what the page shows instead. Leave the page showing what the person asked for: a chart stays a chart — if you
         switch to another view to read the values, switch back. After you save or send, read the message the page shows
