@@ -295,10 +295,13 @@ public sealed class AssetCache
 
             try
             {
-                await all.WaitAsync(network.Token).ConfigureAwait(false);
+                // The host's turn first, then a place among all: a request waiting for its host must not hold a place
+                // another host could use — taken the other way round, the third and fourth file of one host sat on two
+                // of the six places doing nothing, and a wide graph of four hosts ran four at once instead of six.
+                await host.WaitAsync(network.Token).ConfigureAwait(false);
                 try
                 {
-                    await host.WaitAsync(network.Token).ConfigureAwait(false);
+                    await all.WaitAsync(network.Token).ConfigureAwait(false);
                     try
                     {
                         var (fetched, failure) = await FetchOneAsync(http, reference, clock, limits, network.Token).ConfigureAwait(false);
@@ -307,12 +310,12 @@ public sealed class AssetCache
                     }
                     finally
                     {
-                        host.Release();
+                        all.Release();
                     }
                 }
                 finally
                 {
-                    all.Release();
+                    host.Release();
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
