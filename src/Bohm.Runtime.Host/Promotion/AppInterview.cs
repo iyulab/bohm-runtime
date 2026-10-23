@@ -52,48 +52,33 @@ internal static class AppInterview
 
     /// <summary>
     /// The questions in a model's answer: the first JSON object in it, each question with its answers cut to the bounds;
-    /// a question with fewer than two answers is left out.
+    /// a question with fewer than two answers is left out. An answer cut off at its length limit keeps the questions
+    /// written before the cut (<see cref="Llm.PartialJson"/>).
     /// </summary>
     internal static IReadOnlyList<InterviewQuestion> Read(string? answer)
     {
-        if (string.IsNullOrWhiteSpace(answer))
-            return [];
-        var start = answer.IndexOf('{');
-        var end = answer.LastIndexOf('}');
-        if (start < 0 || end <= start)
-            return [];
-        try
+        var read = new List<InterviewQuestion>();
+        foreach (var item in Llm.PartialJson.ArrayItems(answer, "questions"))
         {
-            using var document = JsonDocument.Parse(answer[start..(end + 1)]);
-            if (!document.RootElement.TryGetProperty("questions", out var questions) || questions.ValueKind != JsonValueKind.Array)
-                return [];
-            var read = new List<InterviewQuestion>();
-            foreach (var item in questions.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.Object
-                    || !item.TryGetProperty("question", out var question) || question.ValueKind != JsonValueKind.String
-                    || question.GetString()?.Trim() is not { Length: > 0 } text
-                    || !item.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
-                    continue;
-                var answers = options.EnumerateArray()
-                    .Where(o => o.ValueKind == JsonValueKind.String)
-                    .Select(o => Cut(o.GetString()!.Trim(), MaxOptionLength))
-                    .Where(o => o.Length > 0)
-                    .Distinct(StringComparer.Ordinal)
-                    .Take(MaxOptions)
-                    .ToList();
-                if (answers.Count >= 2)
-                    read.Add(new InterviewQuestion(Cut(text, MaxQuestionLength), answers));
-                if (read.Count == MaxQuestions)
-                    break;
-            }
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("question", out var question) || question.ValueKind != JsonValueKind.String
+                || question.GetString()?.Trim() is not { Length: > 0 } text
+                || !item.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
+                continue;
+            var answers = options.EnumerateArray()
+                .Where(o => o.ValueKind == JsonValueKind.String)
+                .Select(o => Cut(o.GetString()!.Trim(), MaxOptionLength))
+                .Where(o => o.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .Take(MaxOptions)
+                .ToList();
+            if (answers.Count >= 2)
+                read.Add(new InterviewQuestion(Cut(text, MaxQuestionLength), answers));
+            if (read.Count == MaxQuestions)
+                break;
+        }
 
-            return read;
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
+        return read;
     }
 
     private static string Cut(string text, int length) => text.Length > length ? text[..length] : text;

@@ -94,4 +94,15 @@ public sealed class AppInterviewTests : IAsyncLifetime
         Assert.Empty(AppInterview.Read("{ not json"));
         Assert.Single(AppInterview.Read("""Sure. {"questions":[{"question":"무엇을 보여 줄까요?","options":["매출","방문자","둘 다"]}]}"""));
     }
+
+    [Fact]
+    public void An_answer_cut_off_at_its_length_limit_keeps_the_questions_written_before_the_cut()
+    {
+        const string two = """{"note":{"a":[1,2]},"questions":[{"question":"누가 쓰나요?","options":["나","팀"]},{"question":"어디서?","options":["사무실","현장"]},""";
+        Assert.Equal(["누가 쓰나요?", "어디서?"], AppInterview.Read(two + """{"question":"얼마나 자주","opt""").Select(q => q.Question));
+        Assert.Equal(2, AppInterview.Read(two).Count);                                           // cut right after a comma
+        Assert.Single(AppInterview.Read("""{"questions":[{"question":"Q","options":["a","b"]}"""));   // the array never closed
+        Assert.Empty(AppInterview.Read("""{"questions":[{"question":"Q","options":["a","""));      // the only question unfinished
+        Assert.Empty(AppInterview.Read("""{"other":"x","quest"""));                              // cut before the list
+    }
 }
