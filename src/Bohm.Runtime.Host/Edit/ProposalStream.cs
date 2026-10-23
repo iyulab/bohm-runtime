@@ -45,42 +45,6 @@ internal static class ProposalStream
         return await FollowAsync(loop.RunStreamingAsync(message, cancellationToken), written, refused, onProgress, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Continues <paramref name="loop"/> from its history — which must end with an answer to every call of its last
-    /// round — with <paramref name="options"/> for this turn, passed on as <see cref="RunAsync"/> passes a turn on.
-    /// </summary>
-    public static Task<TurnRecord> ContinueAsync(AgentLoop loop, ChatOptions options, IReadOnlyDictionary<string, string> written,
-        IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken) =>
-        FollowAsync(loop.ContinueStreamingAsync(options, cancellationToken), written, refused, onProgress, cancellationToken);
-
-    /// <summary>
-    /// When <paramref name="turn"/> ended at the round limit: answers the calls the limit left unrun — running each call of
-    /// <paramref name="write"/> (often the work itself, written in the last round), telling the rest <paramref name="notice"/> —
-    /// and continues the same conversation for one more turn offered only <paramref name="write"/>. What the model read stays
-    /// in the conversation instead of being thrown away with a failure. <see langword="null"/> when the turn did not end there.
-    /// </summary>
-    // TODO(upstream: IronHive.Agent — a closing round at the iteration cap that the loop serves): move onto it and drop this.
-    public static async Task<TurnRecord?> CloseAtRoundLimitAsync(AgentLoop loop, TurnRecord turn, AIFunction write, string notice,
-        IReadOnlyDictionary<string, string> written, IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress,
-        CancellationToken cancellationToken)
-    {
-        if (turn.StopReason != TurnStopReason.StepLimit) return null;
-        var history = loop.History;
-        if (history.Count == 0 || history[^1].Role != ChatRole.Assistant) return null;
-        var unrun = history[^1].Contents.OfType<FunctionCallContent>().ToList();
-        if (unrun.Count == 0) return null;
-        var answers = new List<AIContent>();
-        foreach (var call in unrun)
-        {
-            var result = call.Name == write.Name
-                ? await write.InvokeAsync(new AIFunctionArguments(call.Arguments), cancellationToken).ConfigureAwait(false)
-                : notice;
-            answers.Add(new FunctionResultContent(call.CallId, result));
-        }
-        loop.InitializeHistory([.. history, new ChatMessage(ChatRole.Tool, answers)]);
-        return await ContinueAsync(loop, new ChatOptions { Tools = [write] }, written, refused, onProgress, cancellationToken).ConfigureAwait(false);
-    }
-
     private static async Task<TurnRecord> FollowAsync(IAsyncEnumerable<AgentResponseChunk> turnChunks, IReadOnlyDictionary<string, string> written,
         IReadOnlyList<string>? refused, Func<ProposalProgress, CancellationToken, Task>? onProgress, CancellationToken cancellationToken)
     {

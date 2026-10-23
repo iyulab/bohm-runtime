@@ -99,7 +99,8 @@ public sealed class AppProposalTests
         Assert.Equal("Prices", made.Title);
         var closing = model.Calls[^1];
         Assert.Equal(["propose_app"], closing.Options!.Tools!.Select(t => t.Name));
-        Assert.Single(closing.Messages, m => m.Role == ChatRole.User);
+        Assert.Equal(2, closing.Messages.Count(m => m.Role == ChatRole.User));   // the request once, then the instruction to finish
+        Assert.Equal(AppProposals.WrapUp, closing.Messages[^1].Text);
     }
 
     [Fact]

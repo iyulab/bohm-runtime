@@ -584,28 +584,20 @@ internal static partial class EditProposals
             Tools = [readSource, replace, .. loader is null ? [] : new[] { ToldSkillLoad.Of(loader.LoadTool, onProgress) }, .. mcp?.Functions ?? []],
             SystemPrompt = systemPrompt,
             StreamToolArguments = onProgress is not null,
+            // Out of rounds: what the model read is still in the conversation. Ending there would throw it away — with no change
+            // yet, the person's «try again» pays for the same reading from the start; with some, the proposal may be half a change
+            // (a button added, its handler not). The loop closes the turn instead: a replacement the model already wrote at the
+            // limit is made (often the change itself, written in the last round), its other calls are told they did not run, and
+            // one more request offers only the tool that changes the source — the model makes or finishes the change from what it
+            // has read, or says what it is missing.
+            WrapUpAtStepLimit = new StepLimitWrapUp { ToolNames = [replace.Name], UnrunCallNotice = RoundsUsed, Instruction = WrapUp },
         });
 
         var response = await ProposalStream.RunAsync(loop, prompt, WrittenFields, null, onProgress, cancellationToken, attachments).ConfigureAwait(false);
         var messages = response.Messages.ToList();
         var usage = Llm.ModelUse.Of(response);
-        // Out of rounds: what the model read is still in the conversation. Ending here would throw it away — with no change
-        // yet, the person's «try again» pays for the same reading from the start; with some, the proposal may be half a change
-        // (a button added, its handler not). The calls the limit left unrun are answered instead (a replacement among them is
-        // made — often the change itself, written in the last round), and the same conversation goes on for one more turn
-        // with only the tool that changes the source: the model makes or finishes the change from what it has read, or says
-        // what it is missing.
-        var wrappedUp = false;
-        if (await ProposalStream.CloseAtRoundLimitAsync(loop, response, replace, RoundsUsed, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false) is { } closed)
-        {
-            wrappedUp = true;
-            response = closed;
-            messages.AddRange(response.Messages);
-            usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
-        }
-
         // Still no change after the closing turn: the rounds are what stopped it. A closing turn that ended on its own finished.
-        var stopped = wrappedUp && edits.Count == 0 ? ProposalFailedException.StepLimit : ProposalFailedException.StoppedBy(response.StopReason);
+        var stopped = response.StopReason == TurnStopReason.WrappedUp && edits.Count == 0 ? ProposalFailedException.StepLimit : ProposalFailedException.StoppedBy(response.StopReason);
 
         // A change made in several replacements where one missed — the button added, the function it calls not — reads as
         // finished and fails only when the person presses it (measured: three of a small model's six broken changes). What the
@@ -617,13 +609,6 @@ internal static partial class EditProposals
             response = await ProposalStream.RunAsync(loop, Unresolved + "\n" + string.Join("\n", unresolved), WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false);
             messages.AddRange(response.Messages);
             usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
-            if (await ProposalStream.CloseAtRoundLimitAsync(loop, response, replace, RoundsUsed, WrittenFields, null, onProgress, cancellationToken).ConfigureAwait(false) is { } fixedUp)
-            {
-                response = fixedUp;
-                messages.AddRange(response.Messages);
-                usage = Llm.ModelUse.Add(usage, Llm.ModelUse.Of(response));
-            }
-
             stopped = ProposalFailedException.StoppedBy(response.StopReason);
             unresolved = AppScripts.Unfinished(source, draft);
         }
@@ -639,10 +624,13 @@ internal static partial class EditProposals
         what you changed. What is wrong:
         """;
 
-    /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement (<see cref="ProposalStream.CloseAtRoundLimitAsync"/>).</summary>
-    internal const string RoundsUsed = """
-        Not run: the rounds for reading are used up. With replace, make or finish the change now from what you have read,
-        then say in one sentence what you changed. If you cannot, say in one sentence what you would still need.
+    /// <summary>What a call the round limit left unrun is answered with, when it is not a replacement (<see cref="StepLimitWrapUp.UnrunCallNotice"/>).</summary>
+    internal const string RoundsUsed = "Not run: the rounds for reading are used up.";
+
+    /// <summary>What the model is told after the round limit, before the one request that may still change the source (<see cref="StepLimitWrapUp.Instruction"/>).</summary>
+    internal const string WrapUp = """
+        The rounds for reading are used up. With replace, make or finish the change now from what you have read, then say in
+        one sentence what you changed. If you cannot, say in one sentence what you would still need.
         """;
 
 

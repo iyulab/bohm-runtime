@@ -265,6 +265,10 @@ public sealed class EditProposalTests : IAsyncLifetime
         var failure = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("step-limit", failure.GetProperty("stopped").GetString());
         Assert.Contains("all its rounds", failure.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        // An answer in words at the limit still gets the closing request: told the rounds are used up, offered only replace.
+        var closing = _model.Calls[^1];
+        Assert.Equal(["replace"], closing.Options!.Tools!.Select(t => t.Name));
+        Assert.Equal(EditProposals.WrapUp, closing.Messages[^1].Text);
     }
 
     [Fact]
@@ -286,11 +290,13 @@ public sealed class EditProposalTests : IAsyncLifetime
         var proposal = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Single(proposal.GetProperty("edits").EnumerateArray());
         Assert.Equal(JsonValueKind.Null, proposal.GetProperty("stopped").ValueKind);
-        // The replacement the limit left unrun was made, and the closing turn continued the same conversation — what was read
-        // is still there, the prompt is not sent twice — with only the tool that changes the source.
+        // The replacement the limit left unrun was made, and the closing request continued the same conversation — what was
+        // read is still there, the prompt is not sent twice, the instruction to finish follows it — with only the tool that
+        // changes the source.
         var closing = _model.Calls[EditProposals.MaxRounds + 1];
         Assert.Equal(["replace"], closing.Options!.Tools!.Select(t => t.Name));
-        Assert.Single(closing.Messages, m => m.Role == ChatRole.User);
+        Assert.Equal(2, closing.Messages.Count(m => m.Role == ChatRole.User));
+        Assert.Equal(EditProposals.WrapUp, closing.Messages[^1].Text);
         Assert.Equal(EditProposals.MaxRounds, closing.Messages.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Count(r => r.CallId.StartsWith('r')));
     }
 
@@ -332,7 +338,9 @@ public sealed class EditProposalTests : IAsyncLifetime
         }));
         for (var i = 1; i < EditProposals.MaxRounds; i++)
             _model.Script.Enqueue(new FunctionCallContent("r" + i, "read_source", new Dictionary<string, object?> { ["start_line"] = 1, ["end_line"] = 2 }));
-        _model.Reply = "I changed the button and was looking for more.";
+        // At the limit and through the closing request, replacements that never apply: the closing request runs out of rounds too.
+        for (var i = 0; i <= EditProposals.MaxRounds + 1; i++)
+            _model.Script.Enqueue(new FunctionCallContent("x" + i, "replace", new Dictionary<string, object?> { ["old_text"] = "Not in the source " + i, ["new_text"] = "-" }));
 
         using var response = await ProposeAsync(id, "<button>", null, "Change it");
 
