@@ -174,7 +174,7 @@ public sealed class EditModelTests : IAsyncLifetime
     public async Task Anthropic_is_asked_through_its_own_Messages_API_with_its_key_and_it_is_counted_as_sent()
     {
         // Not the OpenAI-compatible base, which Anthropic keeps for evaluation only: its own API is the
-        // one it supports, with the key in x-api-key and the tools as input schemas.
+        // one it supports, with the key as a bearer (API version 2026-10-21 — earlier, x-api-key) and the tools as input schemas.
         using (var connect = await _host.ControlClient().PutAsync("/__control/llm/anthropic/key", new StringContent(Key))) HttpAssert.Status(HttpStatusCode.OK, connect);
         using (var chose = await ChooseAsync("anthropic", "model-x")) HttpAssert.Status(HttpStatusCode.OK, chose);
 
@@ -187,8 +187,8 @@ public sealed class EditModelTests : IAsyncLifetime
 
         var request = Assert.Single(_provider.Received);
         Assert.Equal("/v1/messages", request.PathAndQuery);
-        Assert.Equal(Key, request.Headers["x-api-key"]);
-        Assert.False(request.Headers.ContainsKey("Authorization"));
+        Assert.Equal($"Bearer {Key}", request.Headers["Authorization"]);
+        Assert.False(request.Headers.ContainsKey("x-api-key"));
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("model-x", body.RootElement.GetProperty("model").GetString());
         Assert.Equal(["load_skill", "read_source", "replace"], body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).Order());

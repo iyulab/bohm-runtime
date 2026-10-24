@@ -19,6 +19,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
     private FakeProvider _cloud = null!;
     private FakeProvider _gateway = null!;
     private RunningHost _host = null!;
+    private readonly Bohm.Runtime.Credentials.MemoryCredentialVault _vault = new();
 
     public async ValueTask InitializeAsync()
     {
@@ -27,7 +28,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         _gateway = await FakeProvider.StartAsync();
         _cloud.Answers["/.well-known/oauth-protected-resource"] = JsonSerializer.Serialize(new { resource = _cloud.Address.AbsoluteUri, authorization_servers = new[] { _identity.Issuer } });
         _cloud.Answers["/me"] = JsonSerializer.Serialize(new { account = "a", ai = new { anthropic = new Uri(_gateway.Address, "anthropic").AbsoluteUri }, links = true });
-        _host = await RunningHost.StartAsync(configure: o => o with { CloudEndpoint = _cloud.Address });
+        _host = await RunningHost.StartAsync(configure: o => o with { CloudEndpoint = _cloud.Address, Vault = _vault });
     }
 
     public async ValueTask DisposeAsync()
@@ -89,7 +90,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal("bohm/model-x", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
         var request = Assert.Single(Messages);
         Assert.Equal("/anthropic/v1/messages", request.PathAndQuery);
-        Assert.Equal(Token, request.Headers["x-api-key"]);
+        Assert.Equal($"Bearer {Token}", request.Headers["Authorization"]);
         Assert.Equal("model-x", JsonDocument.Parse(request.Body).RootElement.GetProperty("model").GetString());
 
         var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
@@ -363,6 +364,19 @@ public sealed class CloudAccountTests : IAsyncLifetime
 
         Assert.Equal(JsonValueKind.Null, begun.GetProperty("url").ValueKind);
         Assert.Equal("unreachable", begun.GetProperty("problem").GetString());
+    }
+
+    [Fact]
+    public async Task The_session_kept_holds_its_refresh_token_but_not_the_access_token()
+    {
+        // The access token lives in memory only, refreshed after a start — kept, it would pass one Windows
+        // Credential Manager entry and outlive its purpose on disk.
+        await SignInOnlyAsync();
+
+        var kept = _vault.Read(CloudAccount.VaultName);
+        Assert.NotNull(kept);
+        Assert.Contains(_identity.RefreshToken!, kept, StringComparison.Ordinal);
+        Assert.DoesNotContain(Token, kept, StringComparison.Ordinal);
     }
 
     [Fact]
