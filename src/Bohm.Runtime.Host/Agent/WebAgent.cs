@@ -200,8 +200,9 @@ internal static class WebAgent
         message the page shows about it is listed as an alert. Set each condition with the control the site has for it (a filter, a facet, a
         sort order, a size, colour, date or location choice) before you go through the results: words typed into a
         search box do not limit the results. A request for the most popular, highest rated, latest or cheapest
-        needs the matching sort order; when the site has none, compare the dates or values the items show and say the one
-        that makes your pick the latest or cheapest. Finish on the page that shows the result with those conditions applied (the
+        needs the matching sort order; when the site has none, compare the dates or values the items show, say the ones
+        that make your pick the latest or cheapest (yours and the next few), and finish on the list that shows them — open the
+        item to read it if you need to, then go back. Finish on the page that shows the result with those conditions applied (the
         filtered, sorted list or the item's own page), not on a page you went to afterwards. After you type, the result says what the field now holds — if the page changed it,
         fix it before going on. When a field offers suggestions as you type, click the one you mean. A date in a text
         field that shows its format (such as MM/DD/YYYY): type the date in that format instead of picking it in the
@@ -247,9 +248,17 @@ internal static class WebAgent
     /// </summary>
     internal const string NoticeProperty = "bohm.notice";
 
-    /// <summary>The line that tells the model when it is: the date, the day of the week and the time on this computer, with its offset from UTC.</summary>
-    internal static string Now(DateTimeOffset now) =>
-        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"It is now {now:yyyy-MM-dd} ({now:dddd}) {now:HH:mm} on this computer (UTC{(now.Offset < TimeSpan.Zero ? "-" : "+")}{now.Offset:hh\\:mm}).");
+    /// <summary>
+    /// The line that tells the model when it is: the date, the day of the week and the time on this computer, with its offset from UTC —
+    /// and this, next and last month by name, since a model told only the date still counts «next month» from the wrong one.
+    /// </summary>
+    internal static string Now(DateTimeOffset now)
+    {
+        var month = new DateTime(now.Year, now.Month, 1);
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"It is now {now:yyyy-MM-dd} ({now:dddd}) {now:HH:mm} on this computer (UTC{(now.Offset < TimeSpan.Zero ? "-" : "+")}{now.Offset:hh\\:mm}). " +
+            $"This month is {month:MMMM yyyy}, next month is {month.AddMonths(1):MMMM yyyy} and last month was {month.AddMonths(-1):MMMM yyyy}.");
+    }
 
     /// <summary>
     /// Runs one turn of <paramref name="conversation"/>, which ends with the person's question or with the host's tool results.
