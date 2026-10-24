@@ -50,7 +50,7 @@
 
   <!-- Signing in to the Bohm account: OAuth 2.0 for native apps (RFC 8252) against the identity service the cloud names. -->
   <ItemGroup>
-    <PackageReference Include="Authway.Native" Version="0.1.0" />
+    <PackageReference Include="Authway.Native" Version="0.1.1" />
   </ItemGroup>
 
   <!--
@@ -58,12 +58,12 @@
     conversion between the OpenAI chat wire shape and Microsoft.Extensions.AI.
   -->
   <ItemGroup>
-    <PackageReference Include="IronHive.Agent" Version="0.74.0" />
-    <PackageReference Include="IronHive.Extensions.AI" Version="0.69.0" />
-    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.69.0" />
-    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.69.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.69.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.69.0" />
+    <PackageReference Include="IronHive.Agent" Version="0.75.0" />
+    <PackageReference Include="IronHive.Extensions.AI" Version="0.70.0" />
+    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.70.0" />
+    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.70.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.70.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.70.0" />
     <PackageReference Include="LMSupply.Generator" Version="0.136.0" />
     <PackageReference Include="Markdig" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
