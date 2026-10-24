@@ -32,19 +32,26 @@ public sealed class BrowserTests : IAsyncLifetime
 
     private RunningHost _host = null!;
     private IPlaywright _playwright = null!;
+    private const string NoBrowser = "No Chromium browser is installed (Microsoft Edge, Google Chrome or Playwright's Chromium).";
+
     private IBrowser? _browser;
 
     public async ValueTask InitializeAsync()
     {
         _host = await RunningHost.StartAsync();
         _playwright = await Playwright.CreateAsync();
-        try
+        // Edge, the engine WebView2 is — or, where it is not installed (a Mac), Chrome or Playwright's own Chromium: the same engine.
+        foreach (var channel in new[] { "msedge", "chrome", null })
         {
-            _browser = await _playwright.Chromium.LaunchAsync(new() { Channel = "msedge" });
-        }
-        catch (PlaywrightException)
-        {
-            _browser = null;
+            try
+            {
+                _browser = await _playwright.Chromium.LaunchAsync(new() { Channel = channel });
+                break;
+            }
+            catch (PlaywrightException)
+            {
+                _browser = null;
+            }
         }
     }
 
@@ -58,7 +65,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_unmodified_app_keeps_its_data_across_reloads_and_a_host_restart()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
 
         var page = await OpenAsync(id);
@@ -82,7 +89,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_write_made_while_the_page_is_closing_is_kept()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Draft</title>
             <script>addEventListener('pagehide', () => localStorage.setItem('draft', 'written at close'));</script>
@@ -104,7 +111,7 @@ public sealed class BrowserTests : IAsyncLifetime
         // The host closes a tab by navigating it to about:blank. The page's own pagehide handler runs
         // after the injected script's (registered first), so its write is recorded after the flush
         // on leave — it must still go out while the page is leaving, not on a later timer.
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Closes</title>
             <script>addEventListener('pagehide', () => localStorage.setItem('closes', String(Number(localStorage.getItem('closes') || 0) + 1)));</script>
@@ -127,7 +134,7 @@ public sealed class BrowserTests : IAsyncLifetime
     {
         // Timers are not guaranteed to run once a page is leaving. The page here makes sure they do
         // not, then writes: the write must already be on its way, carrying anything not yet acknowledged.
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Leaving</title>
             <script>addEventListener('pagehide', () => { window.setTimeout = () => 0; localStorage.setItem('last', 'written while leaving'); });</script>
@@ -146,7 +153,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Web_storage_semantics_hold_for_common_access_patterns()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("<!doctype html><title>t</title>");
         var page = await OpenAsync(id);
 
@@ -171,7 +178,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_page_elsewhere_cannot_embed_an_application()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("<!doctype html><title>Mine</title><button id='b'>click</button>");
         var page = await _browser!.NewPageAsync();
         // A page with no policy of its own, so only the application's policy decides.
@@ -185,7 +192,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_application_may_still_frame_its_own_origin()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("<!doctype html><title>Self</title><iframe src='/'></iframe>");
         var page = await OpenAsync(id);
         await page.WaitForTimeoutAsync(1000);
@@ -198,7 +205,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Data_cannot_leave_the_origin_through_any_request_type()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var elsewhere = $"http://outside.localhost:{_host.Port}";
         var id = await _host.AdoptAsync("<!doctype html><title>x</title>");
         var page = await OpenAsync(id);
@@ -232,7 +239,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Opening_typing_and_saving_are_recorded_as_todays_signals()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
 
         var page = await OpenAsync(id);
@@ -246,7 +253,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task The_host_reads_the_last_issued_write_and_the_page_cannot_change_what_it_reads()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
         var page = await OpenAsync(id);
         await page.FillAsync("#note", "x");
@@ -278,7 +285,7 @@ public sealed class BrowserTests : IAsyncLifetime
         // The host arms the page just before it navigates it away. The report then goes out after the
         // page's own pagehide listener (registered earlier), so it covers the write that listener made.
         // Here that write's request is dropped: only the report can tell the runtime it existed.
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Closes</title>
             <script>addEventListener('pagehide', () => localStorage.setItem('closes', '1'));</script>
@@ -311,7 +318,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_blocked_library_and_the_error_it_causes_are_reported_separately()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Broken</title>
             <script src="https://cdn.example.com/chart.js"></script>
@@ -341,7 +348,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_error_after_the_application_started_is_reported_apart_from_a_failure_to_load()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Clicks</title>
             <button id="broken">Broken</button><button id="logged">Logged</button>
@@ -370,7 +377,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_preview_shows_the_error_a_proposed_revision_would_load_with_and_leaves_the_application_alone()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
         var app = await OpenAsync(id);
         await app.FillAsync("#note", "keep me");
@@ -412,7 +419,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_preview_that_calls_a_model_while_loading_is_not_reported_as_blocked()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
 
         // Asks a known provider as it loads, and goes on when the answer is not a good one.
@@ -449,7 +456,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_error_a_preview_logs_because_its_model_call_was_declined_is_reported_after_the_model()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync(NotesApp);
 
         // Sorts with a model as it loads and logs the failure — what a page does when no model answers.
@@ -483,7 +490,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task A_module_imported_from_a_cdn_is_named_instead_of_a_bare_error()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Module</title>
             <script type="module">
@@ -503,7 +510,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task External_data_an_app_handles_itself_is_still_reported()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Schedule</title><p id="out">loading</p>
             <script>
@@ -524,7 +531,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Files_the_page_expected_next_to_it_are_listed_as_missing()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""<!doctype html><title>Site page</title><p>hi</p><script src="footer.js?v=3"></script>""");
 
         await OpenAsync(id);
@@ -537,7 +544,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Calls_to_a_server_the_page_expected_are_listed_with_their_method_apart_from_files()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><title>Sign up</title><p id="out">waiting</p><script src="footer.js"></script>
             <script>
@@ -560,7 +567,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task Code_from_other_hosts_cached_at_adoption_runs_under_the_policy_and_offline()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var cdn = new Assets.FakeCdn()
             .File("https://cdn.test/greet.js", "text/javascript", "window.greet = n => 'hello ' + n;")
             .Redirect("https://esm.test/pkg", "https://cdn2.test/npm/pkg@1/+esm")
@@ -598,7 +605,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task How_a_pages_reads_matched_its_data_is_reported_as_counts()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         var id = await _host.AdoptAsync("""
             <!doctype html><html><body><script>
               localStorage.getItem('read');        // given, read
@@ -638,7 +645,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_app_that_asks_for_an_api_key_talks_to_its_provider_without_ever_holding_the_key()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         const string realKey = "sk-real-secret-never-in-the-page";
         await using var provider = await FakeProvider.StartAsync();
         await _host.StopKeepingDataAsync();
@@ -686,7 +693,7 @@ public sealed class BrowserTests : IAsyncLifetime
     [Fact]
     public async Task An_app_written_for_the_organizations_model_server_reaches_it_through_the_runtime()
     {
-        Assert.SkipWhen(_browser is null, "Microsoft Edge is not installed.");
+        Assert.SkipWhen(_browser is null, NoBrowser);
         await using var server = await FakeProvider.StartAsync();
         var endpoint = new Uri(server.Address, "v1/");
         await _host.StopKeepingDataAsync();
