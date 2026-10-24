@@ -13,6 +13,11 @@ internal sealed class FakeChatModel : IChatClient
     /// <summary>The pieces a streamed answer comes in — <see cref="Reply"/> in one piece when not set.</summary>
     public IReadOnlyList<string>? Chunks { get; set; }
 
+    /// <summary>
+    /// The tool call to answer with once <see cref="Script"/> is empty — the same call, with the same id, on every request.
+    /// Repeated through a tool loop, the second request's call is left unrun and the turn reports it completed (as
+    /// measured on the loop here), so a model that repeats a call goes in <see cref="Script"/>, one id per request.
+    /// </summary>
     public FunctionCallContent? Call { get; set; }
 
     /// <summary>
