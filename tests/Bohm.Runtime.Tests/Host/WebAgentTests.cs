@@ -83,14 +83,15 @@ public sealed class WebAgentTests : IDisposable
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         var system = Assert.Single(_model.Calls).Messages[0].Text;
-        Assert.Matches(@"\nIt is now \d{4}-\d{2}-\d{2} \([A-Z][a-z]+day\) \d{2}:\d{2} on this computer \(UTC[+-]\d{2}:\d{2}\)\.$", system);
+        Assert.Matches(@"\nIt is now \d{4}-\d{2}-\d{2} \([A-Z][a-z]+day\) \d{2}:\d{2} on this computer \(UTC[+-]\d{2}:\d{2}\)\. This month is [A-Z][a-z]+ \d{4}, next month is [A-Z][a-z]+ \d{4} and last month was [A-Z][a-z]+ \d{4}\.$", system);
     }
 
     [Theory]
-    [InlineData(9, 0, "It is now 2026-10-07 (Wednesday) 17:42 on this computer (UTC+09:00).")]
-    [InlineData(-5, -30, "It is now 2026-10-07 (Wednesday) 17:42 on this computer (UTC-05:30).")]
-    public void The_time_line_names_the_date_the_day_the_time_and_the_offset(int hours, int minutes, string line) =>
-        Assert.Equal(line, Bohm.Runtime.Host.Agent.WebAgent.Now(new DateTimeOffset(2026, 10, 7, 17, 42, 5, new TimeSpan(hours, minutes, 0))));
+    [InlineData(2026, 10, 9, 0, "It is now 2026-10-07 (Wednesday) 17:42 on this computer (UTC+09:00). This month is October 2026, next month is November 2026 and last month was September 2026.")]
+    [InlineData(2026, 10, -5, -30, "It is now 2026-10-07 (Wednesday) 17:42 on this computer (UTC-05:30). This month is October 2026, next month is November 2026 and last month was September 2026.")]
+    [InlineData(2026, 12, 0, 0, "It is now 2026-12-07 (Monday) 17:42 on this computer (UTC+00:00). This month is December 2026, next month is January 2027 and last month was November 2026.")]
+    public void The_time_line_names_the_date_the_day_the_time_the_offset_and_the_months_around_it(int year, int month, int hours, int minutes, string line) =>
+        Assert.Equal(line, Bohm.Runtime.Host.Agent.WebAgent.Now(new DateTimeOffset(year, month, 7, 17, 42, 5, new TimeSpan(hours, minutes, 0))));
 
     [Fact]
     public async Task Asked_to_make_an_app_the_model_is_told_to_answer_and_that_the_answer_can_be_saved_as_one()
