@@ -61,8 +61,21 @@ public sealed class HostAddressTests : IDisposable
         var port = first.Port;
         await first.StopKeepingDataAsync();
 
+        // Stand in for the stopping runtime: hold the port. The first host's socket can take a moment to be let go of under load, so
+        // wait for it rather than failing the test on our own bind.
         var stopping = new TcpListener(IPAddress.Loopback, port);
-        stopping.Start();
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                stopping.Start();
+                break;
+            }
+            catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse && attempt < 40)
+            {
+                await Task.Delay(50);
+            }
+        }
         var release = Task.Delay(700).ContinueWith(_ => stopping.Stop(), TaskScheduler.Default);
         var second = await RunningHost.StartAsync(_dataRoot);
         try
