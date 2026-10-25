@@ -338,6 +338,31 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_turn_that_goes_round_the_same_two_calls_is_told_so_with_the_latest_result_only()
+    {
+        _model.Reply = "Stopping.";
+        await using var host = await StartWithLocalModelAsync();
+
+        var messages = new List<object> { new { role = "user", text = "Pick the state." } };
+        for (var round = 1; round <= 3; round++)
+        {
+            messages.Add(new { role = "assistant", toolCalls = new[] { new { id = $"t{round}", name = "type", arguments = new { reference = "e3", text = "Ohio" } } } });
+            messages.Add(new { role = "tool", toolCallId = $"t{round}", text = "The field e3 now holds \"Ohio\"." });
+            messages.Add(new { role = "assistant", toolCalls = new[] { new { id = $"k{round}", name = "click", arguments = new { reference = "e7" } } } });
+            messages.Add(new { role = "tool", toolCallId = $"k{round}", text = "Clicked the option." });
+        }
+
+        using var response = await TurnAsync(host, JsonSerializer.Serialize(new { messages }));
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var sent = Assert.Single(_model.Calls).Messages;
+        var results = sent.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => Assert.IsType<string>(r.Result)).ToList();
+        Assert.Equal(6, results.Count);
+        Assert.All(results.Take(5), r => Assert.DoesNotContain("browser-notice", r));
+        Assert.Contains("<browser-notice>\nYou have gone through the same 2 calls 3 times in a row", results[^1]);
+    }
+
+    [Fact]
     public async Task A_follow_up_whose_model_reused_a_call_id_still_runs_and_marks_each_result()
     {
         // Small models number their calls afresh each turn, so the same id appears once per question.

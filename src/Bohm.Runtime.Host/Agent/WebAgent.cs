@@ -469,6 +469,7 @@ internal static class WebAgent
         var calls = new Dictionary<string, FunctionCallContent>(StringComparer.Ordinal);
         var taken = new HashSet<string>(StringComparer.Ordinal);
         var guarded = new List<ChatMessage>(conversation.Count);
+        var sequence = new List<string>();   // the calls in the order they were made, for <see cref="RepeatNote"/>
         foreach (var message in conversation)
         {
             if (message.Role != ChatRole.Tool)
@@ -486,6 +487,7 @@ internal static class WebAgent
                     {
                         var own = new FunctionCallContent(FreeId(call.CallId, taken), call.Name, call.Arguments);
                         calls[call.CallId] = own;   // results that follow answer this call
+                        sequence.Add(RepeatNote.Signature(own));
                         renamed.Add(own);
                     }
                     else
@@ -532,6 +534,16 @@ internal static class WebAgent
             }
 
             guarded.Add(new ChatMessage(ChatRole.Tool, contents));
+        }
+
+        // A turn that has gone round the same few calls is told so with the latest result — the caller's word after the material,
+        // like any notice — and only there: the conversation is not changed, so the note is gone when the page moves on.
+        if (RepeatNote.Of(sequence) is { } repeated && guarded is [.., { Role: var last } tail] && last == ChatRole.Tool
+            && tail.Contents.Count > 0 && tail.Contents[^1] is FunctionResultContent latest)
+        {
+            var contents = tail.Contents.ToList();
+            contents[^1] = new FunctionResultContent(latest.CallId, $"{latest.Result}\n<browser-notice>\n{repeated}\n</browser-notice>");
+            guarded[^1] = new ChatMessage(ChatRole.Tool, contents);
         }
 
         return guarded;
