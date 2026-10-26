@@ -347,10 +347,10 @@ public sealed class AppRegistryTests : IAsyncLifetime
         // The first holder stalls (its beat is five minutes away), so the second takes the lock over.
         var stalled = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
         var second = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
-        var secondMark = await File.ReadAllTextAsync(lockPath, TestContext.Current.CancellationToken);
+        var secondMark = await ReadHeldAsync(lockPath);
 
         await stalled.DisposeAsync();
-        Assert.Equal(secondMark, await File.ReadAllTextAsync(lockPath, TestContext.Current.CancellationToken));
+        Assert.Equal(secondMark, await ReadHeldAsync(lockPath));
         await second.DisposeAsync();
         Assert.False(File.Exists(lockPath));
     }
@@ -377,6 +377,14 @@ public sealed class AppRegistryTests : IAsyncLifetime
 
         using (var published = await publishing) HttpAssert.Status(HttpStatusCode.OK, published);
         Assert.Equal(["index.json"], Directory.GetFiles(registry).Select(Path.GetFileName).ToArray());
+    }
+
+    // A held lock is open for writing, which Windows lets another reader see only if the reader says it shares the write.
+    private static async Task<string> ReadHeldAsync(string path)
+    {
+        await using var reading = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var text = new StreamReader(reading);
+        return await text.ReadToEndAsync(TestContext.Current.CancellationToken);
     }
 
     private static Task<HttpResponseMessage> PublishThroughApiAsync(RunningHost host, string registry, string id) =>
