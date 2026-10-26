@@ -12,6 +12,7 @@ namespace Bohm.Runtime.Tests.Host;
 /// An application's recording sent to OpenAI's transcription API with no key connected, turned into text by the speech
 /// model on this computer — once the person has got it; before that the application is told so and the shell learns it.
 /// </summary>
+[Collection("real model")]
 public sealed class LocalSpeechTests
 {
     private const string App = "<!doctype html><title>Voice log</title>";

@@ -11,6 +11,7 @@ namespace Bohm.Runtime.Tests.Host;
 /// answered by a model on this computer in the shape each API gives. The requests are the
 /// examples of each API's reference, trimmed to what they exercise.
 /// </summary>
+[Collection("real model")]
 public sealed class LocalModelProviderShapesTests : IAsyncLifetime
 {
     private FakeProvider _provider = null!;

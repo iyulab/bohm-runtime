@@ -11,6 +11,7 @@ namespace Bohm.Runtime.Tests.Host;
 /// tool calls that touch the pages back to the caller, which sends the results in the next turn.
 /// Nothing is kept between turns.
 /// </summary>
+[Collection("real model")]
 public sealed class WebAgentTests : IDisposable
 {
     private readonly FakeChatModel _model = new();
@@ -762,7 +763,8 @@ public sealed class WebAgentTests : IDisposable
             HttpAssert.Status(HttpStatusCode.OK, response);
             turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement.Clone();
             if (turn.GetProperty("status").GetString() == "done") break;
-            var toolCalls = turn.GetProperty("toolCalls").EnumerateArray().ToList();
+            Assert.True(turn.TryGetProperty("toolCalls", out var asked), $"The turn ended without a tool call or an answer (round {round}): {turn.GetRawText()[..Math.Min(600, turn.GetRawText().Length)]}");
+            var toolCalls = asked.EnumerateArray().ToList();
             messages.Add(new { role = "assistant", toolCalls = toolCalls.Select(c => new { id = c.GetProperty("id").GetString(), name = c.GetProperty("name").GetString(), arguments = c.GetProperty("arguments") }) });
             foreach (var call in toolCalls)
             {

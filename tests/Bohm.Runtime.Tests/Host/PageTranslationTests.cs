@@ -10,6 +10,7 @@ namespace Bohm.Runtime.Tests.Host;
 /// A web page translated where it stands: its text pieces go out in order and come back translated in the same order — or not at
 /// all, so a piece never lands under another one's element.
 /// </summary>
+[Collection("real model")]
 public sealed class PageTranslationTests
 {
     private const string Instruction = "You translate the text of a web page";

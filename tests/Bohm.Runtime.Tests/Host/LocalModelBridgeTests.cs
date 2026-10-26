@@ -12,6 +12,7 @@ namespace Bohm.Runtime.Tests.Host;
 /// An application written for the OpenAI chat API, with no key connected, answered by a model on
 /// this computer: same request, same response shape, nothing sent anywhere.
 /// </summary>
+[Collection("real model")]
 public sealed class LocalModelBridgeTests : IAsyncLifetime
 {
     private const string RealKey = "sk-real-secret-0123456789";
