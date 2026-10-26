@@ -92,6 +92,12 @@ public sealed class AppExportTests : IAsyncLifetime
         using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"books","value":"[{\"title\":\"A\"}]"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
         var closed = Directory.CreateDirectory(Path.Combine(_out, "closed")).FullName;
         DenyWriting(closed);
+        if (WritingIsStillAllowed(closed))
+        {
+            AllowWriting(closed);
+            Assert.Skip("This process is not held back by the folder's permissions (root, or a Windows backup/restore privilege such as Git Bash's), so a refused folder cannot be made here.");
+        }
+
         try
         {
             foreach (var (route, target) in new[]
@@ -109,6 +115,22 @@ public sealed class AppExportTests : IAsyncLifetime
         finally
         {
             AllowWriting(closed);
+        }
+    }
+
+    // Whether this process can still make something in a folder that DenyWriting closed — it can when it is root or holds a backup/restore privilege.
+    private static bool WritingIsStillAllowed(string folder)
+    {
+        try
+        {
+            var probe = Path.Combine(folder, "probe-" + Guid.NewGuid().ToString("n")[..8]);
+            Directory.CreateDirectory(probe);
+            Directory.Delete(probe);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
