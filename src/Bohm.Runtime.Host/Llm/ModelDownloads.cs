@@ -18,7 +18,7 @@ namespace Bohm.Runtime.Host.Llm;
 /// <param name="Fit">
 /// Whether it runs on this computer, as the model library judges its memory: <c>gpu</c> (fits the graphics memory — runs at
 /// its speed), <c>memory</c> (fits only the system memory — runs, slowly), <c>no</c> (too large), or <see langword="null"/>
-/// when the library judges only some of its models and not this one.
+/// when the source does not judge it.
 /// </param>
 /// <param name="Recommended">The one the library would choose for this computer.</param>
 public sealed record ModelCatalogEntry(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes,
@@ -79,33 +79,33 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
     /// </remarks>
     public IReadOnlyList<ModelCatalogEntry> Catalog()
     {
-        // The library's own choice for this computer and its judgement of each model it chooses among — memory only, read
-        // without the network. It judges the models it may choose automatically; the others are listed without a judgement.
-        // TODO(upstream: LMSupply — a fit judgement for any catalog model, as a stable contract): judge every entry once it is there.
+        // The library's own choice for this computer, and its judgement of every model in the catalog — memory only, read
+        // without the network. The judgement is the rule the choice itself applies, so the two never disagree.
         var selection = GgufModelRegistry.GetAutoSelection(ExecutionProvider.Auto);
-        var fits = selection.Candidates.ToDictionary(c => c.Model.AliasName, c => c.Fits ? "gpu" : c.FitsInSystemRam ? "memory" : "no", StringComparer.OrdinalIgnoreCase);
-        return [.. Entries().Select(e => e with
+        return [.. Entries().Select(m => m.Entry with
         {
-            Fit = fits.GetValueOrDefault(e.Id),
-            Recommended = selection.Reason != ModelSelectionReason.FallbackToSmallest && string.Equals(selection.Selected.AliasName, e.Id, StringComparison.OrdinalIgnoreCase),
+            Fit = Fit(GgufModelRegistry.Evaluate(m.Info, ExecutionProvider.Auto)),
+            Recommended = selection.Reason != ModelSelectionReason.FallbackToSmallest && string.Equals(selection.Selected.AliasName, m.Entry.Id, StringComparison.OrdinalIgnoreCase),
         })];
     }
 
-    private static IEnumerable<ModelCatalogEntry> Entries() =>
+    private static string Fit(ModelSelectionCandidate judged) => judged.Fits ? "gpu" : judged.FitsInSystemRam ? "memory" : "no";
+
+    private static IEnumerable<(ModelCatalogEntry Entry, GgufModelInfo Info)> Entries() =>
         GgufModelRegistry.GetAliases()
             .Select(alias => alias.StartsWith("gguf:", StringComparison.OrdinalIgnoreCase) ? alias : "gguf:" + alias)
             .Where(id => !string.Equals(id, "gguf:auto", StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(id => (Id: id, Info: GgufModelRegistry.Resolve(id)))
             .Where(m => m.Info is not null)
-            .Select(m => new ModelCatalogEntry(
+            .Select(m => (new ModelCatalogEntry(
                 m.Id,
                 string.IsNullOrEmpty(m.Info!.DisplayName) ? m.Info.RepoId : m.Info.DisplayName,
                 m.Info.Description,
                 FormatParameters(m.Info.ParameterCount),
                 m.Info.LicenseName,
                 m.Info.License.ToString(),
-                m.Info.EstimatedSizeBytes));
+                m.Info.EstimatedSizeBytes), m.Info));
 
     /// <summary>«4B» for four billion parameters, «600M» below a billion; <see langword="null"/> when the catalog says none.</summary>
     internal static string? FormatParameters(long count) =>

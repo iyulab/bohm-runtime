@@ -31,6 +31,19 @@ public sealed class ModelDownloadsTests : IDisposable
     }
 
     [Fact]
+    public void The_library_judges_every_model_of_its_catalog_and_judges_the_ones_it_chooses_among_as_its_choice_does()
+    {
+        var catalog = new LMSupplyModelSource(null).Catalog();
+        var selection = LMSupply.Generator.Gguf.GgufModelRegistry.GetAutoSelection(ExecutionProvider.Auto);
+
+        Assert.NotEmpty(catalog);
+        Assert.All(catalog, e => Assert.True(e.Fit is "gpu" or "memory" or "no")); // none is left unjudged
+        foreach (var c in selection.Candidates)
+            Assert.Equal(c.Fits ? "gpu" : c.FitsInSystemRam ? "memory" : "no", catalog.Single(e => string.Equals(e.Id, c.Model.AliasName, StringComparison.OrdinalIgnoreCase)).Fit);
+        Assert.True(catalog.Count(e => e.Recommended) <= 1);
+    }
+
+    [Fact]
     public async Task The_catalog_lists_each_model_with_its_licence_size_and_whether_it_is_here_without_the_network()
     {
         var source = new StandIn(_cache);
