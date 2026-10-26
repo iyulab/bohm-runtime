@@ -131,6 +131,11 @@ public sealed class PageTranslationTests
         Assert.All(back.Select((text, i) => (text, i)).Where(p => p.text is not null), p => Assert.Contains((p.i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), p.text!, StringComparison.Ordinal));
     }
 
-    private static Task<HttpResponseMessage> TranslateAsync(RunningHost host, string body) =>
-        host.ControlClient().PostAsync("/__control/agent/translate", new StringContent(body, Encoding.UTF8, "application/json"));
+    private static Task<HttpResponseMessage> TranslateAsync(RunningHost host, string body)
+    {
+        // A real model's long batch can outlast the client's default 100 seconds when the computer is busy.
+        var client = host.ControlClient();
+        client.Timeout = TimeSpan.FromMinutes(5);
+        return client.PostAsync("/__control/agent/translate", new StringContent(body, Encoding.UTF8, "application/json"));
+    }
 }
