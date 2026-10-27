@@ -44,7 +44,7 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_DISCARD_DIR (verification only) sends applications removed for good to that folder instead of
 // the recycle bin, so an automated check does not fill the person's recycle bin.
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
-// Manager instead of the person's (<name>.Bohm), so an automated check never reads, overwrites or deletes the person's keys
+// Manager or the macOS keychain instead of the person's (<name>.Bohm), so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
 const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud]";
 // What --help prints: the comment above, short — what someone running the runtime by hand needs to get to a first request.
@@ -70,7 +70,7 @@ const string help = usage + """
                                  speaking the same API.
       BOHM_REVIEW_MODEL          <provider>/<model> that reads a newly written application once before it is polished.
       BOHM_DISCARD_DIR           (checks) Move applications removed for good there instead of the recycle bin.
-      BOHM_VAULT_PREFIX          (checks) Keep keys under that prefix in the Windows Credential Manager instead of the person's (<name>.Bohm).
+      BOHM_VAULT_PREFIX          (checks) Keep keys under that prefix in the Windows Credential Manager or the macOS keychain instead of the person's (<name>.Bohm).
 
     Once listening, one line goes to standard output: bohm-runtime ready port=<n> (and previousPort=<m> when the data
     root's port was taken). Everything else goes to standard error.
@@ -191,8 +191,10 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     // A build with its own address signs in as Bohm's own client only; a debug build may name a test identity service's.
     CloudClientId = cloudEndpoint is null || Bohm.Runtime.Host.Llm.CloudAccount.BuiltInAddress is not null ? null
         : Environment.GetEnvironmentVariable(Bohm.Runtime.Host.Llm.CloudAccount.ClientIdVariable) is { Length: > 0 } cloudClient ? cloudClient : null,
-    Vault = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
-        ? new WindowsCredentialVault(vaultPrefix)
+    Vault = Environment.GetEnvironmentVariable("BOHM_VAULT_PREFIX") is { Length: > 0 } vaultPrefix
+        ? OperatingSystem.IsWindows() ? new WindowsCredentialVault(vaultPrefix)
+        : OperatingSystem.IsMacOS() ? new KeychainCredentialVault(vaultPrefix)
+        : null
         : null,
     Discard =Environment.GetEnvironmentVariable("BOHM_DISCARD_DIR") is { Length: > 0 } discardDir
         ? (folder, _) =>

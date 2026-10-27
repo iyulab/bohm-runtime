@@ -40,7 +40,7 @@
     <PackageReference Include="LocalOrigin.AspNetCore" Version="0.4.1" />
     <PackageReference Include="TauriKit.Sidecar.Loopback.AspNetCore" Version="0.29.0" />
     <!-- The Windows Credential Manager entries a tauri-kit shell shares (Credentials/WindowsCredentialVault.cs). -->
-    <PackageReference Include="TauriKit.Credentials" Version="0.29.0" />
+    <PackageReference Include="TauriKit.Credentials" Version="0.30.0" />
   </ItemGroup>
 
   <!-- Durable files: settings replaced whole (temp sibling, flushed, one rename) and folders sent to the platform's trash. -->

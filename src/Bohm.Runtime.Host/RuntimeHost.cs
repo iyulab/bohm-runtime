@@ -160,6 +160,26 @@ public static class RuntimeHost
         }
     }
 
+    // Keys live in the platform's own store: the Credential Manager on Windows, the login keychain on macOS.
+    private static ICredentialVault DefaultVault() =>
+        OperatingSystem.IsWindows() ? new WindowsCredentialVault()
+        : OperatingSystem.IsMacOS() && KeepsKeysInKeychain(
+            TauriKit.Credentials.BuildKinds.Of(typeof(RuntimeHost).Assembly) == TauriKit.Credentials.BuildKind.Release,
+            TauriKit.Credentials.CodeSignature.TeamIdentifier,
+            Environment.ProcessPath) ? new KeychainCredentialVault()
+        : new MemoryCredentialVault();
+
+    /// <summary>
+    /// Whether keys go to the macOS keychain. The keychain answers the program that made an item without asking, and
+    /// asks the person when a differently signed program reads it — a request that meets the question waits on it. So
+    /// only a build that is signed by a team (every build of one signed app is the same identity) uses it: a development
+    /// build, a build signed ad hoc and a runtime started as <c>dotnet Bohm.Runtime.Host.dll</c> (whose identity is the
+    /// dotnet host's, shared with every program run that way) keep keys in memory.
+    /// </summary>
+    internal static bool KeepsKeysInKeychain(bool releaseBuild, string? teamIdentifier, string? processPath) =>
+        releaseBuild && teamIdentifier is not null
+        && !string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.Ordinal);
+
     /// <summary>Builds (but does not start) the host.</summary>
     public static WebApplication Build(RuntimeHostOptions options, Action<WebApplicationBuilder>? configure = null)
     {
@@ -168,7 +188,7 @@ public static class RuntimeHost
         builder.WebHost.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, options.Port ?? HostAddress.Read(options.DataRoot) ?? 0));
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(new AdoptionCatalog(options.DataRoot));
-        builder.Services.AddSingleton(options.Vault ?? (OperatingSystem.IsWindows() ? new WindowsCredentialVault() : new MemoryCredentialVault()));
+        builder.Services.AddSingleton(options.Vault ?? DefaultVault());
         var assets = builder.Services.AddHttpClient("assets", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(20);
