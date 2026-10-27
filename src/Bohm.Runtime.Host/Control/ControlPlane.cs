@@ -1098,8 +1098,12 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                await providers.AddAsync(declared!, cancel).ConfigureAwait(false);
-                await WriteAsync(response, ProviderViewOf(providers.ById(declared!.Id)!, context.RequestServices), cancel).ConfigureAwait(false);
+                // A key belongs to the address it was connected for: the same id declared again at another address does not carry its key there.
+                if (providers.ById(declared!.Id) is { } previous && previous.BaseUrl.Authority != declared.BaseUrl.Authority)
+                    context.RequestServices.GetRequiredService<ICredentialVault>().Delete(previous.VaultName);
+
+                await providers.AddAsync(declared, cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewOf(providers.ById(declared.Id)!, context.RequestServices), cancel).ConfigureAwait(false);
                 break;
             }
 

@@ -117,6 +117,23 @@ public sealed class ProviderControlTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_same_id_declared_again_at_another_address_does_not_carry_its_key_there()
+    {
+        var vault = _host.Services.GetRequiredService<ICredentialVault>();
+        await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("gateway"));
+        vault.Write("llm/gateway", Key);
+
+        // The same address, declared again (a model added, say): the key stays.
+        await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("gateway"));
+        Assert.Equal(Key, vault.Read("llm/gateway"));
+
+        // Another address: the key is not sent there — it is asked for again.
+        await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("gateway", address: "https://other.example/"));
+        Assert.Null(vault.Read("llm/gateway"));
+        Assert.False(Find(await ListAsync(), "gateway").GetProperty("connected").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_provider_declared_as_taking_no_key_refuses_one()
     {
         await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("open-server", """{ "style": "none" }"""));
