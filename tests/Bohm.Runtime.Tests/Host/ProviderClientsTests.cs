@@ -157,6 +157,21 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_provider_the_person_added_is_fitted_to_what_its_model_takes()
+    {
+        await ChooseAsync("ollama", "llama");   // declared: a context window of 8192 and answers of up to 1024
+        var chosen = await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None);
+
+        Assert.NotNull(chosen!.Client.GetService<ModelFitChatClient>());
+        Assert.Equal(new ModelLimits(8192, 1024), ModelLimits.Of(chosen.Client, chosen.Limits));
+        await chosen.Client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], new ChatOptions { MaxOutputTokens = 8000 });
+
+        var body = Assert.Single(_provider.Asked).Body;
+        Assert.Contains("1024", body);               // the model's own bound, not the 8000 the feature asked for
+        Assert.DoesNotContain("8000", body);
+    }
+
+    [Fact]
     public async Task A_provider_that_takes_a_key_is_missing_it_until_it_is_connected()
     {
         await ChooseAsync("keyed", "m");

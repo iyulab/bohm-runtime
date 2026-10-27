@@ -143,8 +143,21 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var declared = provider.Find(chosen.Model);
-        return new(Kept(chosen, provider.BaseUrl + "\n" + key, () => new CountedAsSent(ProviderClients.Create(provider, declared, chosen.Model, key), egress, provider.BaseUrl.Authority)),
+        return new(Kept(chosen, provider.BaseUrl + "\n" + key, () => Counted(provider, declared, chosen.Model, key)),
             $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
+    }
+
+    /// <summary>
+    /// The client for <paramref name="model"/> of <paramref name="provider"/>, counted as sent to the provider's host. A provider the
+    /// person added is also fitted to what its model takes (<see cref="ModelFitChatClient"/> — as the organization's server is): an
+    /// answer bound above the model's own is lowered, no thinking setting goes to a model that has none, a request refused as too long
+    /// is tried once more with a smaller answer, and what is learned stands for this client's life. A built-in provider's models are not
+    /// described, so its client is left as it is.
+    /// </summary>
+    private IChatClient Counted(ProviderDeclaration provider, DeclaredModel? declared, string model, string? key)
+    {
+        IChatClient client = new CountedAsSent(ProviderClients.Create(provider, declared, model, key), egress, provider.BaseUrl.Authority);
+        return provider.Origin == ProviderOrigin.BuiltIn ? client : new ModelFitChatClient(client, declared?.Limits ?? ModelLimits.Unknown);
     }
 
     /// <summary>
@@ -171,7 +184,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             if (_reviewer is { } kept && kept.Key == identity) return (kept.Client, $"{provider.Id}/{review.Model}");
         }
 
-        var client = new CountedAsSent(ProviderClients.Create(provider, provider.Find(review.Model), review.Model, key), egress, provider.BaseUrl.Authority);
+        var client = Counted(provider, provider.Find(review.Model), review.Model, key);
         lock (_clientLock)
         {
             _reviewer?.Client.Dispose();
