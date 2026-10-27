@@ -11,6 +11,10 @@ export default {
     'tests/Bohm.Runtime.Tests/Assets/AssetCacheTests.cs:',
     // The rule that refuses them names the suffixes it refuses.
     'src/Bohm.Runtime/Assets/AssetCache.cs:',
+    // The function that decides whether an address is this computer or a private network names the suffixes it
+    // treats as private. Allowed by where its two lines begin, so any other line in the file still counts.
+    'src/Bohm.Runtime.Host/Llm/ProviderDeclaration.cs:/// or a name that cannot be reached from outside',
+    'src/Bohm.Runtime.Host/Llm/ProviderDeclaration.cs:|| host.EndsWith(".internal"',
     // Made-up home folder of an account named "someone" — the path a person adopted a file from.
     '\\Users\\someone\\',
   ],
