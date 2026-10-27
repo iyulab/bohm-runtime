@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -187,6 +189,8 @@ internal sealed partial record ProviderDeclaration(
         if (!ProviderApis.TryParse(Text(element, "api"), out var api)) return Refuse("api: openai-chat, openai-responses, anthropic-messages or google-gemini", out problem);
 
         if (!TryAuth(element, out var auth)) return Refuse("auth: style bearer, header (with a name), google or none", out problem);
+        if (auth!.Style != AuthStyle.None && baseUrl!.Scheme == Uri.UriSchemeHttp && !IsLocalAddress(baseUrl.Host))
+            return Refuse("baseUrl: a key does not travel over plain http away from this computer or a private network, use https", out problem);
 
         var models = new List<DeclaredModel>();
         if (element.TryGetProperty("models", out var list))
@@ -203,6 +207,35 @@ internal sealed partial record ProviderDeclaration(
         problem = null;
         declaration = new ProviderDeclaration(id, name, baseUrl!, api, auth!, models, origin);
         return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="host"/> is this computer or a private network: loopback, a private or link-local address,
+    /// or a name that cannot be reached from outside (no dot, <c>.local</c>, <c>.lan</c>, <c>.internal</c>).
+    /// </summary>
+    public static bool IsLocalAddress(string host)
+    {
+        host = host.Trim('[', ']');
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (IPAddress.TryParse(host, out var address))
+        {
+            if (IPAddress.IsLoopback(address)) return true;
+            var bytes = address.GetAddressBytes();
+            return address.AddressFamily switch
+            {
+                AddressFamily.InterNetwork => bytes[0] == 10
+                    || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+                    || (bytes[0] == 192 && bytes[1] == 168)
+                    || (bytes[0] == 169 && bytes[1] == 254)
+                    || (bytes[0] == 100 && bytes[1] is >= 64 and <= 127),   // shared address space (carrier-grade NAT, overlay networks)
+                AddressFamily.InterNetworkV6 => address.IsIPv6LinkLocal || (bytes[0] & 0xFE) == 0xFC,   // fc00::/7
+                _ => false,
+            };
+        }
+
+        return !host.Contains('.')
+            || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".lan", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".home.arpa", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Whether <paramref name="address"/> is an address a provider can be reached at, normalized to end with a slash.</summary>
@@ -351,7 +384,7 @@ internal sealed partial record ProviderDeclaration(
     public static IReadOnlyList<ProviderDeclaration> BuiltIn { get; } =
     [
         Built("openai", "OpenAI", "https://api.openai.com/v1/", ProviderApi.OpenAIResponses, ProviderAuth.Bearer),
-        Built("anthropic", "Anthropic", "https://api.anthropic.com/", ProviderApi.AnthropicMessages, new ProviderAuth(AuthStyle.Header, "x-api-key")),
+        Built("anthropic", "Anthropic", "https://api.anthropic.com/", ProviderApi.AnthropicMessages, ProviderAuth.Bearer),
         Built("google", "Google Gemini", "https://generativelanguage.googleapis.com/", ProviderApi.GoogleGemini, new ProviderAuth(AuthStyle.Google)),
         Built("groq", "Groq", "https://api.groq.com/openai/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer),
         Built("openrouter", "OpenRouter", "https://openrouter.ai/api/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer),

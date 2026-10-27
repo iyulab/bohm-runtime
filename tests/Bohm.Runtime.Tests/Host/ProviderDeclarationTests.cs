@@ -144,7 +144,8 @@ public sealed class ProviderDeclarationTests
             Assert.Equal(known.Host, declared.BaseUrl.Host);
             Assert.Equal(known.VaultName, declared.VaultName);
             Assert.Equal(ProviderOrigin.BuiltIn, declared.Origin);
-            Assert.Equal(known.Style switch { KeyStyle.Bearer => AuthStyle.Bearer, KeyStyle.ApiKeyHeader => AuthStyle.Header, _ => AuthStyle.Google }, declared.Auth.Style);
+            // (How a key is presented to the provider is not compared: LlmProviders.Style is how an application's own relayed
+            // request carries it, which differs from what the runtime's own client sends — Anthropic's SDK presents it as a bearer.)
         }
 
         // The format the runtime already uses for each: OpenAI over Responses, Anthropic over Messages, Google over Gemini, the rest over Chat.

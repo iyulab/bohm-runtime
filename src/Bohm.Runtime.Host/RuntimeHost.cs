@@ -200,6 +200,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.LocalSpeech>();
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Llm.CloudAccount>();
+        builder.Services.AddSingleton<Llm.ProviderCatalog>();
         builder.Services.AddSingleton<Edit.EditModel>();
         builder.Services.AddSingleton<Promotion.AppSkills>();
         builder.Services.AddSingleton<Promotion.AppMcp>();
