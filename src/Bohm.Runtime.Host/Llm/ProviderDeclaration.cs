@@ -124,7 +124,7 @@ internal sealed partial record ProviderDeclaration(
     public const int MaxId = 32;
 
     /// <summary>Ids that name something other than a provider declaration.</summary>
-    private static readonly string[] Reserved = ["cloud", "company-model", "local"];
+    private static readonly string[] Reserved = ["cloud", "company-model", "local", "key", "providers"];
 
     /// <summary>Header names a declaration cannot use for the key: the ones the request itself needs.</summary>
     private static readonly string[] ForbiddenHeaders = ["host", "content-length", "content-type", "transfer-encoding", "connection", "accept"];

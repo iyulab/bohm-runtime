@@ -75,8 +75,11 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/edit/model</c></term><description>The model proposals are made with: <c>{ provider, model, missing }</c> — no provider for the model on this computer (the default); <c>missing</c> says what must be connected first.</description></item>
 /// <item><term><c>PUT /__control/edit/model</c></term><description>Chooses a connected provider's model for proposals, from <c>{ provider, model }</c>, and remembers it. The application's source then goes to that provider with each proposal, counted as sent. 400 for an unknown provider or no model name.</description></item>
 /// <item><term><c>DELETE /__control/edit/model</c></term><description>Goes back to the model on this computer.</description></item>
-/// <item><term><c>GET /__control/llm</c></term><description>AI providers, whether a key is connected (never the key) and what, without one, answers the provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or nothing.</description></item>
-/// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault.</description></item>
+/// <item><term><c>GET /__control/llm</c></term><description>AI providers — the built-in ones and the ones added — each with its <c>origin</c> (<c>built-in</c> · <c>added</c> · <c>policy</c>), the <c>api</c> format it speaks, whether it takes a key (<c>keyRequired</c>), whether it can be used now (<c>connected</c>: its key is connected, or it takes none — never the key) and its listed <c>models</c>; and what, without a key, answers a built-in provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or nothing.</description></item>
+/// <item><term><c>PUT /__control/llm/providers</c></term><description>Adds the provider the body declares (<c>{ id, name?, baseUrl, api, auth?, models? }</c>; formats <c>openai-chat</c> · <c>openai-responses</c> · <c>anthropic-messages</c> · <c>google-gemini</c>; a model may carry its own <c>api</c> and <c>path</c>), or replaces the one added under its id. 400 <c>invalid-provider</c> with the property that cannot be used (a key in the declaration is refused); 409 <c>built-in-provider</c> for a built-in provider's id.</description></item>
+/// <item><term><c>DELETE /__control/llm/providers/{provider}</c></term><description>Removes a provider that was added, with its key; answers the list. 404 for any other.</description></item>
+/// <item><term><c>POST /__control/llm/providers/{provider}/check</c></term><description>Asks the provider one short question in its declared format (<c>{ "model": "…" }</c>, or the first listed): <c>{ result, status, unreached }</c> — <c>ok</c>, <c>key-refused</c> (401 · 403), <c>not-found</c> (404 — often an address whose path is not where the format is served), <c>bad-request</c> (400 · 422), <c>refused</c>, <c>unreachable</c> (<c>host-not-found</c> · <c>connection-refused</c> · <c>no-answer</c>) or <c>no-key</c> (nothing was sent). Counted as sent to the provider's host.</description></item>
+/// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault. 409 for a provider declared as taking none.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
 /// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
@@ -1073,11 +1076,96 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["llm"]):
-                var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
-                await WriteAsync(response, LlmProviders.All
-                    .Select(p => ProviderViewOf(p, !string.IsNullOrEmpty(vault.Read(p.VaultName)), context.RequestServices))
-                    .ToList(), cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewsOf(context.RequestServices), cancel).ConfigureAwait(false);
                 break;
+
+            case ("PUT", ["llm", "providers"]):
+            {
+                var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
+                if (!ProviderDeclaration.TryParse(System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)),
+                        ProviderOrigin.Person, out var declared, out var declaredProblem))
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "invalid-provider", declaredProblem!).ConfigureAwait(false);
+                    break;
+                }
+
+                // A built-in provider's address is changed the way it always was (the gateway setting); a declaration under its id would
+                // leave what an application is relayed to and what the runtime's own calls reach apart.
+                if (ProviderDeclaration.BuiltIn.Any(b => b.Id == declared!.Id))
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status409Conflict, "built-in-provider",
+                        "id: that is a built-in provider's, choose another id").ConfigureAwait(false);
+                    break;
+                }
+
+                await providers.AddAsync(declared!, cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewOf(providers.ById(declared!.Id)!, context.RequestServices), cancel).ConfigureAwait(false);
+                break;
+            }
+
+            case ("DELETE", ["llm", "providers", var removeId]):
+            {
+                var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
+                if (ProviderDeclaration.BuiltIn.Any(b => b.Id == removeId) || !await providers.RemoveAsync(removeId, cancel).ConfigureAwait(false))
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                // Its key goes with it: a key kept for a provider that is no longer there is a secret nobody can see or reach.
+                context.RequestServices.GetRequiredService<ICredentialVault>().Delete($"llm/{removeId}");
+                await WriteAsync(response, ProviderViewsOf(context.RequestServices), cancel).ConfigureAwait(false);
+                break;
+            }
+
+            case ("POST", ["llm", "providers", var checkId, "check"]):
+            {
+                var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
+                if (providers.ById(checkId) is not { } checking)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                string? askedModel = null;
+                try
+                {
+                    var body = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
+                    if (body.Length > 0)
+                    {
+                        using var asked = JsonDocument.Parse(body);
+                        if (asked.RootElement.ValueKind == JsonValueKind.Object && asked.RootElement.TryGetProperty("model", out var named) && named.ValueKind == JsonValueKind.String)
+                            askedModel = named.GetString()?.Trim();
+                    }
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                var checkModel = string.IsNullOrEmpty(askedModel) ? (checking.Models.Count > 0 ? checking.Models[0] : null) : checking.Find(askedModel);
+                var checkModelId = checkModel?.Id ?? askedModel;
+                if (string.IsNullOrEmpty(checkModelId))
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "model-needed",
+                        "This provider lists no model: say which one to ask, as { \"model\": \"...\" }.").ConfigureAwait(false);
+                    break;
+                }
+
+                var checkKey = checking.Auth.Style == AuthStyle.None ? null : context.RequestServices.GetRequiredService<ICredentialVault>().Read(checking.VaultName);
+                if (checking.Auth.Style != AuthStyle.None && string.IsNullOrEmpty(checkKey))
+                {
+                    await WriteAsync(response, new ProviderCheck("no-key"), cancel).ConfigureAwait(false);
+                    break;
+                }
+
+                // The request leaves this computer: counted as sent to the provider's host, as its chat would be.
+                using var checkClient = new CountedAsSent(ProviderClients.Create(checking, checkModel, checkModelId, checkKey),
+                    context.RequestServices.GetRequiredService<Egress>(), checking.BaseUrl.Authority);
+                await WriteAsync(response, await ProviderCheck.RunAsync(checkClient, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+                break;
+            }
 
             case ("GET", ["llm", "company-model"]):
                 await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
@@ -1341,7 +1429,7 @@ internal static partial class ControlPlane
                 break;
 
             case ("PUT" or "DELETE", ["llm", var providerId, "key"]):
-                if (LlmProviders.ById(providerId) is not { } provider)
+                if (context.RequestServices.GetRequiredService<ProviderCatalog>().ById(providerId) is not { } provider)
                 {
                     response.StatusCode = StatusCodes.Status404NotFound;
                     break;
@@ -1354,6 +1442,13 @@ internal static partial class ControlPlane
                 }
                 else
                 {
+                    if (provider.Auth.Style == AuthStyle.None)
+                    {
+                        await ControlProblems.RefuseAsync(context, StatusCodes.Status409Conflict, "takes-no-key",
+                            "This provider is declared as taking no key.").ConfigureAwait(false);
+                        break;
+                    }
+
                     var key = System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
                     if (key.Length == 0)
                     {
@@ -1364,7 +1459,7 @@ internal static partial class ControlPlane
                     keys.Write(provider.VaultName, key);
                 }
 
-                await WriteAsync(response, ProviderViewOf(provider, request.Method != "DELETE", context.RequestServices), cancel).ConfigureAwait(false);
+                await WriteAsync(response, ProviderViewOf(provider, context.RequestServices), cancel).ConfigureAwait(false);
                 break;
 
             // The Bohm account — signing in at the identity service the cloud names, and out: only when the runtime was given
@@ -2295,15 +2390,38 @@ internal static partial class ControlPlane
     internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped = null,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
 
-    private static ProviderView ProviderViewOf(LlmProvider provider, bool connected, IServiceProvider services) =>
-        new(provider.Id, provider.DisplayName, provider.Host, connected,
-            connected || !ChatBridges.AnswersChat(provider) ? null
+    /// <summary>Every provider to choose from — the built-in ones and the ones added.</summary>
+    private static List<ProviderView> ProviderViewsOf(IServiceProvider services) =>
+        services.GetRequiredService<ProviderCatalog>().All.Select(p => ProviderViewOf(p, services)).ToList();
+
+    private static ProviderView ProviderViewOf(ProviderDeclaration provider, IServiceProvider services)
+    {
+        // A provider that takes no key is usable as it stands; one that takes a key is, once the key is connected.
+        var keyRequired = provider.Auth.Style != AuthStyle.None;
+        var connected = !keyRequired || !string.IsNullOrEmpty(services.GetRequiredService<ICredentialVault>().Read(provider.VaultName));
+        // What answers an application's request for a built-in provider with no key — a provider the application cannot name has no such request.
+        var answeredBy = connected || LlmProviders.ById(provider.Id) is not { } known || !ChatBridges.AnswersChat(known) ? null
             : services.GetRequiredService<CompanyModel>().Configured ? "company"
             : services.GetRequiredService<LocalModel>().Configured ? "local"
-            : null);
+            : null;
+        return new(provider.Id, provider.Name, provider.BaseUrl.Authority, connected, answeredBy,
+            provider.Origin switch { ProviderOrigin.BuiltIn => "built-in", ProviderOrigin.Policy => "policy", _ => "added" },
+            ProviderApis.NameOf(provider.Api), keyRequired,
+            provider.Models.Select(m => new ProviderModelView(m.Id, m.Name, m.Api is { } own ? ProviderApis.NameOf(own) : null, m.Path,
+                m.Limits.ContextWindow, m.Limits.MaxOutputTokens, m.Limits.Reasoning, m.Input)).ToList());
+    }
 
+    /// <param name="Host">The address the provider's requests go to (host, and the port when it is not the scheme's).</param>
+    /// <param name="Connected">Whether it can be used now: its key is connected, or it takes none.</param>
     /// <param name="AnsweredBy">What, with no key connected, answers this provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or <see langword="null"/> (nothing — the application is told to connect a key).</param>
-    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy);
+    /// <param name="Origin"><c>built-in</c>, <c>added</c> (by the person) or <c>policy</c> (listed by whoever administers this computer).</param>
+    /// <param name="Api">The format it speaks (<see cref="ProviderApis"/>).</param>
+    /// <param name="KeyRequired">Whether it takes a key.</param>
+    /// <param name="Models">The models its declaration lists — none for a provider whose model the person names.</param>
+    internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy,
+        string Origin, string Api, bool KeyRequired, IReadOnlyList<ProviderModelView> Models);
+
+    internal sealed record ProviderModelView(string Id, string? Name, string? Api, string? Path, int? ContextWindow, int? MaxTokens, bool? Reasoning, IReadOnlyList<string>? Input);
 
     /// <summary>
     /// The Bohm account: the cloud's host, whether someone is signed in, and its credits — or why they could not be told
@@ -2415,6 +2533,8 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(Edit.EditModelMissing))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ProviderCheck))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudAccountView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudSignInView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CloudLinkView))]
