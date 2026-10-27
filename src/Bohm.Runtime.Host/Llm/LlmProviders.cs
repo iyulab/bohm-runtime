@@ -29,15 +29,8 @@ internal sealed record LlmProvider(string Id, string Host, string DisplayName, K
 
 internal static class LlmProviders
 {
-    public static readonly IReadOnlyList<LlmProvider> All =
-    [
-        new("openai", "api.openai.com", "OpenAI", KeyStyle.Bearer, "v1/"),
-        new("anthropic", "api.anthropic.com", "Anthropic", KeyStyle.ApiKeyHeader, "v1/"),
-        new("google", "generativelanguage.googleapis.com", "Google Gemini", KeyStyle.Google, "v1beta/openai/"),
-        new("groq", "api.groq.com", "Groq", KeyStyle.Bearer, "openai/v1/"),
-        new("openrouter", "openrouter.ai", "OpenRouter", KeyStyle.Bearer, "api/v1/"),
-        new("mistral", "api.mistral.ai", "Mistral", KeyStyle.Bearer, "v1/"),
-    ];
+    /// <summary>The providers shipped with the runtime — derived from <see cref="ProviderDeclaration.BuiltIn"/>, which is where one is added.</summary>
+    public static IReadOnlyList<LlmProvider> All => ProviderDeclaration.BuiltInForApps;
 
     public static LlmProvider? ByHost(string host) => All.FirstOrDefault(p => string.Equals(p.Host, host, StringComparison.OrdinalIgnoreCase));
 

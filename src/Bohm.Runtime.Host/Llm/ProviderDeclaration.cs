@@ -378,19 +378,31 @@ internal sealed partial record ProviderDeclaration(
     }
 
     /// <summary>
-    /// The providers the runtime ships with, in the same shape as any other. Their models are not listed:
-    /// the person names the model, as before.
+    /// The providers the runtime ships with, each as the declaration the runtime's own client is built from and as the
+    /// <see cref="LlmProvider"/> an application's relayed request is matched to (by host). One list, so a provider is
+    /// added in one place.
     /// </summary>
-    public static IReadOnlyList<ProviderDeclaration> BuiltIn { get; } =
+    private static readonly (ProviderDeclaration Declaration, LlmProvider ForApps)[] Shipped =
     [
-        Built("openai", "OpenAI", "https://api.openai.com/v1/", ProviderApi.OpenAIResponses, ProviderAuth.Bearer),
-        Built("anthropic", "Anthropic", "https://api.anthropic.com/", ProviderApi.AnthropicMessages, ProviderAuth.Bearer),
-        Built("google", "Google Gemini", "https://generativelanguage.googleapis.com/", ProviderApi.GoogleGemini, new ProviderAuth(AuthStyle.Google)),
-        Built("groq", "Groq", "https://api.groq.com/openai/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer),
-        Built("openrouter", "OpenRouter", "https://openrouter.ai/api/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer),
-        Built("mistral", "Mistral", "https://api.mistral.ai/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer),
+        Ship("openai", "OpenAI", "https://api.openai.com/v1/", ProviderApi.OpenAIResponses, ProviderAuth.Bearer, KeyStyle.Bearer, "v1/"),
+        Ship("anthropic", "Anthropic", "https://api.anthropic.com/", ProviderApi.AnthropicMessages, ProviderAuth.Bearer, KeyStyle.ApiKeyHeader, "v1/"),
+        Ship("google", "Google Gemini", "https://generativelanguage.googleapis.com/", ProviderApi.GoogleGemini, new ProviderAuth(AuthStyle.Google), KeyStyle.Google, "v1beta/openai/"),
+        Ship("groq", "Groq", "https://api.groq.com/openai/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer, KeyStyle.Bearer, "openai/v1/"),
+        Ship("openrouter", "OpenRouter", "https://openrouter.ai/api/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer, KeyStyle.Bearer, "api/v1/"),
+        Ship("mistral", "Mistral", "https://api.mistral.ai/v1/", ProviderApi.OpenAIChat, ProviderAuth.Bearer, KeyStyle.Bearer, "v1/"),
     ];
 
-    private static ProviderDeclaration Built(string id, string name, string address, ProviderApi api, ProviderAuth auth) =>
-        new(id, name, new Uri(address), api, auth, [], ProviderOrigin.BuiltIn);
+    /// <summary>The providers the runtime ships with, in the same shape as any other. Their models are not listed: the person names the model.</summary>
+    public static IReadOnlyList<ProviderDeclaration> BuiltIn { get; } = Shipped.Select(s => s.Declaration).ToList();
+
+    /// <summary>The same providers as an application's relayed requests see them: how the key is carried and where OpenAI-shaped chat is answered.</summary>
+    internal static IReadOnlyList<LlmProvider> BuiltInForApps { get; } = Shipped.Select(s => s.ForApps).ToList();
+
+    /// <param name="appStyle">How an application's own request carries the key — not what the runtime's client sends (Anthropic's SDK presents it as a bearer).</param>
+    /// <param name="appChatPath">Where, on the provider's host, it answers OpenAI-shaped chat requests.</param>
+    private static (ProviderDeclaration, LlmProvider) Ship(string id, string name, string address, ProviderApi api, ProviderAuth auth, KeyStyle appStyle, string appChatPath)
+    {
+        var baseUrl = new Uri(address);
+        return (new ProviderDeclaration(id, name, baseUrl, api, auth, [], ProviderOrigin.BuiltIn), new LlmProvider(id, baseUrl.Host, name, appStyle, appChatPath));
+    }
 }

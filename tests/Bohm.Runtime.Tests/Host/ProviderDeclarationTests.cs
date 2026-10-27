@@ -134,19 +134,32 @@ public sealed class ProviderDeclarationTests
     }
 
     [Fact]
-    public void The_built_in_providers_are_declarations_that_match_the_hosts_the_runtime_routes_by()
+    public void The_providers_an_application_is_matched_to_are_the_built_in_declarations()
     {
-        // Until the host-keyed list is derived from the declarations, the two must not drift apart.
-        Assert.Equal(LlmProviders.All.Select(p => p.Id), ProviderDeclaration.BuiltIn.Select(d => d.Id));
-        foreach (var known in LlmProviders.All)
+        // One list: LlmProviders is derived from the declarations, so the hosts the runtime routes an application's request by
+        // are the declared hosts, and a provider is added in one place.
+        Assert.Equal(ProviderDeclaration.BuiltIn.Select(d => d.Id), LlmProviders.All.Select(p => p.Id));
+        foreach (var declared in ProviderDeclaration.BuiltIn)
         {
-            var declared = ProviderDeclaration.BuiltIn.Single(d => d.Id == known.Id);
-            Assert.Equal(known.Host, declared.BaseUrl.Host);
-            Assert.Equal(known.VaultName, declared.VaultName);
+            var known = LlmProviders.ById(declared.Id)!;
+            Assert.Equal(declared.BaseUrl.Host, known.Host);
+            Assert.Equal(declared.Name, known.DisplayName);
+            Assert.Equal(declared.VaultName, known.VaultName);
             Assert.Equal(ProviderOrigin.BuiltIn, declared.Origin);
-            // (How a key is presented to the provider is not compared: LlmProviders.Style is how an application's own relayed
-            // request carries it, which differs from what the runtime's own client sends — Anthropic's SDK presents it as a bearer.)
         }
+
+        // What an application sees is pinned, since the derivation must not change it: the host, how its own request carries the key
+        // (not what the runtime's client sends — Anthropic's SDK presents it as a bearer) and where OpenAI-shaped chat is answered.
+        Assert.Equal(
+            [
+                ("openai", "api.openai.com", KeyStyle.Bearer, "v1/"),
+                ("anthropic", "api.anthropic.com", KeyStyle.ApiKeyHeader, "v1/"),
+                ("google", "generativelanguage.googleapis.com", KeyStyle.Google, "v1beta/openai/"),
+                ("groq", "api.groq.com", KeyStyle.Bearer, "openai/v1/"),
+                ("openrouter", "openrouter.ai", KeyStyle.Bearer, "api/v1/"),
+                ("mistral", "api.mistral.ai", KeyStyle.Bearer, "v1/"),
+            ],
+            LlmProviders.All.Select(p => (p.Id, p.Host, p.Style, p.OpenAICompatiblePath)));
 
         // The format the runtime already uses for each: OpenAI over Responses, Anthropic over Messages, Google over Gemini, the rest over Chat.
         Assert.Equal(
