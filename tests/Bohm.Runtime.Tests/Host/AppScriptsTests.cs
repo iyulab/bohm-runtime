@@ -153,5 +153,57 @@ public sealed class AppScriptsTests
 
         Assert.Empty(AppScripts.Unfinished(before, after));
     }
-}
 
+    // A page that wraps its script in a function keeps its functions out of the global scope, where an event handler attribute looks.
+    private const string Wrapped = "<button id=\"go\">Go</button>\n<script>(function () {\n  function generate() { document.title = 'x'; }\n  document.getElementById('go').addEventListener('click', generate);\n})();</script>";
+
+    [Fact]
+    public void A_handler_attribute_that_calls_a_function_kept_inside_another_function_is_reported()
+    {
+        // Measured: a small model added onclick="confirmGenerate()" to a page whose whole script is one function; the button threw when pressed.
+        var after = Wrapped.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal);
+        var problem = Assert.Single(AppScripts.Unfinished(Wrapped, after));
+        Assert.Contains("calls generate", problem, StringComparison.Ordinal);
+        Assert.Contains("cannot see it", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_handler_attribute_that_calls_a_global_function_is_not_reported()
+    {
+        const string Plain = "<button id=\"go\">Go</button>\n<script>function generate() { document.title = 'x'; }</script>";
+        Assert.Empty(AppScripts.Unfinished(Plain, Plain.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal)));
+        // A top-level const arrow and a class are global to attributes too.
+        const string Lexical = "<button id=\"go\">Go</button>\n<script>const generate = () => { document.title = 'x'; };</script>";
+        Assert.Empty(AppScripts.Unfinished(Lexical, Lexical.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void A_function_put_on_the_window_inside_a_wrapper_is_reachable_from_a_handler_attribute()
+    {
+        var exposed = Wrapped.Replace("function generate() { document.title = 'x'; }", "function generate() { document.title = 'x'; }\n  window.generate = generate;", StringComparison.Ordinal);
+        Assert.Empty(AppScripts.Unfinished(exposed, exposed.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void A_module_script_does_not_make_its_functions_global()
+    {
+        const string Module = "<button id=\"go\">Go</button>\n<script type=\"module\">function generate() { document.title = 'x'; }</script>";
+        var problem = Assert.Single(AppScripts.Unfinished(Module, Module.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal)));
+        Assert.Contains("calls generate", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_handler_that_already_called_a_hidden_function_before_the_change_is_not_the_changes_fault()
+    {
+        var before = Wrapped.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"generate()\">", StringComparison.Ordinal);
+        Assert.Empty(AppScripts.Unfinished(before, before.Replace("Go", "Generate", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void A_handlers_own_variables_and_the_browsers_names_are_not_taken_for_hidden_functions()
+    {
+        // `event`, a name the handler declares itself, and an element id are all reachable.
+        var after = Wrapped.Replace("<button id=\"go\">", "<button id=\"go\" onclick=\"var n = event.target; confirm(n.id); go.blur()\">", StringComparison.Ordinal);
+        Assert.Empty(AppScripts.Unfinished(Wrapped, after));
+    }
+}

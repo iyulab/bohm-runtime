@@ -79,65 +79,83 @@ internal static partial class AppScripts
     /// the page never has. Only what <paramref name="after"/> lacks and <paramref name="before"/> did not already lack — a
     /// change made in several replacements where one missed (the button added, its function not) leaves exactly this, and
     /// the page fails only when the person presses it. Read by name, not by scope: a name defined anywhere counts as defined,
-    /// so this misses some faults and invents none a browser would not also hit.
+    /// so this misses some faults and invents none a browser would not also hit. One scope is read, because an event handler
+    /// attribute sees only what is global: a function the script keeps inside another function (the whole page wrapped in
+    /// <c>(function () { … })()</c>, say) is not reachable from <c>onclick="name()"</c>, and the page throws when it is pressed.
     /// </summary>
     internal static List<string> Unfinished(string before, string after)
     {
         var broken = SyntaxProblems(after);
         if (broken.Count > SyntaxProblems(before).Count) return broken;
 
-        var (namesBefore, idsBefore) = Missing(before);
-        var (names, ids) = Missing(after);
+        var (namesBefore, idsBefore, hiddenBefore) = Missing(before);
+        var (names, ids, hidden) = Missing(after);
         var problems = new List<string>();
         foreach (var name in names.Where(n => !namesBefore.Contains(n)))
             problems.Add($"The page uses {name} but nothing defines it — no function, variable or element id of that name. Define it, or use what is there.");
+        foreach (var name in hidden.Where(n => !hiddenBefore.Contains(n)))
+            problems.Add($"An event handler attribute calls {name}, but {name} is declared inside another function (or a module), where an attribute cannot see it, so it throws when pressed. Attach the handler with addEventListener in the same script, or assign it to window.");
         foreach (var id in ids.Where(i => !idsBefore.Contains(i)))
             problems.Add($"The page looks up the element with id \"{id}\" but no element has that id. Add the element, or use the id it has.");
         return problems;
     }
 
-    private static (SortedSet<string> Names, SortedSet<string> Ids) Missing(string html)
+    private static (SortedSet<string> Names, SortedSet<string> Ids, SortedSet<string> Hidden) Missing(string html)
     {
         var declared = new HashSet<string>(StringComparer.Ordinal);
         var called = new HashSet<string>(StringComparer.Ordinal);
         var looked = new HashSet<string>(StringComparer.Ordinal);
+        var globals = new HashSet<string>(StringComparer.Ordinal);
+        var fromHandlers = new HashSet<string>(StringComparer.Ordinal);
         foreach (var code in Code(html))
         {
             Node program;
             try { program = code.Module ? new Parser(Options).ParseModule(code.Text) : new Parser(Options).ParseScript(code.Text); }
             catch (ParseErrorException) { continue; }
-            Walk(program, declared, called, looked);
+            // A module's top level is not global: start inside a scope, so only window.name = … makes a name global there.
+            Walk(program, declared, called, looked, globals, code.Module ? 1 : 0);
+            if (code.Handler)
+            {
+                var own = new HashSet<string>(StringComparer.Ordinal);
+                var read = new HashSet<string>(StringComparer.Ordinal);
+                Walk(program, own, read, new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal), 0);
+                fromHandlers.UnionWith(read.Where(n => !own.Contains(n)));
+            }
         }
 
         // An element's id is a global name in a browser (window.<id>), and an id written anywhere — markup, or a script
         // that builds markup or sets .id — counts as the page having it.
         var ids = new HashSet<string>(IdAttribute().Matches(html).Select(m => m.Groups["id"].Value), StringComparer.Ordinal);
         var names = new SortedSet<string>(called.Where(n => !declared.Contains(n) && !ids.Contains(n) && !BrowserGlobals.Contains(n)), StringComparer.Ordinal);
-        return (names, new SortedSet<string>(looked.Where(i => !ids.Contains(i)), StringComparer.Ordinal));
+        // Declared, but only where a handler attribute cannot reach: not global, not an element id, not the browser's own.
+        var hidden = new SortedSet<string>(fromHandlers.Where(n => declared.Contains(n) && !globals.Contains(n) && !ids.Contains(n) && !BrowserGlobals.Contains(n)), StringComparer.Ordinal);
+        return (names, new SortedSet<string>(looked.Where(i => !ids.Contains(i)), StringComparer.Ordinal), hidden);
     }
 
     // Inline scripts in JavaScript, and each inline event handler (onclick="…") read as the body of a function.
-    private static IEnumerable<(string Text, bool Module)> Code(string html)
+    private static IEnumerable<(string Text, bool Module, bool Handler)> Code(string html)
     {
         foreach (Match script in InlineScript().Matches(html))
         {
             var attributes = script.Groups["attrs"].Value;
             if (SourceAttribute().IsMatch(attributes)) continue;
             var type = TypeAttribute().Match(attributes) is { Success: true } t ? t.Groups["type"].Value.Trim().ToLowerInvariant() : "";
-            if (type == "module") yield return (script.Groups["body"].Value, true);
-            else if (type is "" or "text/javascript" or "application/javascript" or "text/ecmascript" or "application/ecmascript") yield return (script.Groups["body"].Value, false);
+            if (type == "module") yield return (script.Groups["body"].Value, true, false);
+            else if (type is "" or "text/javascript" or "application/javascript" or "text/ecmascript" or "application/ecmascript") yield return (script.Groups["body"].Value, false, false);
         }
 
         foreach (Match handler in EventHandler().Matches(html))
-            yield return ("function handler(event) {\n" + System.Net.WebUtility.HtmlDecode(handler.Groups["code"].Value) + "\n}", false);
+            yield return ("function handler(event) {\n" + System.Net.WebUtility.HtmlDecode(handler.Groups["code"].Value) + "\n}", false, true);
     }
 
-    private static void Walk(Node node, HashSet<string> declared, HashSet<string> called, HashSet<string> looked)
+    // `globals` collects the names a handler attribute can reach: declared outside any function in a classic script, or put
+    // on the window. `depth` is how many functions deep the node is (a module starts inside one).
+    private static void Walk(Node node, HashSet<string> declared, HashSet<string> called, HashSet<string> looked, HashSet<string> globals, int depth)
     {
         switch (node)
         {
             case FunctionDeclaration f:
-                if (f.Id is { } name) declared.Add(name.Name);
+                if (f.Id is { } name) { declared.Add(name.Name); if (depth == 0) globals.Add(name.Name); }
                 foreach (var p in f.Params) Bind(p, declared);
                 break;
             case FunctionExpression f:
@@ -149,17 +167,20 @@ internal static partial class AppScripts
                 break;
             case ClassDeclaration { Id: { } type }:
                 declared.Add(type.Name);
+                if (depth == 0) globals.Add(type.Name);
                 break;
             case VariableDeclarator v:
                 Bind(v.Id, declared);
+                if (depth == 0) Bind(v.Id, globals);
                 break;
             case CatchClause c when c.Param is { } p:
                 Bind(p, declared);
                 break;
             case AssignmentExpression a:
                 // name = … and window.name = … make a global
-                if (a.Left is Identifier i) declared.Add(i.Name);
-                else if (a.Left is MemberExpression { Object: Identifier { Name: "window" or "globalThis" or "self" }, Property: Identifier p, Computed: false }) declared.Add(p.Name);
+                // (a bare name = … is taken as global wherever it is — an undeclared one is — which can only hide a fault, never invent one)
+                if (a.Left is Identifier i) { declared.Add(i.Name); globals.Add(i.Name); }
+                else if (a.Left is MemberExpression { Object: Identifier { Name: "window" or "globalThis" or "self" }, Property: Identifier p, Computed: false }) { declared.Add(p.Name); globals.Add(p.Name); }
                 break;
             case CallExpression call:
                 if (call.Callee is MemberExpression { Property: Identifier { Name: var method }, Computed: false }
@@ -189,7 +210,7 @@ internal static partial class AppScripts
                     _ => false,
                 })
                 continue;
-            Walk(child, declared, called, looked);
+            Walk(child, declared, called, looked, globals, node is FunctionDeclaration or FunctionExpression or ArrowFunctionExpression ? depth + 1 : depth);
         }
     }
 
