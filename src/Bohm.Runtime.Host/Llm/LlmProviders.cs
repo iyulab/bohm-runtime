@@ -24,7 +24,7 @@ internal enum KeyStyle
 /// </param>
 internal sealed record LlmProvider(string Id, string Host, string DisplayName, KeyStyle Style, string OpenAICompatiblePath)
 {
-    public string VaultName => $"llm/{Id}";
+    public string VaultName => ProviderDeclaration.VaultNameOf(Id);
 }
 
 internal static class LlmProviders

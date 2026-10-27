@@ -132,8 +132,11 @@ internal sealed partial record ProviderDeclaration(
     /// <summary>Properties that would hold a key. A key does not belong in a declaration, so one that has it is refused rather than quietly kept.</summary>
     private static readonly string[] KeyProperties = ["apikey", "api_key", "key", "token", "secret", "password"];
 
+    /// <summary>Where the key of provider <paramref name="id"/> is kept in the vault.</summary>
+    public static string VaultNameOf(string id) => $"llm/{id}";
+
     /// <summary>Where this provider's key is kept in the vault.</summary>
-    public string VaultName => $"llm/{Id}";
+    public string VaultName => VaultNameOf(Id);
 
     /// <summary>The format <paramref name="model"/> is spoken in.</summary>
     public ProviderApi ApiOf(DeclaredModel model) => model.Api ?? Api;
