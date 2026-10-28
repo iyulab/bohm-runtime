@@ -2,8 +2,8 @@ using System.Text.Json;
 using Bohm.Runtime.Host;
 using Bohm.Runtime.Host.Agent;
 using Bohm.Runtime.Host.Llm;
-using Bohm.Runtime.Host.Promotion;
 using Microsoft.Extensions.AI;
+using Bohm.Runtime.Host.Extensions;
 
 namespace Bohm.Runtime.Tests.Host;
 

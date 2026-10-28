@@ -448,7 +448,7 @@ internal sealed partial class CompanyModel : IDisposable
                 .ToList();
             return new(CheckResult.Answers, null, models);
         }
-        catch (Exception e) when (!cancellationToken.IsCancellationRequested && Edit.ProviderRefusal.Of(e) is { Status: > 0 } refused)
+        catch (Exception e) when (!cancellationToken.IsCancellationRequested && Llm.ProviderRefusal.Of(e) is { Status: > 0 } refused)
         {
             // The server answered with a refusal — read the way every other refusal is, whatever the provider layer raised for it.
             // Before «unreachable»: a listing refusal is an HttpRequestException too (the provider's own exception, with its status).

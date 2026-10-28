@@ -117,7 +117,7 @@ internal static class WebAgent
     /// An MCP server's tool as the page tools are declared — with no implementation: the caller asks the person, then has the runtime
     /// make the call (<c>POST /__control/agent/mcp</c>).
     /// </summary>
-    private static AIFunctionDeclaration McpDeclaration(Promotion.McpTool tool) =>
+    private static AIFunctionDeclaration McpDeclaration(Extensions.McpTool tool) =>
         AIFunctionFactory.CreateDeclaration(tool.Function.Name, tool.Function.Description, tool.Function.JsonSchema);
 
     /// <summary>A tool the conversation called that is not offered now (its server turned off or gone): declared so the conversation stays valid.</summary>
@@ -271,7 +271,7 @@ internal static class WebAgent
     /// </param>
     /// <param name="now">This computer's time when the turn starts, told the model (<see cref="Now"/>): a model on the organization's server or on this computer is told the date by nothing else, and «today», «this week» or a date field on a page then gets the date it was trained on.</param>
     /// <param name="skills">
-    /// The person's own skills the model may read (<see cref="Promotion.AppSkills.UserConfig"/>) — not given to the model on
+    /// The person's own skills the model may read (<see cref="Extensions.AppSkills.UserConfig"/>) — not given to the model on
     /// this computer, as for proposals. Their names and descriptions go into the instructions and <c>load_skill</c> is
     /// declared; what a call to it reads is the skill itself, read here each turn — never what the caller sent back.
     /// </param>
@@ -281,7 +281,7 @@ internal static class WebAgent
     /// </param>
     /// <param name="sees">Whether the model takes pictures in (<see cref="Llm.ImageInput"/>): <c>look</c> is declared only then.</param>
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
-        DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null, IReadOnlyList<Promotion.McpTool>? mcp = null,
+        DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null, IReadOnlyList<Extensions.McpTool>? mcp = null,
         bool sees = false)
     {
         var systemPrompt = SystemPrompt + "\n" + Now(now);
@@ -308,7 +308,7 @@ internal static class WebAgent
             systemPrompt += "\n" + McpNote;
         }
         // An MCP tool the conversation called that is not offered now stays declared (some providers refuse calls to undeclared tools).
-        tools.AddRange(called.Where(n => n.StartsWith(Promotion.McpTool.Prefix, StringComparison.Ordinal) && servers.All(t => t.Function.Name != n)).Order(StringComparer.Ordinal).Select(GoneDeclaration));
+        tools.AddRange(called.Where(n => n.StartsWith(Extensions.McpTool.Prefix, StringComparison.Ordinal) && servers.All(t => t.Function.Name != n)).Order(StringComparer.Ordinal).Select(GoneDeclaration));
         if (last) conversation = [.. conversation, new ChatMessage(ChatRole.User, LastRoundNote)];
         // The declared tools have no implementation, so the invoker stops at them and returns the calls.
         // As for proposals, inside it: no thinking unless asked — read for each request, so thinking seen
@@ -398,7 +398,7 @@ internal static class WebAgent
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName, Usage: use)
-            : new("done", text ?? "", [], modelName, cutShort ? Edit.ProposalFailedException.OutputLimit : null, use);
+            : new("done", text ?? "", [], modelName, cutShort ? Llm.ProposalFailedException.OutputLimit : null, use);
     }
 
     /// <summary>A page text shorter than this is not worth cutting.</summary>

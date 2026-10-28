@@ -1,13 +1,13 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Bohm.Runtime.Host.Edit;
 using IronHive.Agent.Mode;
 using IronHive.Agent.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Bohm.Runtime.Host.Llm;
 
-namespace Bohm.Runtime.Host.Promotion;
+namespace Bohm.Runtime.Host.Extensions;
 
 /// <summary>
 /// The tools of the MCP servers the person connected, for one request of the AI that makes or changes an application, with

@@ -1,11 +1,12 @@
 using LocalOrigin.Storage;
 using Bohm.Runtime;
-using Bohm.Runtime.Host.Promotion;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Bohm.Runtime.Host.Llm;
+using Bohm.Runtime.Host.Extensions;
 
 namespace Bohm.Runtime.Tests.Host;
 
@@ -106,29 +107,6 @@ public sealed class ControlPlaneTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.Conflict, none);
     }
 
-    [Fact]
-    public async Task Skills_are_listed_and_turned_off_and_on_through_the_control_api()
-    {
-        using var client = _host.ControlClient();
-        async Task<JsonElement> ListAsync() => JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement;
-
-        var listed = await ListAsync();
-        Assert.Equal(Path.Combine(_host.DataRoot, "skills"), listed.GetProperty("skillsFolder").GetString());
-        var printable = listed.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("name").GetString() == "printable-page");
-        Assert.Equal("skill", printable.GetProperty("kind").GetString());
-        Assert.True(printable.GetProperty("builtin").GetBoolean());
-        Assert.True(printable.GetProperty("enabled").GetBoolean());
-
-        using (var off = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("false")))
-            HttpAssert.Status(HttpStatusCode.NoContent, off);
-        Assert.False((await ListAsync()).GetProperty("items").EnumerateArray().Single(i => i.GetProperty("name").GetString() == "printable-page").GetProperty("enabled").GetBoolean());
-        using (var on = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("true")))
-            HttpAssert.Status(HttpStatusCode.NoContent, on);
-        using (var unknown = await client.PutAsync("/__control/extensions/skill/no-such-skill/enabled", new StringContent("true")))
-            HttpAssert.Status(HttpStatusCode.NotFound, unknown);
-        using (var bad = await client.PutAsync("/__control/extensions/skill/printable-page/enabled", new StringContent("\"yes\"")))
-            HttpAssert.Status(HttpStatusCode.BadRequest, bad);
-    }
 
     /// <summary>The stdio MCP server the tests start (<c>tests/Bohm.Runtime.McpStub</c>, built beside this assembly in the same configuration).</summary>
     private static string McpStubPath()
@@ -397,57 +375,6 @@ public sealed class ControlPlaneTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.NotFound, forServer);   // an answer — for a question nobody asked
     }
 
-    [Fact]
-    public async Task A_skill_the_person_approved_is_written_checked_and_listed_and_one_that_would_not_be_used_never_lands()
-    {
-        using var client = _host.ControlClient();
-        Task<HttpResponseMessage> AddAsync(string name, string description, string instructions) =>
-            client.PostAsync("/__control/extensions/skill", new StringContent(JsonSerializer.Serialize(new { name, description, instructions })));
-        string? Refusal(HttpResponseMessage r) => JsonDocument.Parse(r.Content.ReadAsStringAsync().Result).RootElement.GetProperty("reason").GetString();
-
-        // A description with a colon, quotes and a line break still makes valid frontmatter.
-        using (var added = await AddAsync("house-style", "Use for every app: \"our\" colors\nand the logo #1.", "# House style\n\nUse navy and white."))
-        {
-            HttpAssert.Status(HttpStatusCode.Created, added);
-            var item = JsonDocument.Parse(await added.Content.ReadAsStringAsync()).RootElement;
-            Assert.Equal("house-style", item.GetProperty("name").GetString());
-            Assert.Equal("Use for every app: \"our\" colors and the logo #1.", item.GetProperty("description").GetString());
-            Assert.False(item.GetProperty("builtin").GetBoolean());
-        }
-        var file = Path.Combine(_host.DataRoot, "skills", "house-style", "SKILL.md");
-        Assert.EndsWith("# House style\n\nUse navy and white.\n", File.ReadAllText(file), StringComparison.Ordinal);
-        Assert.Contains(JsonDocument.Parse(await client.GetStringAsync("/__control/extensions")).RootElement.GetProperty("items").EnumerateArray(),
-            i => i.GetProperty("name").GetString() == "house-style" && i.GetProperty("problem").ValueKind == JsonValueKind.Null);
-
-        using (var again = await AddAsync("house-style", "Another.", "Other text."))
-            HttpAssert.Status(HttpStatusCode.Conflict, again);
-        using (var builtin = await AddAsync("printable-page", "Mine.", "Mine."))
-            HttpAssert.Status(HttpStatusCode.Conflict, builtin);
-        using (var shape = await AddAsync("House Style", "A name out of the format.", "Text."))
-        {
-            HttpAssert.Status(HttpStatusCode.BadRequest, shape);
-            Assert.Equal("name", Refusal(shape));
-        }
-        using (var escape = await AddAsync("../outside", "A name that is a path.", "Text."))
-        {
-            HttpAssert.Status(HttpStatusCode.BadRequest, escape);
-            Assert.Equal("name", Refusal(escape));
-        }
-        using (var noDescription = await AddAsync("no-description", " ", "Text."))
-        {
-            HttpAssert.Status(HttpStatusCode.BadRequest, noDescription);
-            Assert.Equal("description", Refusal(noDescription));
-        }
-        using (var empty = await AddAsync("empty-skill", "Nothing in it.", "  "))
-        {
-            HttpAssert.Status(HttpStatusCode.BadRequest, empty);
-            Assert.Equal("instructions", Refusal(empty));
-        }
-        // Nothing refused landed, and nothing is left beside the skills folder.
-        Assert.Equal(["house-style"], Directory.GetDirectories(Path.Combine(_host.DataRoot, "skills")).Select(Path.GetFileName));
-        Assert.Empty(Directory.GetDirectories(_host.DataRoot, "skills-adding-*"));
-        Assert.False(Directory.Exists(Path.Combine(_host.DataRoot, "outside")));
-    }
 
     [Fact]
     public async Task Kept_records_are_merged_with_those_written_since_and_given_back_through_the_control_api()

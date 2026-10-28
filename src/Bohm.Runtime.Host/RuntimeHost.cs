@@ -50,7 +50,7 @@ public sealed record RuntimeHostOptions
     /// review goes to the model that polishes it. Asked with the provider's connected key; when the key is missing or
     /// the review cannot be had, the application is polished without one. <see langword="null"/> (the default): no review.
     /// </summary>
-    internal Edit.EditModelChoice? ReviewModel { get; init; }
+    internal Llm.EditModelChoice? ReviewModel { get; init; }
 
     /// <summary>
     /// The base address of the Bohm cloud, whose account pays for a model with its credits (<see cref="Llm.CloudAccount"/>).
@@ -221,11 +221,15 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.CompanyModel>();
         builder.Services.AddSingleton<Llm.CloudAccount>();
         builder.Services.AddSingleton<Llm.ProviderCatalog>();
-        builder.Services.AddSingleton<Edit.EditModel>();
-        builder.Services.AddSingleton<Promotion.AppSkills>();
-        builder.Services.AddSingleton<Promotion.AppMcp>();
-        builder.Services.AddSingleton<Promotion.ApprovalBook>();
-        builder.Services.AddSingleton<Edit.AgentModel>();
+        builder.Services.AddSingleton<Llm.EditModel>();
+        // The authoring layer is the desktop application's: it ships beside the runtime and is found by name. A runtime
+        // run on its own has none, and answers the authoring routes 501.
+        if (Extensions.AuthoringModuleLoader.Load(warn: message => Console.Error.WriteLine(message)) is { } authoring)
+            builder.Services.AddSingleton(authoring);
+        builder.Services.AddSingleton<Extensions.AppSkills>();
+        builder.Services.AddSingleton<Extensions.AppMcp>();
+        builder.Services.AddSingleton<Extensions.ApprovalBook>();
+        builder.Services.AddSingleton<Llm.AgentModel>();
         builder.Services.AddSingleton<Llm.ImageInput>();
         // Every endpoint needs a registered caller unless it is named open; the shell is the only one.
         var callers = new LoopbackCredentials();

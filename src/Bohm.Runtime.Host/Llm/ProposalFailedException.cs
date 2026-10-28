@@ -1,6 +1,6 @@
 using IronHive.Agent.Loop;
 
-namespace Bohm.Runtime.Host.Edit;
+namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
 /// A proposal — a change to an application or a new one — could not be made: the model proposed none

@@ -397,7 +397,7 @@ internal static partial class ControlPlane
                 // What the caller shows the person before a web question's call to an MCP tool: whose tool, what the server says it does.
                 var tool = await McpToolNamedAsync(context, context.Request.Query["name"].ToString(), cancel).ConfigureAwait(false);
                 if (tool is null) { response.StatusCode = StatusCodes.Status404NotFound; break; }
-                await WriteAsync(response, new McpToolView(tool.Server, tool.Tool, tool.Remote, Promotion.ProgressApprover.DescriptionOf(tool)), cancel).ConfigureAwait(false);
+                await WriteAsync(response, new McpToolView(tool.Server, tool.Tool, tool.Remote, Extensions.ProgressApprover.DescriptionOf(tool)), cancel).ConfigureAwait(false);
                 break;
             }
 
@@ -406,15 +406,23 @@ internal static partial class ControlPlane
                 break;
 
             case ("POST", ["apps", "proposals"]):
-                await Promotion.PromotionEndpoints.ProposeAsync(context, cancel).ConfigureAwait(false);
+                if (Authoring(context) is { } proposing) await proposing.ProposeNewAsync(context, cancel).ConfigureAwait(false);
+                else await AuthoringMissingAsync(response).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "interview"]):
-                await Promotion.PromotionEndpoints.InterviewAsync(context, cancel).ConfigureAwait(false);
+                if (Authoring(context) is { } interviewing) await interviewing.InterviewAsync(context, cancel).ConfigureAwait(false);
+                else await AuthoringMissingAsync(response).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", "promotions"]):
-                if (await Promotion.PromotionEndpoints.PromoteAsync(context, cancel).ConfigureAwait(false) is { } promoted)
+                if (Authoring(context) is not { } promoting)
+                {
+                    await AuthoringMissingAsync(response).ConfigureAwait(false);
+                    break;
+                }
+
+                if (await promoting.PromoteAsync(context, cancel).ConfigureAwait(false) is { } promoted)
                 {
                     response.StatusCode = StatusCodes.Status201Created;
                     await WriteAsync(response, View(promoted, port, canRevert: false), cancel).ConfigureAwait(false);
@@ -423,7 +431,8 @@ internal static partial class ControlPlane
                 break;
 
             case ("POST", ["previews"]):
-                await Promotion.PromotionEndpoints.PreviewAsync(context, port, cancel).ConfigureAwait(false);
+                if (Authoring(context) is { } previewing) await previewing.PreviewNewAsync(context, port, cancel).ConfigureAwait(false);
+                else await AuthoringMissingAsync(response).ConfigureAwait(false);
                 break;
 
             case ("GET", ["previews", var newToken]):
@@ -452,27 +461,13 @@ internal static partial class ControlPlane
                 break;
 
             case ("POST", ["apps", var proposalFor, "proposals"]):
-                await ProposeAsync(context, proposalFor, cancel).ConfigureAwait(false);
+                if (Authoring(context) is { } changing) await changing.ProposeChangeAsync(context, proposalFor, cancel).ConfigureAwait(false);
+                else await AuthoringMissingAsync(response).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var pastedFor, "proposals", "from-html"]):
-                if (await catalog.GetAsync(pastedFor, cancel).ConfigureAwait(false) is null)
-                {
-                    response.StatusCode = StatusCodes.Status404NotFound;
-                    break;
-                }
-
-                // A change made elsewhere — an answer the person pasted back — becomes a proposal like a model's, with no model.
-                var pasted = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                var pastedSource = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(pastedFor, cancel).ConfigureAwait(false));
-                if (Edit.PastedProposals.From(pastedSource, pasted) is not { } fromPasted)
-                {
-                    response.StatusCode = StatusCodes.Status400BadRequest;
-                    await ControlProblems.RefuseAsync(response, "not-a-document").ConfigureAwait(false);
-                    break;
-                }
-
-                await WriteAsync(response, new ProposalView(fromPasted.Html, fromPasted.Summary, fromPasted.Edits, Edit.PastedProposals.Model, null, null, null, null), cancel).ConfigureAwait(false);
+                if (Authoring(context) is { } pasting) await pasting.ProposeFromHtmlAsync(context, pastedFor, cancel).ConfigureAwait(false);
+                else await AuthoringMissingAsync(response).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var previewOf, "previews"]):
@@ -884,11 +879,11 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["extensions"]):
-                var appSkills = context.RequestServices.GetRequiredService<Promotion.AppSkills>();
+                var appSkills = context.RequestServices.GetRequiredService<Extensions.AppSkills>();
                 await WriteAsync(response, new ExtensionsView(appSkills.UserRoot,
                 [
                     .. appSkills.List().Select(s => new ExtensionView("skill", s.Name, s.Description, s.Builtin, s.Enabled, s.Problem)),
-                    .. context.RequestServices.GetRequiredService<Promotion.AppMcp>().List()
+                    .. context.RequestServices.GetRequiredService<Extensions.AppMcp>().List()
                         .Select(m => new ExtensionView("mcp", m.Name, null, Builtin: false, m.Enabled, m.Problem, m.State, m.Detail, m.Tools)),
                 ]), cancel).ConfigureAwait(false);
                 break;
@@ -899,12 +894,12 @@ internal static partial class ControlPlane
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
                     var answer = body.RootElement.ValueKind switch
                     {
-                        JsonValueKind.True => Promotion.ApprovalAnswer.Yes,
-                        JsonValueKind.False => Promotion.ApprovalAnswer.No,
-                        JsonValueKind.String when body.RootElement.GetString() == "server" => Promotion.ApprovalAnswer.YesForServer,
+                        JsonValueKind.True => Extensions.ApprovalAnswer.Yes,
+                        JsonValueKind.False => Extensions.ApprovalAnswer.No,
+                        JsonValueKind.String when body.RootElement.GetString() == "server" => Extensions.ApprovalAnswer.YesForServer,
                         _ => throw new InvalidOperationException("An answer is true, false or \"server\"."),
                     };
-                    response.StatusCode = context.RequestServices.GetRequiredService<Promotion.ApprovalBook>().Answer(approvalId, answer)
+                    response.StatusCode = context.RequestServices.GetRequiredService<Extensions.ApprovalBook>().Answer(approvalId, answer)
                         ? StatusCodes.Status204NoContent
                         : StatusCodes.Status404NotFound;
                 }
@@ -916,23 +911,23 @@ internal static partial class ControlPlane
                 break;
 
             case ("GET", ["extensions", "mcp"]):
-                var mcpDocument = context.RequestServices.GetRequiredService<Promotion.AppMcp>();
+                var mcpDocument = context.RequestServices.GetRequiredService<Extensions.AppMcp>();
                 await WriteAsync(response, new McpDocumentView(mcpDocument.FilePath, mcpDocument.Text()), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT", ["extensions", "mcp"]):
                 try
                 {
-                    var saved = await context.RequestServices.GetRequiredService<Promotion.AppMcp>()
+                    var saved = await context.RequestServices.GetRequiredService<Extensions.AppMcp>()
                         .SaveAsync(Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)), cancel).ConfigureAwait(false);
                     await WriteAsync(response, new McpSaveView(null, Notes(saved)), cancel).ConfigureAwait(false);
                 }
-                catch (Promotion.McpTurnedOffException)
+                catch (Extensions.McpTurnedOffException)
                 {
                     response.StatusCode = StatusCodes.Status403Forbidden;
                     await ControlProblems.RefuseAsync(response, "policy", new McpSaveView("policy", [])).ConfigureAwait(false);
                 }
-                catch (Promotion.InvalidMcpDocumentException e)
+                catch (Extensions.InvalidMcpDocumentException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     await ControlProblems.RefuseAsync(response, e.Issues.Count == 0 ? "json" : "refused", new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues))).ConfigureAwait(false);
@@ -946,20 +941,20 @@ internal static partial class ControlPlane
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
                     var name = body.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()! : "";
                     var entry = body.RootElement.TryGetProperty("server", out var s) ? s : default;
-                    var added = await context.RequestServices.GetRequiredService<Promotion.AppMcp>().AddAsync(name, entry, cancel).ConfigureAwait(false);
+                    var added = await context.RequestServices.GetRequiredService<Extensions.AppMcp>().AddAsync(name, entry, cancel).ConfigureAwait(false);
                     response.StatusCode = StatusCodes.Status201Created;
                     await WriteAsync(response, new McpSaveView(null, Notes(added)), cancel).ConfigureAwait(false);
                 }
-                catch (Promotion.McpTurnedOffException)
+                catch (Extensions.McpTurnedOffException)
                 {
                     response.StatusCode = StatusCodes.Status403Forbidden;
                     await ControlProblems.RefuseAsync(response, "policy", new McpSaveView("policy", [])).ConfigureAwait(false);
                 }
-                catch (Promotion.McpServerExistsException)
+                catch (Extensions.McpServerExistsException)
                 {
                     response.StatusCode = StatusCodes.Status409Conflict;
                 }
-                catch (Promotion.InvalidMcpDocumentException e)
+                catch (Extensions.InvalidMcpDocumentException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     await ControlProblems.RefuseAsync(response, e.Issues.Count == 0 ? "json" : "refused", new McpSaveView(e.Issues.Count == 0 ? "json" : "refused", Notes(e.Issues))).ConfigureAwait(false);
@@ -981,10 +976,10 @@ internal static partial class ControlPlane
                 try
                 {
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                    await context.RequestServices.GetRequiredService<Promotion.AppMcp>().SetEnabledAsync(serverName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
+                    await context.RequestServices.GetRequiredService<Extensions.AppMcp>().SetEnabledAsync(serverName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
                     response.StatusCode = StatusCodes.Status204NoContent;
                 }
-                catch (Promotion.McpTurnedOffException)
+                catch (Extensions.McpTurnedOffException)
                 {
                     response.StatusCode = StatusCodes.Status403Forbidden;
                 }
@@ -1004,17 +999,17 @@ internal static partial class ControlPlane
                 {
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
                     string Field(string key) => body.RootElement.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
-                    var added = await context.RequestServices.GetRequiredService<Promotion.AppSkills>()
+                    var added = await context.RequestServices.GetRequiredService<Extensions.AppSkills>()
                         .AddAsync(Field("name"), Field("description"), Field("instructions"), cancel).ConfigureAwait(false);
                     response.StatusCode = StatusCodes.Status201Created;
                     await WriteAsync(response, new ExtensionView("skill", added.Name, added.Description, added.Builtin, added.Enabled, added.Problem), cancel)
                         .ConfigureAwait(false);
                 }
-                catch (Promotion.SkillExistsException)
+                catch (Extensions.SkillExistsException)
                 {
                     response.StatusCode = StatusCodes.Status409Conflict;
                 }
-                catch (Promotion.InvalidSkillException e)
+                catch (Extensions.InvalidSkillException e)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
                     await ControlProblems.RefuseAsync(response, e.Part).ConfigureAwait(false);
@@ -1030,7 +1025,7 @@ internal static partial class ControlPlane
                 try
                 {
                     using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                    await context.RequestServices.GetRequiredService<Promotion.AppSkills>().SetEnabledAsync(skillName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
+                    await context.RequestServices.GetRequiredService<Extensions.AppSkills>().SetEnabledAsync(skillName, body.RootElement.GetBoolean(), cancel).ConfigureAwait(false);
                     response.StatusCode = StatusCodes.Status204NoContent;
                 }
                 catch (KeyNotFoundException)
@@ -1725,6 +1720,16 @@ internal static partial class ControlPlane
             log.KeyReports.Select(k => new KeyReportView(k.Revision, Iso(k.Date), k.Missing, k.Unread, k.Seeded)).ToList());
     }
 
+    /// <summary>The authoring layer, when one is plugged in — the desktop application brings it; a runtime run on its own has none.</summary>
+    private static Extensions.IAuthoringModule? Authoring(HttpContext context) => context.RequestServices.GetService<Extensions.IAuthoringModule>();
+
+    /// <summary>Authoring (writing and changing applications with a model) is a layer the desktop application adds; this runtime serves, stores and runs applications without it.</summary>
+    private static Task AuthoringMissingAsync(HttpResponse response)
+    {
+        response.StatusCode = StatusCodes.Status501NotImplemented;
+        return ControlProblems.RefuseAsync(response, "authoring-not-available");
+    }
+
     private static Task WriteAsync<T>(HttpResponse response, T value, CancellationToken cancellationToken) =>
         response.WriteAsJsonAsync(value, (System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>)ControlJson.Default.GetTypeInfo(typeof(T))!, cancellationToken: cancellationToken);
 
@@ -1935,9 +1940,9 @@ internal static partial class ControlPlane
     /// kept: the proposal is the answer, and taking it in is the caller's next request.
     /// </summary>
     /// <summary>The connected MCP tool the model knows as <paramref name="name"/> (<c>mcp__&lt;server&gt;__&lt;tool&gt;</c>), or null.</summary>
-    private static async Task<Promotion.McpTool?> McpToolNamedAsync(HttpContext context, string name, CancellationToken cancel) =>
+    private static async Task<Extensions.McpTool?> McpToolNamedAsync(HttpContext context, string name, CancellationToken cancel) =>
         string.IsNullOrEmpty(name) ? null
-            : (await context.RequestServices.GetRequiredService<Promotion.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false)).FirstOrDefault(t => t.Function.Name == name);
+            : (await context.RequestServices.GetRequiredService<Extensions.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false)).FirstOrDefault(t => t.Function.Name == name);
 
     /// <summary>
     /// A web question's call to an MCP tool, made after the caller asked the person: <c>{ name, arguments }</c> → <c>{ text, failed }</c>
@@ -2031,8 +2036,8 @@ internal static partial class ControlPlane
             return;
         }
 
-        var agentModel = context.RequestServices.GetRequiredService<Edit.AgentModel>();
-        Edit.ChosenEditModel? model;
+        var agentModel = context.RequestServices.GetRequiredService<Llm.AgentModel>();
+        Llm.ChosenEditModel? model;
         try
         {
             model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
@@ -2047,13 +2052,13 @@ internal static partial class ControlPlane
         if (model is not { } chosen)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Llm.EditModelMissing("localModel", null)).ConfigureAwait(false);
             return;
         }
 
         var now = context.RequestServices.GetRequiredService<TimeProvider>().GetLocalNow();
-        var skills = context.RequestServices.GetRequiredService<Promotion.AppSkills>().UserConfig();
-        IReadOnlyList<Promotion.McpTool> mcp = chosen.OnThisComputer ? [] : await context.RequestServices.GetRequiredService<Promotion.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false);
+        var skills = context.RequestServices.GetRequiredService<Extensions.AppSkills>().UserConfig();
+        IReadOnlyList<Extensions.McpTool> mcp = chosen.OnThisComputer ? [] : await context.RequestServices.GetRequiredService<Extensions.AppMcp>().ToolsAsync(cancel).ConfigureAwait(false);
         // Whether the model takes pictures in: look is declared unless it is known not to, and a model nobody described is
         // asked once, only when a picture look took is about to go to it — until then no request is spent on it. A picture that
         // cannot go is replaced by the runtime's word (look stays declared when asking told nothing).
@@ -2076,7 +2081,7 @@ internal static partial class ControlPlane
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
                 response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, e.Message, Edit.ProviderRefusal.Of(e))).ConfigureAwait(false);
+                await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, e.Message, Llm.ProviderRefusal.Of(e))).ConfigureAwait(false);
                 return;
             }
 
@@ -2111,7 +2116,7 @@ internal static partial class ControlPlane
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
-            await WriteLineAsync(response, new TurnFailure("failed", null, e.Message, Edit.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+            await WriteLineAsync(response, new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
         }
     }
 
@@ -2146,8 +2151,8 @@ internal static partial class ControlPlane
             return;
         }
 
-        var agentModel = context.RequestServices.GetRequiredService<Edit.AgentModel>();
-        Edit.ChosenEditModel? model;
+        var agentModel = context.RequestServices.GetRequiredService<Llm.AgentModel>();
+        Llm.ChosenEditModel? model;
         try
         {
             model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
@@ -2162,7 +2167,7 @@ internal static partial class ControlPlane
         if (model is not { } chosen)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Llm.EditModelMissing("localModel", null)).ConfigureAwait(false);
             return;
         }
 
@@ -2174,7 +2179,7 @@ internal static partial class ControlPlane
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await ControlProblems.RefuseAsync(response, "translate-failed", new TurnFailure("failed", null, e.Message, Edit.ProviderRefusal.Of(e))).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "translate-failed", new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e))).ConfigureAwait(false);
         }
     }
 
@@ -2207,192 +2212,29 @@ internal static partial class ControlPlane
     /// <summary>How often a streamed answer carries its text so far as HTML — often enough to read as live, seldom enough that a long answer is not rendered for every piece.</summary>
     internal static readonly TimeSpan TextShownEvery = TimeSpan.FromMilliseconds(250);
 
-    /// <summary>How many of a failed proposal's problems the model is told — the first ones; the rest usually follow from them.</summary>
-    private const int MaxProblemsTold = 10;
 
     /// <summary>A streamed turn the model could not finish — the fields of <see cref="ProposalFailure"/>, with the status a turn line has.</summary>
-    internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider);
-
-    private static async Task ProposeAsync(HttpContext context, string appId, CancellationToken cancel)
-    {
-        var response = context.Response;
-        var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
-        if (await catalog.GetAsync(appId, cancel).ConfigureAwait(false) is null)
-        {
-            response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-
-        // Either «change this» on an element — an instruction and a target — or a named fix the runtime
-        // words itself: `{"fix": "local-storage"}` moves an application that keeps its data only online.
-        string instruction = "";
-        Edit.EditTarget? target = null;
-        List<string>? problems = null;
-        var source = Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false));
-        try
-        {
-            using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
-            var root = body.RootElement;
-            if (root.TryGetProperty("fix", out var fix))
-            {
-                // Only an application that has the problem: the proposal would otherwise rewrite working storage.
-                if (fix.GetString() != "local-storage" || OnlineStorage.OnlyOnline(source) is null)
-                {
-                    response.StatusCode = StatusCodes.Status400BadRequest;
-                    return;
-                }
-            }
-            else
-            {
-                instruction = root.GetProperty("instruction").GetString() ?? "";
-                // No target: a request about the whole application, asked in words without pointing at an element.
-                target = root.TryGetProperty("target", out var element)
-                    ? new Edit.EditTarget(element.GetProperty("html").GetString() ?? "",
-                        element.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null)
-                    : Edit.EditTarget.Whole;
-                if (string.IsNullOrWhiteSpace(instruction))
-                {
-                    response.StatusCode = StatusCodes.Status400BadRequest;
-                    return;
-                }
-
-                // The earlier proposal for this request failed when the shell opened it with a copy of the data:
-                // fixed from that version, with what went wrong told, rather than made again from the saved one.
-                if (root.TryGetProperty("broken", out var broken))
-                {
-                    var html = broken.GetProperty("html").GetString();
-                    problems = broken.GetProperty("problems").EnumerateArray().Select(p => p.GetString()?.Trim() ?? "").Where(p => p.Length > 0)
-                        .Take(MaxProblemsTold).Select(p => p.Length > 500 ? p[..500] : p).ToList();
-                    if (string.IsNullOrWhiteSpace(html) || problems.Count == 0)
-                    {
-                        response.StatusCode = StatusCodes.Status400BadRequest;
-                        return;
-                    }
-
-                    source = html;
-                }
-                // A change on top of an earlier proposal the person has not applied yet (changes made one after another,
-                // applied once): made from that version, as for a new request.
-                else if (root.TryGetProperty("base", out var draft))
-                {
-                    var html = draft.GetProperty("html").GetString();
-                    if (string.IsNullOrWhiteSpace(html))
-                    {
-                        response.StatusCode = StatusCodes.Status400BadRequest;
-                        return;
-                    }
-
-                    source = html;
-                }
-            }
-        }
-        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            response.StatusCode = StatusCodes.Status400BadRequest;
-            return;
-        }
-
-        var editModel = context.RequestServices.GetRequiredService<Edit.EditModel>();
-        Edit.ChosenEditModel? model;
-        try
-        {
-            model = await editModel.GetAsync(cancel).ConfigureAwait(false);
-        }
-        catch (LocalModelUnavailableException e)
-        {
-            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
-            return;
-        }
-
-        if (model is null)
-        {
-            response.StatusCode = StatusCodes.Status409Conflict;
-            await ControlProblems.RefuseAsync(response, "model-missing", editModel.Missing ?? new Edit.EditModelMissing("localModel", null)).ConfigureAwait(false);
-            return;
-        }
-
-        // Asked for lines: as for a new application (`apps/proposals`) — { thinking } as a model that thinks thinks, { writing, start } for each replacement's new text as the
-        // model writes it, then { status: "done", … } with the proposal or { status: "failed", … } with what a 503 would carry.
-        var lines = AcceptsLines(context.Request);
-        Func<Edit.ProposalProgress, CancellationToken, Task>? onProgress = null;
-        if (lines)
-        {
-            response.ContentType = NdJson;
-            await response.StartAsync(cancel).ConfigureAwait(false);
-            onProgress = (progress, token) => WriteLineAsync(response, progress, Promotion.PromotionJson.Default.ProposalProgress, token);
-        }
-
-        Edit.EditProposal proposal;
-        try
-        {
-            proposal = await (target is null
-                ? Edit.EditProposals.ProposeLocalStorageAsync(model.Client, model.OnThisComputer, model.Limits, source, cancel)
-                : Edit.EditProposals.ProposeAsync(model.Client, model.OnThisComputer, model.Limits, source, target, instruction, problems, cancel, onProgress,
-                    skills: context.RequestServices.GetRequiredService<Promotion.AppSkills>().Config(),
-                    mcp: await Promotion.McpUse.ForAsync(context.RequestServices, onProgress, cancel).ConfigureAwait(false))).ConfigureAwait(false);
-        }
-        catch (Exception e) when (!cancel.IsCancellationRequested)
-        {
-            // The model stopped without finishing — the local server's request limit, or a provider's refusal,
-            // which carries the provider's own status and message so the person can see why.
-            var (detail, provider, stopped, rounds) = (e.Message, Edit.ProviderRefusal.Of(e), (e as Edit.ProposalFailedException)?.Stopped, (e as Edit.ProposalFailedException)?.Rounds);
-            if (lines)
-            {
-                await WriteLineAsync(response, new Promotion.PromotionEndpoints.ProposalFailedLine("failed", null, detail, provider, stopped, rounds), Promotion.PromotionJson.Default.ProposalFailedLine, cancel).ConfigureAwait(false);
-                return;
-            }
-
-            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, detail, provider, stopped, rounds)).ConfigureAwait(false);
-            return;
-        }
-
-        if (lines)
-            await WriteLineAsync(response, new ProposalLine("done", proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds, proposal.Unresolved), cancel).ConfigureAwait(false);
-        else
-            await WriteAsync(response, new ProposalView(proposal.Html, proposal.Summary, proposal.Edits, model.Name, proposal.Complete, proposal.Left, proposal.Stopped, proposal.Usage, proposal.Rounds, proposal.Unresolved), cancel).ConfigureAwait(false);
-    }
-
-    /// <param name="Html">The whole source with the edits made — what to take in as a new revision.</param>
-    /// <param name="Summary">The model's sentence on what it changed.</param>
-    /// <param name="Edits">Each exact piece replaced and its replacement, in order; empty when nothing changed.</param>
-    /// <param name="Model">Which model proposed it: <c>local</c>, or the provider and model name (<c>openai/…</c>).</param>
-    /// <param name="Complete">For a named fix, whether it finished — a proposal that stopped halfway is not one to apply. <c>null</c> for a change the person asked for.</param>
-    /// <param name="Remaining">For a named fix that did not finish, what it left.</param>
-    /// <param name="Stopped"><c>output-limit</c> when the model's answer reached its length limit after making these edits, <c>step-limit</c> when it used all its rounds — they may not be all it meant to make; otherwise <see langword="null"/>.</param>
-    /// <param name="Rounds">Where the model's rounds of tool calls went.</param>
-    /// <param name="Unresolved">What the change leaves unfinished — a script it broke, or what it calls that nothing gives it — still there after the model was told once — a proposal to look at before applying.</param>
-    internal sealed record ProposalView(string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Unresolved = null);
-
-    /// <summary>The last line of a change proposed as it goes: <see cref="ProposalView"/>'s fields, with the status a last line has (<c>done</c>).</summary>
-    internal sealed record ProposalLine(string Status, string Html, string Summary, IReadOnlyList<Edit.SourceEdit> Edits, string Model, bool? Complete, Edit.StorageLeft? Remaining, string? Stopped,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ModelUse? Usage,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Unresolved = null);
+    internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
     /// <param name="Missing">What is missing before a proposal can be made, or <see langword="null"/>.</param>
-    internal sealed record EditModelView(string? Provider, string? Model, Edit.EditModelMissing? Missing);
+    internal sealed record EditModelView(string? Provider, string? Model, Llm.EditModelMissing? Missing);
 
-    private static EditModelView EditModelViewOf(Edit.ProviderChoice model) => new(model.Chosen?.Provider, model.Chosen?.Model, model.Missing);
+    private static EditModelView EditModelViewOf(Llm.ProviderChoice model) => new(model.Chosen?.Provider, model.Chosen?.Model, model.Missing);
 
     /// <summary>The model choice behind <c>/__control/edit/model</c> (proposals) or <c>/__control/agent/model</c> (questions about web pages).</summary>
-    private static Edit.ProviderChoice ChoiceFor(HttpContext context, string which) => which == "agent"
-        ? context.RequestServices.GetRequiredService<Edit.AgentModel>()
-        : context.RequestServices.GetRequiredService<Edit.EditModel>();
+    private static Llm.ProviderChoice ChoiceFor(HttpContext context, string which) => which == "agent"
+        ? context.RequestServices.GetRequiredService<Llm.AgentModel>()
+        : context.RequestServices.GetRequiredService<Llm.EditModel>();
 
     /// <param name="Model">Why the model could not start, when that is why.</param>
     /// <param name="Detail">What stopped the model, when it started and did not finish.</param>
     /// <param name="Provider">The provider's refusal — its status and own message — when a provider refused.</param>
     /// <param name="Stopped">What ended the model's answer before it finished, when that is known: <c>output-limit</c> (its length limit) or <c>step-limit</c> (its rounds of tool calls).</param>
     /// <param name="Rounds">Where the model's rounds went, when it stopped at a limit.</param>
-    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Edit.ProviderRefusal? Provider, string? Stopped = null,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Edit.ProposalRounds? Rounds = null);
+    internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider, string? Stopped = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ProposalRounds? Rounds = null);
 
     /// <summary>Every provider to choose from — the built-in ones and the ones added.</summary>
     private static List<ProviderView> ProviderViewsOf(IServiceProvider services) =>
@@ -2530,11 +2372,9 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.SiteVerdict))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(BlockedResource))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(MissingApi))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalView))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalLine))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProposalFailure))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.EditModelView))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(Edit.EditModelMissing))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(Llm.EditModelMissing))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AssetsView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.ProviderModelView))]

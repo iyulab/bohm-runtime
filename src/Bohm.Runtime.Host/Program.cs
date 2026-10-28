@@ -92,7 +92,7 @@ foreach (var pair in unusableEndpoints)
 var reviewVariable = Environment.GetEnvironmentVariable("BOHM_REVIEW_MODEL");
 var reviewModel = reviewVariable?.Split('/', 2) is [var reviewProvider, var reviewName]
     && Bohm.Runtime.Host.Llm.LlmProviders.ById(reviewProvider.Trim()) is not null && reviewName.Trim().Length > 0
-    ? new Bohm.Runtime.Host.Edit.EditModelChoice(reviewProvider.Trim(), reviewName.Trim())
+    ? new Bohm.Runtime.Host.Llm.EditModelChoice(reviewProvider.Trim(), reviewName.Trim())
     : null;
 if (reviewModel is null && !string.IsNullOrWhiteSpace(reviewVariable))
     await Console.Error.WriteLineAsync("BOHM_REVIEW_MODEL is not <provider>/<model> with a known provider; no review this run.");

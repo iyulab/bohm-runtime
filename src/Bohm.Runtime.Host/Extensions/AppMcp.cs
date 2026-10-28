@@ -7,7 +7,7 @@ using IronHive.Agent.Mcp;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
-namespace Bohm.Runtime.Host.Promotion;
+namespace Bohm.Runtime.Host.Extensions;
 
 /// <summary>
 /// The MCP servers the person gave the AI that makes and changes applications: <c>mcp.json</c> in the data root, in the shape an

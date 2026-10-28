@@ -1,4 +1,5 @@
-using Bohm.Runtime.Host.Edit;
+using Bohm.Runtime.Host.Llm;
+using Bohm.Runtime.Host.Extensions;
 
 namespace Bohm.Runtime.Tests.Host;
 

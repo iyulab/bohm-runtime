@@ -102,11 +102,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Bohm.Runtime.Tests" />
+    <!-- The authoring layer the desktop application ships beside the runtime (see Extensions/AuthoringModuleLoader). -->
+    <InternalsVisibleTo Include="Bohm.Authoring" />
+    <InternalsVisibleTo Include="Bohm.Authoring.Tests" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- Built-in skills (SKILL.md folders) the make model reads on demand — loose files beside the executable, single-file or not. -->
-    <None Include="Skills\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-  </ItemGroup>
 
 </Project>

@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Bohm.Runtime.Host.Edit;
+namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
 /// A provider's refusal of a proposal request, as the provider put it: its status and its own

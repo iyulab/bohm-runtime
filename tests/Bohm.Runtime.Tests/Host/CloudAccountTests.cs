@@ -58,52 +58,7 @@ public sealed class CloudAccountTests : IAsyncLifetime
         HttpAssert.Status(HttpStatusCode.NotFound, signIn);
     }
 
-    [Fact]
-    public async Task The_account_without_its_token_is_missing_the_account_and_nothing_is_sent()
-    {
-        var account = JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/cloud/account")).RootElement;
-        Assert.Equal(_cloud.Address.Authority, account.GetProperty("host").GetString());
-        Assert.False(account.GetProperty("signedIn").GetBoolean());
 
-        using (var chose = await _host.ControlClient().PutAsync("/__control/edit/model", Choice("bohm", "model-x")))
-        {
-            HttpAssert.Status(HttpStatusCode.OK, chose);
-            var missing = JsonDocument.Parse(await chose.Content.ReadAsStringAsync()).RootElement.GetProperty("missing");
-            Assert.Equal("account", missing.GetProperty("needs").GetString());
-            Assert.Equal("bohm", missing.GetProperty("provider").GetString());
-        }
-
-        using var response = await ProposeAsync(await _host.AdoptAsync(App));
-
-        HttpAssert.Status(HttpStatusCode.Conflict, response);
-        Assert.Empty(CloudCalls);
-    }
-
-    [Fact]
-    public async Task The_account_is_asked_at_the_gateway_the_cloud_names_in_Anthropics_API_with_its_token_and_counted_as_sent_there()
-    {
-        await SignInAsync();
-
-        using var response = await ProposeAsync(await _host.AdoptAsync(App));
-
-        HttpAssert.Status(HttpStatusCode.OK, response);
-        Assert.Equal("bohm/model-x", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
-        var request = Assert.Single(Messages);
-        Assert.Equal("/anthropic/v1/messages", request.PathAndQuery);
-        Assert.Equal($"Bearer {Token}", request.Headers["Authorization"]);
-        Assert.Equal("model-x", JsonDocument.Parse(request.Body).RootElement.GetProperty("model").GetString());
-
-        var sent = Assert.Single(JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal(_gateway.Address.Authority, sent.GetProperty("host").GetString());
-        Assert.DoesNotContain(_cloud.Received, r => r.PathAndQuery.StartsWith("/anthropic/", StringComparison.Ordinal));   // the cloud relays nothing
-
-        // Signing out revokes the session and forgets it: the account is missing again.
-        var refresh = _identity.RefreshToken;
-        using var signedOut = await _host.ControlClient().DeleteAsync("/__control/cloud/account/session");
-        Assert.False(JsonDocument.Parse(await signedOut.Content.ReadAsStringAsync()).RootElement.GetProperty("signedIn").GetBoolean());
-        Assert.Contains(refresh!, _identity.Revoked);
-        Assert.Equal("account", JsonDocument.Parse(await _host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement.GetProperty("missing").GetProperty("needs").GetString());
-    }
 
     [Fact]
     public async Task Looking_at_the_account_tells_its_credits_asked_of_the_cloud_with_its_token()
@@ -270,53 +225,8 @@ public sealed class CloudAccountTests : IAsyncLifetime
         Assert.Equal(problem, account.GetProperty("problem").GetString());
     }
 
-    [Fact]
-    public async Task A_request_the_credits_cannot_hold_is_asked_once_more_with_the_output_limit_they_can()
-    {
-        await SignInAsync();
-        _gateway.RefusalsFirst.Enqueue((402, Refused("hold_rejected", affordableMaxTokens: 4000)));
 
-        using var response = await ProposeAsync(await _host.AdoptAsync(App));
 
-        HttpAssert.Status(HttpStatusCode.OK, response);
-        Assert.Equal(2, Messages.Count);
-        // Streamed both times: the refusal comes before anything streams, so the second ask repeats nothing already told.
-        Assert.All(Messages, r => Assert.True(JsonDocument.Parse(r.Body).RootElement.GetProperty("stream").GetBoolean()));
-        Assert.Equal(4000, JsonDocument.Parse(Messages.Last().Body).RootElement.GetProperty("max_tokens").GetInt32());
-    }
-
-    [Fact]
-    public async Task Refused_again_after_asking_with_a_smaller_limit_the_person_is_told_the_accounts_code_and_its_message()
-    {
-        await SignInAsync();
-        _gateway.Refusal = (402, Refused("hold_rejected", affordableMaxTokens: 4000));
-
-        var provider = await RefusedAsync();
-
-        Assert.Equal(2, Messages.Count);
-        Assert.Equal(402, provider.GetProperty("status").GetInt32());
-        Assert.True(provider.GetProperty("billing").GetBoolean());
-        Assert.Equal("hold_rejected", provider.GetProperty("code").GetString());
-        Assert.Equal("The account's credits cannot hold this answer.", provider.GetProperty("message").GetString());
-        Assert.Equal(4000, provider.GetProperty("affordableMaxTokens").GetInt64());
-    }
-
-    [Theory]
-    [InlineData("hold_rejected", 1000)]    // too small a limit to answer in — not worth asking
-    [InlineData("insufficient_balance", null)]
-    [InlineData("cap_reached", null)]
-    [InlineData("wallet_suspended", null)]
-    public async Task The_other_refusals_of_the_account_are_not_asked_again(string code, int? affordableMaxTokens)
-    {
-        await SignInAsync();
-        _gateway.Refusal = (402, Refused(code, affordableMaxTokens));
-
-        var provider = await RefusedAsync();
-
-        Assert.Single(Messages);
-        Assert.True(provider.GetProperty("billing").GetBoolean());
-        Assert.Equal(code, provider.GetProperty("code").GetString());
-    }
 
     [Fact]
     public async Task When_the_cloud_cannot_tell_where_the_ai_goes_the_request_fails_as_unreachable_and_nothing_is_sent()

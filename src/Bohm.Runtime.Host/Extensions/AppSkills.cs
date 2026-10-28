@@ -3,7 +3,7 @@ using System.Text.Json;
 using DesktopHost.Files;
 using IronHive.Agent.Skills;
 
-namespace Bohm.Runtime.Host.Promotion;
+namespace Bohm.Runtime.Host.Extensions;
 
 /// <summary>
 /// The skills the AI that makes and changes applications may read (and the web question, the person's own — <see cref="UserConfig"/>): the ones shipped beside the runtime, then the
@@ -12,13 +12,16 @@ namespace Bohm.Runtime.Host.Promotion;
 /// removed by removing the folder. When two have the same name the shipped one is used and the person's is listed
 /// as shadowed — a shipped skill is never replaced without anyone seeing it.
 /// </summary>
-internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
+internal sealed class AppSkills(RuntimeHostOptions options, IEnumerable<IAuthoringModule>? modules = null) : IDisposable
 {
     private const string OffFile = "skills-off.json";
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>Where the built-in skills are: one folder per skill, each with its SKILL.md, shipped beside the runtime.</summary>
     public static string BuiltinRoot => Path.Combine(AppContext.BaseDirectory, "Skills");
+
+    /// <summary>Every folder of built-in skills: this runtime's own, then the ones a plugged-in authoring layer brings.</summary>
+    private string[] BuiltinRoots => [BuiltinRoot, .. (modules ?? []).SelectMany(m => m.BuiltinSkillRoots)];
 
     /// <summary>The built-in skills only, all of them — for a caller with no data root (and its tests).</summary>
     public static SkillsConfig Builtin => new() { Roots = [BuiltinRoot] };
@@ -27,7 +30,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
     public string UserRoot => Path.Combine(options.DataRoot, "skills");
 
     /// <summary>The skills a proposal may read now: both roots, without the ones turned off.</summary>
-    public SkillsConfig Config() => new() { Roots = [BuiltinRoot, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)] };
+    public SkillsConfig Config() => new() { Roots = [.. BuiltinRoots, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)] };
 
     /// <summary>
     /// The person's own skills only, turned-off ones left out — for the web question, which the built-in skills (written
@@ -35,7 +38,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
     /// stays shadowed here as everywhere.
     /// </summary>
     public SkillsConfig UserConfig() =>
-        new() { Roots = [BuiltinRoot, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)], Filter = skill => !IsBuiltin(skill.Root) };
+        new() { Roots = [.. BuiltinRoots, UserRoot], Exclude = [.. Off().Order(StringComparer.Ordinal)], Filter = skill => !IsBuiltin(skill.Root) };
 
     /// <summary>
     /// Every skill found, in the order the model sees them, then what could not be used under the person's folder:
@@ -44,7 +47,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
     public IReadOnlyList<SkillEntry> List()
     {
         var off = Off();
-        var found = SkillDiscovery.Discover(new SkillsConfig { Roots = [BuiltinRoot, UserRoot] });
+        var found = SkillDiscovery.Discover(new SkillsConfig { Roots = [.. BuiltinRoots, UserRoot] });
         var entries = found.Skills
             .Select(s => new SkillEntry(s.Name, s.Description, IsBuiltin(s.Root), !off.Contains(s.Name), null))
             .ToList();
@@ -148,7 +151,7 @@ internal sealed class AppSkills(RuntimeHostOptions options) : IDisposable
         }
     }
 
-    private static bool IsBuiltin(string root) => string.Equals(Path.GetFullPath(root), Path.GetFullPath(BuiltinRoot), StringComparison.OrdinalIgnoreCase);
+    private bool IsBuiltin(string root) => BuiltinRoots.Any(builtin => string.Equals(Path.GetFullPath(root), Path.GetFullPath(builtin), StringComparison.OrdinalIgnoreCase));
 
     private static bool Under(string path, string root) =>
         Path.GetFullPath(path).StartsWith(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);

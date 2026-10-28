@@ -4,7 +4,7 @@ using Bohm.Runtime.Host.Llm;
 using DesktopHost.Files;
 using Microsoft.Extensions.AI;
 
-namespace Bohm.Runtime.Host.Edit;
+namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>A connected provider and the name of its model that proposes changes.</summary>
 /// <param name="Provider">The provider's id (<see cref="ProviderDeclaration.Id"/>).</param>

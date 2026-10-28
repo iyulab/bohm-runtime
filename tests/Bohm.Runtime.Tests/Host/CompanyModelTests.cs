@@ -102,74 +102,8 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(JsonValueKind.Null, (await GetAsync(second)).GetProperty("reasoning").ValueKind);
     }
 
-    [Fact]
-    public async Task A_known_answer_bound_lowers_an_applications_larger_one_and_a_thinking_model_is_asked_not_to_think_for_a_proposal()
-    {
-        await using var host = await StartAsync(fixedAtStart: false);
-        using (var set = await SetAsync(host, $$"""{"endpoint":"{{_server.Address.AbsoluteUri}}v1","model":"set-model","maxTokens":1024,"reasoning":true}"""))
-            HttpAssert.Status(HttpStatusCode.OK, set);
-        var app = await host.AdoptAsync(App);
 
-        using (var response = await PostFromAppAsync(host, app, "/__bohm/llm/api.openai.com/v1/chat/completions",
-            """{"model":"gpt-4o-mini","max_tokens":4000,"messages":[{"role":"user","content":"Hello?"}]}"""))
-            HttpAssert.Status(HttpStatusCode.OK, response);
-        using (var asked = JsonDocument.Parse(Assert.Single(_server.Received).Body))
-            Assert.Equal(1024, AnswerBound(asked.RootElement));
 
-        _server.Received.Clear();
-        using (var proposal = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json")))
-            HttpAssert.Status(HttpStatusCode.OK, proposal);
-        using var proposed = JsonDocument.Parse(_server.Asked[0].Body);
-        Assert.Equal("none", proposed.RootElement.GetProperty("reasoning_effort").GetString());
-        Assert.Equal(1024, AnswerBound(proposed.RootElement));
-    }
-
-    [Fact]
-    public async Task A_model_that_thinks_unasked_is_found_out_by_one_short_question_before_the_first_long_task_and_remembered_across_launches()
-    {
-        // An administrator's listed server: its limits come from the list, so what is learned is kept apart from the choice.
-        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-thinks-").FullName;
-        var endpoint = new Uri(_server.Address, "v1/");
-        Func<Bohm.Runtime.Host.RuntimeHostOptions, Bohm.Runtime.Host.RuntimeHostOptions> listed = o => o with { CompanyModels = CompanyModelList.Of(new CompanyModelOptions(endpoint, "fixed-model")) };
-        _server.Thinks = true;
-        const string Edit = """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""";
-
-        var first = await RunningHost.StartAsync(dataRoot, configure: listed);
-        var app = await first.AdoptAsync(App);
-        using (var response = await first.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(Edit, Encoding.UTF8, "application/json")))
-            HttpAssert.Status(HttpStatusCode.OK, response);
-        var question = Assert.Single(_server.ThinkingQuestions);
-        Assert.True(AnswerBound(JsonDocument.Parse(question.Body).RootElement) is > 0 and <= 64);
-        Assert.DoesNotContain("Add Task", question.Body, StringComparison.Ordinal); // nothing of the application's goes with it
-        // The question came first, so the task itself already asks the model not to think.
-        Assert.Equal("none", JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("reasoning_effort").GetString());
-        Assert.True(File.Exists(Path.Combine(dataRoot, "company-model-learned.json")));
-        await first.StopKeepingDataAsync();
-
-        _server.Received.Clear();
-        await using var second = await RunningHost.StartAsync(dataRoot, configure: listed);
-        using (var response = await second.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(Edit, Encoding.UTF8, "application/json")))
-            HttpAssert.Status(HttpStatusCode.OK, response);
-        Assert.Empty(_server.ThinkingQuestions); // known from the last launch
-        Assert.Equal("none", JsonDocument.Parse(_server.Asked[0].Body).RootElement.GetProperty("reasoning_effort").GetString());
-    }
-
-    [Fact]
-    public async Task A_model_whose_short_answer_carries_no_thinking_is_asked_once_and_tasks_go_as_they_are()
-    {
-        await using var host = await StartAsync(fixedAtStart: true);
-        var app = await host.AdoptAsync(App);
-        for (var i = 0; i < 2; i++)
-            using (var response = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
-                """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-                Encoding.UTF8, "application/json")))
-                HttpAssert.Status(HttpStatusCode.OK, response);
-
-        Assert.Single(_server.ThinkingQuestions); // once per server, model and key — not before every task
-        Assert.All(_server.Asked, request => Assert.False(JsonDocument.Parse(request.Body).RootElement.TryGetProperty("reasoning_effort", out _)));
-    }
 
     /// <summary>The answer bound a Chat Completions request asks for, by either of its names.</summary>
     private static int AnswerBound(JsonElement request) =>
@@ -409,117 +343,10 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal("company", providers["anthropic"].GetProperty("answeredBy").GetString());
     }
 
-    [Fact]
-    public async Task By_default_proposals_are_made_by_the_server_ahead_of_the_model_on_this_computer_which_is_first_asked_once_for_the_models_context_window_and_whether_it_thinks()
-    {
-        await using var host = await StartAsync(fixedAtStart: true, withLocalModel: true);
-        _server.Models = """{"object":"list","data":[{"id":"fixed-model","object":"model","max_model_len":8192}]}""";
-        var model = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement;
-        Assert.Equal(JsonValueKind.Null, model.GetProperty("missing").ValueKind);
 
-        var app = await host.AdoptAsync(App);
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json"));
 
-        HttpAssert.Status(HttpStatusCode.OK, response);
-        Assert.Equal("company/fixed-model", JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetString());
-        Assert.Equal([("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("POST", "/v1/chat/completions")], _server.Received.Select(r => (r.Method, r.PathAndQuery)));
-        Assert.Single(_server.ThinkingQuestions);
-        Assert.Equal(8192, (await GetAsync(host)).GetProperty("reportedContextWindow").GetInt32());
-        Assert.Empty(_local.Calls);
-        var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
-        Assert.Equal(_server.Address.Authority, sent.GetProperty("host").GetString());
 
-        // Asked once: the next proposal goes straight to the model.
-        _server.Received.Clear();
-        using (var again = await host.ControlClient().PostAsync($"/__control/apps/{app}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json")))
-            HttpAssert.Status(HttpStatusCode.OK, again);
-        Assert.Equal("/v1/chat/completions", Assert.Single(_server.Received).PathAndQuery);
-    }
 
-    [Fact]
-    public async Task When_the_server_refuses_a_proposal_the_person_gets_its_status_and_its_own_message()
-    {
-        await using var host = await StartAsync(fixedAtStart: true);
-        _server.Refusal = (404, """{"error":{"message":"The model fixed-model does not exist.","type":"invalid_request_error"}}""");
-
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json"));
-
-        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
-        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
-        Assert.Equal(404, provider.GetProperty("status").GetInt32());
-        Assert.Equal("The model fixed-model does not exist.", provider.GetProperty("message").GetString());
-        Assert.Equal(JsonValueKind.Null, provider.GetProperty("retryAfter").ValueKind);
-        Assert.False(provider.TryGetProperty("billing", out _));
-    }
-
-    [Theory]
-    // A busy server (503) and a rate limit (429), each with the hint of when to ask again.
-    [InlineData(503)]
-    [InlineData(429)]
-    public async Task When_a_busy_server_says_when_to_ask_again_the_person_gets_that_wait(int status)
-    {
-        await using var host = await StartAsync(fixedAtStart: true);
-        _server.Refusal = (status, """{"error":{"message":"busy"}}""");
-        _server.RetryAfter = "7";
-
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json"));
-
-        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
-        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
-        Assert.Equal(status, provider.GetProperty("status").GetInt32());
-        Assert.Equal(7, provider.GetProperty("retryAfter").GetInt32());
-    }
-
-    [Theory]
-    // Out of credit: a 402, and an exhausted quota sent as a 429 — neither is a wait-and-retry.
-    [InlineData(402, """{"error":{"message":"Insufficient balance.","type":"payment_required"}}""", "Insufficient balance.")]
-    [InlineData(429, """{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}""", "You exceeded your current quota.")]
-    public async Task When_the_server_refuses_for_billing_the_person_is_told_it_is_billing_not_busy(int status, string body, string message)
-    {
-        await using var host = await StartAsync(fixedAtStart: true);
-        _server.Refusal = (status, body);
-
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json"));
-
-        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
-        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
-        Assert.Equal(status, provider.GetProperty("status").GetInt32());
-        Assert.Contains(message, provider.GetProperty("message").GetString());
-        Assert.True(provider.GetProperty("billing").GetBoolean());
-    }
-
-    [Theory]
-    // A documented server error is told as that error (500); a code no vendor documents a status for reads as an upstream
-    // that failed its response (502). Both are passing failures the shell tells as «try again shortly».
-    [InlineData("""{"error":{"message":"The server had an error while processing your request.","code":"server_error"}}""", 500, "server_error")]
-    [InlineData("""{"error":{"message":"Something odd happened.","code":"odd_failure"}}""", 502, "odd_failure")]
-    // A compatible server that writes the status in the code: a bad request is not a wait-and-retry.
-    [InlineData("""{"error":{"message":"Prompt is malformed.","code":400}}""", 400, "Prompt is malformed.")]
-    public async Task When_the_server_fails_an_answer_it_had_started_the_person_is_told_it_failed_on_the_way_not_that_it_finished(string failure, int status, string said)
-    {
-        await using var host = await StartAsync(fixedAtStart: true);
-        _server.StreamFailure = failure;
-
-        using var response = await host.ControlClient().PostAsync($"/__control/apps/{await host.AdoptAsync(App)}/proposals", new StringContent(
-            """{"instruction":"Change the text to Save","target":{"html":"<button onclick=\"add()\">Add Task</button>","text":"Add Task"}}""",
-            Encoding.UTF8, "application/json"));
-
-        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, response);
-        var provider = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.GetProperty("provider");
-        Assert.Equal(status, provider.GetProperty("status").GetInt32());
-        Assert.Contains(said, provider.GetProperty("message").GetString());
-        Assert.False(provider.TryGetProperty("billing", out _));
-    }
 
     [Theory]
     [InlineData(false)]

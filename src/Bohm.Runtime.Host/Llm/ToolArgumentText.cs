@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Bohm.Runtime.Host.Edit;
+namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
 /// The text of one string field of a tool call's arguments, read while the model writes them: the arguments

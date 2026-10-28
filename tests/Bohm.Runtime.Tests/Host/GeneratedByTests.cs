@@ -28,30 +28,7 @@ public sealed class GeneratedByTests : IAsyncLifetime
         Directory.Delete(_out, recursive: true);
     }
 
-    [Fact]
-    public async Task A_made_application_says_which_model_wrote_it_and_a_change_says_which_wrote_that()
-    {
-        var made = await PromoteAsync("<!doctype html><title>Loans</title><p>v1</p>", "anthropic/claude-sonnet-5-5");
-        Assert.Equal("anthropic/claude-sonnet-5-5", made.GetProperty("generatedBy").GetString());
-        var id = made.GetProperty("id").GetString()!;
 
-        using (var changed = await ReviseAsync(id, "<p>v2</p>", model: "company/qwen3.8-27b")) HttpAssert.Status(HttpStatusCode.Created, changed);
-        using (var byHand = await ReviseAsync(id, "<p>v3</p>", model: null)) HttpAssert.Status(HttpStatusCode.Created, byHand);
-
-        var revisions = await RevisionsAsync(id);
-        Assert.Equal(["anthropic/claude-sonnet-5-5", "company/qwen3.8-27b", null], revisions.Select(r => r.TryGetProperty("generatedBy", out var by) ? by.GetString() : null));
-    }
-
-    [Fact]
-    public async Task Going_back_to_an_earlier_revision_brings_back_what_wrote_it()
-    {
-        var id = (await PromoteAsync("<!doctype html><title>Loans</title><p>v1</p>", "anthropic/claude-sonnet-5-5")).GetProperty("id").GetString()!;
-        using (var changed = await ReviseAsync(id, "<p>v2</p>", model: null)) HttpAssert.Status(HttpStatusCode.Created, changed);
-        using (var restored = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions/1/restore", null)) Assert.True(restored.IsSuccessStatusCode, restored.StatusCode.ToString());
-
-        var inUse = (await RevisionsAsync(id)).Single(r => r.GetProperty("inUse").GetBoolean());
-        Assert.Equal("anthropic/claude-sonnet-5-5", inUse.GetProperty("generatedBy").GetString());
-    }
 
     [Fact]
     public async Task A_file_a_person_brought_in_says_nothing_about_a_model()
@@ -62,15 +39,6 @@ public sealed class GeneratedByTests : IAsyncLifetime
         Assert.True(!view.TryGetProperty("generatedBy", out var by) || by.ValueKind == JsonValueKind.Null);
     }
 
-    [Fact]
-    public async Task The_package_carries_the_model_in_its_manifest_and_leaves_it_out_when_none_wrote_the_code()
-    {
-        var made = (await PromoteAsync("<!doctype html><title>Loans</title>", "anthropic/claude-sonnet-5-5")).GetProperty("id").GetString()!;
-        var brought = await _host.AdoptAsync("<!doctype html><title>Mine</title>");
-
-        Assert.Equal("anthropic/claude-sonnet-5-5", (await ManifestAsync(made)).GetProperty("generatedBy").GetString());
-        Assert.False((await ManifestAsync(brought)).TryGetProperty("generatedBy", out _));
-    }
 
     [Fact]
     public async Task A_model_name_is_kept_trimmed_and_bounded_and_a_blank_one_is_none()

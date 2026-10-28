@@ -26,10 +26,29 @@ control API, and shows its applications.
 The direction beyond this — a declared data model, permissions and scheduled jobs that the runtime carries out — is
 not built yet.
 
+## Application authoring
+
+The desktop application writes and revises applications from a request, as proposals the person reviews and never as
+silent replacements. That layer is part of the desktop application, not of this runtime. It is assembled from iyulab's
+open building blocks around the runtime's control API:
+
+- [IronHive](https://github.com/iyulab/ironhive) — the agent loop, tool approvals and the provider clients (OpenAI,
+  Anthropic, Google, OpenAI-compatible servers) this runtime links;
+- [LMSupply](https://github.com/iyulab/lm-supply) — models on this computer, so the same work continues on a
+  disconnected network;
+- [LocalOrigin](https://github.com/iyulab/local-origin) — the per-application origin every result is served from;
+- [tauri-kit](https://github.com/iyulab/tauri-kit) — the desktop shell and sidecar plumbing.
+
+This runtime keeps everything an authored application needs to keep running — serving, storage, permissions, the model
+proxy — so applications and their data stay usable without the authoring layer. When the layer is present it is found
+as `modules/Bohm.Authoring.dll` beside the executable and plugged in through an extension point; without it the routes
+that write or change an application answer `501`.
+
 ## Status
 
 No standalone releases: the runtime ships inside the desktop application that uses it. The control API, the
-application contract and the on-disk layout are not a public contract yet and change without notice.
+application contract, the on-disk layout and the extension point authoring plugs into are not a public contract yet
+and change without notice.
 
 ## Build and run
 
