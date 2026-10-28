@@ -83,12 +83,10 @@ public sealed class ProviderClientsTests : IAsyncLifetime
         Assert.DoesNotContain(Key, request.Body);
     }
 
-    [Theory]
-    [InlineData("""{ "style": "bearer" }""")]
-    [InlineData("""{ "style": "header", "name": "x-api-key" }""")]
-    public async Task Anthropics_key_goes_through_the_SDKs_own_slot_which_presents_it_as_that_API_version_expects(string auth)
+    [Fact]
+    public async Task Anthropics_key_goes_through_the_SDKs_own_slot_which_presents_it_as_that_API_version_expects()
     {
-        var request = await AskAsync(Declared("anthropic-messages", auth));
+        var request = await AskAsync(Declared("anthropic-messages"));
 
         Assert.Equal("Bearer " + Key, request.Headers["Authorization"]);
         Assert.False(request.Headers.ContainsKey("x-api-key"));

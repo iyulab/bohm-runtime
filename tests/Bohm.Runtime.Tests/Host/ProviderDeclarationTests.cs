@@ -84,6 +84,10 @@ public sealed class ProviderDeclarationTests
     [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "openai-chat", "models": [ { "id": "m", "path": "https://elsewhere.example/" } ] }""", "models")]
     [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "openai-chat", "models": [ { "id": "m" }, { "id": "m" } ] }""", "models")]
     [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "openai-chat", "models": {} }""", "models")]
+    [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "anthropic-messages", "auth": { "style": "header", "name": "x-api-key" } }""", "auth")]
+    [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "anthropic-messages", "auth": { "style": "header", "name": "Authorization" } }""", "auth")]
+    [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "openai-chat", "auth": { "style": "header", "name": "x-api-key" }, "models": [ { "id": "m", "api": "anthropic-messages" } ] }""", "auth")]
+    [InlineData("""{ "id": "p", "baseUrl": "https://p.example/", "api": "google-gemini", "auth": { "style": "header", "name": "authorization" } }""", "auth")]
     [InlineData("[]", "not an object")]
     [InlineData("nope", "not JSON")]
     public void What_cannot_be_used_is_refused_with_the_property_named(string json, string expected) =>

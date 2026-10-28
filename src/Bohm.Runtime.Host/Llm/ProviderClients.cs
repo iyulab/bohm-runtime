@@ -1,14 +1,15 @@
-using IronHive.Abstractions.Http;
-using IronHive.Extensions.AI;
-using IronHive.Providers.Anthropic;
-using IronHive.Providers.GoogleAI;
-using IronHive.Providers.OpenAI;
-using IronHive.Providers.OpenAI.Compatible;
+using IronHive.Providers.Declarations;
 using Microsoft.Extensions.AI;
+
+using Declared = IronHive.Providers.Declarations;
 
 namespace Bohm.Runtime.Host.Llm;
 
-/// <summary>Builds the client for a model of a declared provider: the adapter is picked by the format the provider speaks, not by its name.</summary>
+/// <summary>
+/// Builds the client for a model of a declared provider: the adapter is picked by the format the provider speaks, not by its name.
+/// The declaration is ours (it carries what the person sees — name, limits, origin); IronHive's declaration and factory are what know
+/// each wire's adapter, how its base address is written and where it lets a key go, so this only translates one into the other.
+/// </summary>
 internal static class ProviderClients
 {
     /// <summary>
@@ -18,69 +19,37 @@ internal static class ProviderClients
     /// </summary>
     public static IChatClient Create(ProviderDeclaration provider, DeclaredModel? model, string modelId, string? key)
     {
-        var api = model is null ? provider.Api : provider.ApiOf(model);
-        var root = model is null ? provider.BaseUrl : provider.RootOf(model);
+        var wire = WireOf(model is null ? provider.Api : provider.ApiOf(model));
         var auth = provider.Auth;
         if (auth.Style == AuthStyle.None) key = null;
 
-        switch (api)
+        // A model that speaks another format or sits under another path is resolved here (wire and endpoint above), so the declaration handed over is already about that one model.
+        var declaration = new Declared.ProviderDeclaration
         {
-            case ProviderApi.GoogleGemini:
-                // Gemini through its own API: its models sign each tool call and refuse the next turn without
-                // the signature, which the OpenAI-compatible base drops on the way back. IronHive's Gemini
-                // provider carries the signatures through the tool loop.
-                var google = new GoogleAIConfig { HttpOptions = new Google.GenAI.Types.HttpOptions { BaseUrl = root.ToString().TrimEnd('/') } };
-                if (key is not null)
-                {
-                    if (auth.Style == AuthStyle.Google) google.ApiKey = key;
-                    else google.Headers = new Dictionary<string, string> { [HeaderOf(auth)] = ValueOf(auth, key) };
-                }
+            Id = provider.Id,
+            Wire = wire,
+            BaseUrl = (model is null ? provider.BaseUrl : provider.RootOf(model)).AbsoluteUri,
+            ApiKey = key,
+            KeyHeader = key is null ? null : KeyHeaderOf(auth, wire),
+            KeyScheme = key is not null && auth.Style == AuthStyle.Header ? string.Empty : null,
+        };
 
-                return new GoogleAIMessageGenerator(google).AsChatClient(modelId, "googleai");
-
-            case ProviderApi.AnthropicMessages:
-                // Anthropic through its own Messages API: its OpenAI-compatible base is meant for trying
-                // models out, not for real use, and leaves out what the Messages API carries.
-                var anthropic = new AnthropicConfig { BaseUrl = root.ToString().TrimEnd('/') };
-                if (key is not null)
-                {
-                    // The SDK owns the credential's slot and presents the key the way the API version it speaks expects (a bearer, at the
-                    // version in use) — it refuses that header in Headers. Any other header the key is declared to travel in goes there.
-                    if (auth.Style == AuthStyle.Bearer || (auth.Style == AuthStyle.Header && string.Equals(auth.HeaderName, "x-api-key", StringComparison.OrdinalIgnoreCase))) anthropic.ApiKey = key;
-                    else anthropic.Headers = new Dictionary<string, string> { [HeaderOf(auth)] = ValueOf(auth, key) };
-                }
-
-                return new AnthropicMessageGenerator(anthropic).AsChatClient(modelId, "anthropic");
-
-            case ProviderApi.OpenAIResponses:
-                // OpenAI through its Responses API. Every request says store:false, so what is sent is
-                // answered, not kept on the provider's side.
-                var responses = new OpenAIConfig { BaseUrl = root.ToString().TrimEnd('/'), ApiKey = key ?? string.Empty };
-                if (key is not null && PlacementOf(auth) is { } placed) responses.ApiKeyPlacement = placed;
-                return new OpenAIMessageGenerator(responses).AsChatClient(modelId, "openai");
-
-            default:
-                // Chat Completions at an OpenAI-compatible base — a reasoning model's reasoning_content and a refusal's status are kept.
-                var chat = new OpenAICompatibleConfig { BaseUrl = root.AbsoluteUri, Path = "", ApiKey = key };
-                if (key is not null && PlacementOf(auth) is { } chatPlaced) chat.ApiKeyPlacement = chatPlaced;
-                return new OpenAICompatibleMessageGenerator(chat).AsChatClient(modelId, "openai-compatible");
-        }
+        return ProviderClientFactory.Create(declaration, modelId);
     }
 
-    /// <summary>Where the key goes on a request other than the format's own default; <see langword="null"/> for a bearer key.</summary>
-    private static CredentialPlacement? PlacementOf(ProviderAuth auth) => auth.Style switch
+    private static WireFormat WireOf(ProviderApi api) => api switch
     {
-        AuthStyle.Header => CredentialPlacement.InHeader(auth.HeaderName!),
-        AuthStyle.Google => CredentialPlacement.InHeader("x-goog-api-key"),
+        ProviderApi.GoogleGemini => WireFormat.GoogleAI,
+        ProviderApi.AnthropicMessages => WireFormat.Anthropic,
+        ProviderApi.OpenAIResponses => WireFormat.OpenAIResponses,
+        _ => WireFormat.OpenAIChatCompletions,
+    };
+
+    /// <summary>The header the key travels in when it is not the wire's own; <see langword="null"/> for the wire's own.</summary>
+    private static string? KeyHeaderOf(ProviderAuth auth, WireFormat wire) => auth.Style switch
+    {
+        AuthStyle.Header => auth.HeaderName,
+        AuthStyle.Google => wire == WireFormat.GoogleAI ? null : "x-goog-api-key",
         _ => null,
     };
-
-    private static string HeaderOf(ProviderAuth auth) => auth.Style switch
-    {
-        AuthStyle.Header => auth.HeaderName!,
-        AuthStyle.Google => "x-goog-api-key",
-        _ => "Authorization",
-    };
-
-    private static string ValueOf(ProviderAuth auth, string key) => auth.Style == AuthStyle.Bearer ? "Bearer " + key : key;
 }

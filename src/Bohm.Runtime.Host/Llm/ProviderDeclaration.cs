@@ -207,9 +207,33 @@ internal sealed partial record ProviderDeclaration(
             }
         }
 
+        // Some wires cannot carry the key in some places; say so here instead of letting a request quietly go out another way.
+        if (KeyPlacementProblem(auth!, new[] { api }.Concat(models.Where(m => m.Api is not null).Select(m => m.Api!.Value))) is { } placement)
+            return Refuse(placement, out problem);
+
         problem = null;
         declaration = new ProviderDeclaration(id, name, baseUrl!, api, auth!, models, origin);
         return true;
+    }
+
+    /// <summary>
+    /// What is wrong with presenting the key as <paramref name="auth"/> on one of <paramref name="apis"/>, or <see langword="null"/>.
+    /// Anthropic's SDK writes the key as a bearer and nothing else (an <c>x-api-key</c> or a bare <c>Authorization</c> cannot be sent);
+    /// Gemini's key is <c>x-goog-api-key</c> (an <c>Authorization</c> header is refused). A gateway's own header works on both.
+    /// </summary>
+    private static string? KeyPlacementProblem(ProviderAuth auth, IEnumerable<ProviderApi> apis)
+    {
+        if (auth.Style != AuthStyle.Header) return null;
+        var header = auth.HeaderName!.ToLowerInvariant();
+        foreach (var api in apis)
+        {
+            if (api == ProviderApi.AnthropicMessages && header is "x-api-key" or "authorization")
+                return "auth: Anthropic Messages takes the key as a bearer (style bearer), or in a header of the gateway's own";
+            if (api == ProviderApi.GoogleGemini && header == "authorization")
+                return "auth: Gemini takes the key as style google, or in a header of the gateway's own";
+        }
+
+        return null;
     }
 
     /// <summary>
