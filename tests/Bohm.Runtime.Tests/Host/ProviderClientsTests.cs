@@ -92,6 +92,38 @@ public sealed class ProviderClientsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_key_the_person_keeps_for_Anthropic_in_the_environment_is_never_sent_to_a_provider_they_declared()
+    {
+        // The SDK fills its own empty credential slot from the machine; the declared provider's key goes in a header of its own, so the slot is empty.
+        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-ambient-must-stay-home");
+        Environment.SetEnvironmentVariable("ANTHROPIC_AUTH_TOKEN", "ambient-token-must-stay-home");
+
+        var request = await AskAsync(Declared("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }"""));
+
+        Assert.Equal(Key, request.Headers["x-gateway-key"]);
+        Assert.DoesNotContain(request.Headers, h => h.Value.Contains("must-stay-home"));
+        Assert.False(request.Headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task A_profile_of_the_persons_own_Anthropic_tools_does_not_break_a_declared_provider()
+    {
+        // The failure seen on a machine that had run Anthropic's own tools: the SDK looked for the profile's credentials file and threw.
+        var home = Directory.CreateTempSubdirectory("bohm-anthropic-profile-");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(home.FullName, "credentials"));
+            File.WriteAllText(Path.Combine(home.FullName, "active_config"), "default");
+            Environment.SetEnvironmentVariable("ANTHROPIC_CONFIG_DIR", home.FullName);
+
+            var request = await AskAsync(Declared("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }"""));
+
+            Assert.Equal(Key, request.Headers["x-gateway-key"]);
+        }
+        finally { home.Delete(recursive: true); }
+    }
+
+    [Fact]
     public async Task A_gateway_in_front_of_Anthropic_that_wants_the_key_in_a_header_of_its_own_gets_it_there()
     {
         var request = await AskAsync(Declared("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }"""));
