@@ -91,36 +91,46 @@ public sealed class ProviderClientsTests : IAsyncLifetime
         Assert.False(request.Headers.ContainsKey("x-api-key"));
     }
 
-    [Fact]
-    public async Task A_key_the_person_keeps_for_Anthropic_in_the_environment_is_never_sent_to_a_provider_they_declared()
+    // What a person's own tools leave on a machine: the variables the vendors' SDKs read when they are not handed a credential.
+    private static readonly string[] AmbientVariables =
+    [
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
+    ];
+
+    [Theory]
+    [InlineData("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }""", Key)]
+    [InlineData("anthropic-messages", """{ "style": "none" }""", null)]
+    [InlineData("anthropic-messages", """{ "style": "bearer" }""", null)]
+    [InlineData("google-gemini", """{ "style": "google" }""", null)]
+    [InlineData("google-gemini", """{ "style": "none" }""", null)]
+    [InlineData("openai-chat", """{ "style": "bearer" }""", null)]
+    [InlineData("openai-responses", """{ "style": "bearer" }""", null)]
+    public async Task A_key_kept_on_the_machine_is_never_sent_to_a_provider_the_person_declared(string api, string auth, string? key)
     {
-        // The SDK fills its own empty credential slot from the machine; the declared provider's key goes in a header of its own, so the slot is empty.
-        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-ambient-must-stay-home");
-        Environment.SetEnvironmentVariable("ANTHROPIC_AUTH_TOKEN", "ambient-token-must-stay-home");
-
-        var request = await AskAsync(Declared("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }"""));
-
-        Assert.Equal(Key, request.Headers["x-gateway-key"]);
-        Assert.DoesNotContain(request.Headers, h => h.Value.Contains("must-stay-home"));
-        Assert.False(request.Headers.ContainsKey("Authorization"));
-    }
-
-    [Fact]
-    public async Task A_profile_of_the_persons_own_Anthropic_tools_does_not_break_a_declared_provider()
-    {
-        // The failure seen on a machine that had run Anthropic's own tools: the SDK looked for the profile's credentials file and threw.
-        var home = Directory.CreateTempSubdirectory("bohm-anthropic-profile-");
+        // The SDKs fill an empty credential slot from the machine; only the key the person gave this provider may travel to it.
+        var profile = Directory.CreateTempSubdirectory("bohm-vendor-profile-");
+        var before = AmbientVariables.Append("ANTHROPIC_CONFIG_DIR").ToDictionary(n => n, Environment.GetEnvironmentVariable);
         try
         {
-            Directory.CreateDirectory(Path.Combine(home.FullName, "credentials"));
-            File.WriteAllText(Path.Combine(home.FullName, "active_config"), "default");
-            Environment.SetEnvironmentVariable("ANTHROPIC_CONFIG_DIR", home.FullName);
+            foreach (var name in AmbientVariables) Environment.SetEnvironmentVariable(name, "ambient-must-stay-home");
+            // A profile of the vendor's own tools, with no credentials file: the failure seen on a machine that had run them was a throw.
+            Directory.CreateDirectory(Path.Combine(profile.FullName, "credentials"));
+            File.WriteAllText(Path.Combine(profile.FullName, "active_config"), "default");
+            Environment.SetEnvironmentVariable("ANTHROPIC_CONFIG_DIR", profile.FullName);
 
-            var request = await AskAsync(Declared("anthropic-messages", """{ "style": "header", "name": "x-gateway-key" }"""));
+            var model = api == "openai-responses" ? """{ "id": "m", "path": "v1" }""" : """{ "id": "m" }""";   // the fake serves Responses under /v1
+            var request = await AskAsync(Declared(api, auth, model), key);
 
-            Assert.Equal(Key, request.Headers["x-gateway-key"]);
+            Assert.DoesNotContain(request.Headers, h => h.Value.Contains("must-stay-home"));
+            Assert.DoesNotContain("must-stay-home", request.PathAndQuery);
+            Assert.DoesNotContain("must-stay-home", request.Body);
+            if (key is not null) Assert.Equal(key, request.Headers["x-gateway-key"]);
         }
-        finally { home.Delete(recursive: true); }
+        finally
+        {
+            foreach (var (name, value) in before) Environment.SetEnvironmentVariable(name, value);
+            profile.Delete(recursive: true);
+        }
     }
 
     [Fact]

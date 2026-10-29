@@ -15,11 +15,12 @@ internal static class ProviderClients
     /// <summary>
     /// A client for <paramref name="modelId"/> of <paramref name="provider"/> — through the format of <paramref name="model"/>
     /// when the declaration lists it with one of its own, otherwise the provider's — asked with <paramref name="key"/>
-    /// (<see langword="null"/> for a provider that takes none).
+    /// (<see langword="null"/> for a provider that takes none). The declaration is the whole credential decision: a provider that is handed no key is asked
+    /// without one, never with a key the SDK finds in the machine's environment or in a profile of the person's own tools (IronHive 0.74.0 guarantees it;
+    /// <c>ProviderClientsTests</c> pins it with sentinel values on every wire).
     /// </summary>
     public static IChatClient Create(ProviderDeclaration provider, DeclaredModel? model, string modelId, string? key)
     {
-        IsolateFromAmbientCredentials();
         var wire = WireOf(model is null ? provider.Api : provider.ApiOf(model));
         var auth = provider.Auth;
         if (auth.Style == AuthStyle.None) key = null;
@@ -36,32 +37,6 @@ internal static class ProviderClients
         };
 
         return ProviderClientFactory.Create(declaration, modelId);
-    }
-
-    /// <summary>
-    /// The variables the Anthropic SDK reads on its own when it is not handed a credential. A declared provider's key travels in the header
-    /// its declaration names, so the SDK's own slot stays empty — and the SDK then fills it from the machine: a key in the environment or a profile
-    /// of the person's own Anthropic tools would be sent to whatever address they declared (measured: <c>ANTHROPIC_API_KEY</c> arrived as
-    /// <c>Authorization: Bearer</c> at a third-party gateway). The person declared one provider; only that provider's key may go to it.
-    /// </summary>
-    private static readonly string[] AmbientAnthropicVariables =
-    [
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_PROFILE",
-        "ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
-        "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
-    ];
-
-    /// <summary>
-    /// TODO(upstream: IronHive — build the Anthropic client with an explicit, empty credential so the SDK never resolves one from the machine):
-    /// until then this process stops offering the SDK a machine credential — the variables above are cleared and its profile directory points at an empty one.
-    /// Idempotent; the runtime is the person's own process and takes its keys from its vault, never from the environment.
-    /// </summary>
-    internal static void IsolateFromAmbientCredentials()
-    {
-        foreach (var name in AmbientAnthropicVariables) Environment.SetEnvironmentVariable(name, null);
-        var empty = Path.Combine(Path.GetTempPath(), "bohm-no-ambient-credentials");
-        Directory.CreateDirectory(empty);
-        Environment.SetEnvironmentVariable("ANTHROPIC_CONFIG_DIR", empty);
     }
 
     private static WireFormat WireOf(ProviderApi api) => api switch
