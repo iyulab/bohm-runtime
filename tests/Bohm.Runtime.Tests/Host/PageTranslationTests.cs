@@ -32,6 +32,14 @@ public sealed class PageTranslationTests
     public void The_model_is_told_the_language_by_name() => Assert.Contains("into Korean", PageTranslation.Instruction(PageTranslation.LanguageName("ko")));
 
     [Fact]
+    public void The_model_is_told_to_keep_numbered_tags_as_written()
+    {
+        var instruction = PageTranslation.Instruction(PageTranslation.LanguageName("ko"));
+        Assert.Contains("<t1>", instruction, StringComparison.Ordinal);
+        Assert.Contains("never delete, rename or renumber a tag", instruction, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_pieces_come_back_translated_in_order_from_the_chosen_model()
     {
         await using var server = await FakeProvider.StartAsync();
