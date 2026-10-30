@@ -45,7 +45,7 @@
 
   <!-- Durable files: settings replaced whole (temp sibling, flushed, one rename) and folders sent to the platform's trash. -->
   <ItemGroup>
-    <PackageReference Include="DesktopHost.Files" Version="0.3.0" />
+    <PackageReference Include="DesktopHost.Files" Version="0.5.0" />
   </ItemGroup>
 
   <!-- Signing in to the Bohm account: OAuth 2.0 for native apps (RFC 8252) against the identity service the cloud names. -->
