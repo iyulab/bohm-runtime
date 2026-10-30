@@ -86,8 +86,8 @@ hosts — and, if you work from a private workspace, once more with your own lis
 outside this repository:
 
 ```sh
-npx @iyulab/tauri-kit-dev@0.11.1 public-text --config scripts/public-text.config.js .
-npx @iyulab/tauri-kit-dev@0.11.1 public-text --config <your private config> .
+npx @iyulab/tauri-kit-dev@0.12.0 public-text --config scripts/public-text.config.js .
+npx @iyulab/tauri-kit-dev@0.12.0 public-text --config <your private config> .
 ```
 
 A workaround waiting on a dependency is marked with the package it waits on, and what it needs:
