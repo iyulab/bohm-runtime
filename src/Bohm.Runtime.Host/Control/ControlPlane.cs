@@ -1093,8 +1093,16 @@ internal static partial class ControlPlane
                     break;
                 }
 
+                // A server an administrator listed stands over any declaration under its id, and its key is theirs to connect — not replaced from here.
+                if (providers.ById(declared!.Id) is { Origin: ProviderOrigin.Policy })
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status409Conflict, "policy-provider",
+                        "id: an administrator listed a provider under that id, choose another id").ConfigureAwait(false);
+                    break;
+                }
+
                 // A key belongs to the address it was connected for: the same id declared again at another address does not carry its key there.
-                if (providers.ById(declared!.Id) is { } previous && previous.BaseUrl.Authority != declared.BaseUrl.Authority)
+                if (providers.ById(declared.Id) is { } previous && previous.BaseUrl.Authority != declared.BaseUrl.Authority)
                     context.RequestServices.GetRequiredService<ICredentialVault>().Delete(previous.VaultName);
 
                 await providers.AddAsync(declared, cancel).ConfigureAwait(false);
@@ -1152,8 +1160,8 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                var checkKey = checking.Auth.Style == AuthStyle.None ? null : context.RequestServices.GetRequiredService<ICredentialVault>().Read(checking.VaultName);
-                if (checking.Auth.Style != AuthStyle.None && string.IsNullOrEmpty(checkKey))
+                var checkKey = !checking.Auth.TakesKey ? null : context.RequestServices.GetRequiredService<ICredentialVault>().Read(checking.VaultName);
+                if (checking.Auth.KeyRequired && string.IsNullOrEmpty(checkKey))
                 {
                     await WriteAsync(response, new ProviderCheck("no-key"), cancel).ConfigureAwait(false);
                     break;
@@ -1441,7 +1449,7 @@ internal static partial class ControlPlane
                 }
                 else
                 {
-                    if (provider.Auth.Style == AuthStyle.None)
+                    if (!provider.Auth.TakesKey)
                     {
                         await ControlProblems.RefuseAsync(context, StatusCodes.Status409Conflict, "takes-no-key",
                             "This provider is declared as taking no key.").ConfigureAwait(false);
@@ -2242,9 +2250,10 @@ internal static partial class ControlPlane
 
     private static ProviderView ProviderViewOf(ProviderDeclaration provider, IServiceProvider services)
     {
-        // A provider that takes no key is usable as it stands; one that takes a key is, once the key is connected.
-        var keyRequired = provider.Auth.Style != AuthStyle.None;
-        var connected = !keyRequired || !string.IsNullOrEmpty(services.GetRequiredService<ICredentialVault>().Read(provider.VaultName));
+        // A provider that takes no key, or takes one only when it is connected, is usable as it stands; one that needs a key is, once it is connected.
+        var keyRequired = provider.Auth.TakesKey;
+        var keyConnected = keyRequired && !string.IsNullOrEmpty(services.GetRequiredService<ICredentialVault>().Read(provider.VaultName));
+        var connected = !provider.Auth.KeyRequired || keyConnected;
         // What answers an application's request for a built-in provider with no key — a provider the application cannot name has no such request.
         var answeredBy = connected || LlmProviders.ById(provider.Id) is not { } known || !ChatBridges.AnswersChat(known) ? null
             : services.GetRequiredService<CompanyModel>().Configured ? "company"
@@ -2252,7 +2261,7 @@ internal static partial class ControlPlane
             : null;
         return new(provider.Id, provider.Name, provider.BaseUrl.Authority, connected, answeredBy,
             provider.Origin switch { ProviderOrigin.BuiltIn => "built-in", ProviderOrigin.Policy => "policy", _ => "added" },
-            ProviderApis.NameOf(provider.Api), keyRequired,
+            ProviderApis.NameOf(provider.Api), keyRequired, keyConnected, provider.Auth.KeyOptional,
             provider.Models.Select(m => new ProviderModelView(m.Id, m.Name, m.Api is { } own ? ProviderApis.NameOf(own) : null, m.Path,
                 m.Limits.ContextWindow, m.Limits.MaxOutputTokens, m.Limits.Reasoning, m.Input)).ToList());
     }
@@ -2262,10 +2271,12 @@ internal static partial class ControlPlane
     /// <param name="AnsweredBy">What, with no key connected, answers this provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or <see langword="null"/> (nothing — the application is told to connect a key).</param>
     /// <param name="Origin"><c>built-in</c>, <c>added</c> (by the person) or <c>policy</c> (listed by whoever administers this computer).</param>
     /// <param name="Api">The format it speaks (<see cref="ProviderApis"/>).</param>
-    /// <param name="KeyRequired">Whether it takes a key.</param>
+    /// <param name="KeyRequired">Whether it takes a key — one that can be connected (<paramref name="KeyOptional"/>: and is not needed to use it).</param>
+    /// <param name="KeyConnected">Whether a key is connected for it.</param>
+    /// <param name="KeyOptional">Whether it is usable without a key, taking one when it is connected — a server an administrator listed.</param>
     /// <param name="Models">The models its declaration lists — none for a provider whose model the person names.</param>
     internal sealed record ProviderView(string Id, string Name, string Host, bool Connected, string? AnsweredBy,
-        string Origin, string Api, bool KeyRequired, IReadOnlyList<ProviderModelView> Models);
+        string Origin, string Api, bool KeyRequired, bool KeyConnected, bool KeyOptional, IReadOnlyList<ProviderModelView> Models);
 
     internal sealed record ProviderModelView(string Id, string? Name, string? Api, string? Path, int? ContextWindow, int? MaxTokens, bool? Reasoning, IReadOnlyList<string>? Input);
 

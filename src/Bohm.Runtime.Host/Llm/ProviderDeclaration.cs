@@ -67,11 +67,21 @@ internal enum AuthStyle
 
 /// <param name="Style">How the key is presented.</param>
 /// <param name="HeaderName">The header's name when <paramref name="Style"/> is <see cref="AuthStyle.Header"/>.</param>
-internal sealed record ProviderAuth(AuthStyle Style, string? HeaderName = null)
+/// <param name="KeyOptional">The key is presented when one is connected but none is needed — a server an administrator listed, which may or may not ask for one. Not part of the file format: only a listed server has it.</param>
+internal sealed record ProviderAuth(AuthStyle Style, string? HeaderName = null, bool KeyOptional = false)
 {
     public static readonly ProviderAuth Bearer = new(AuthStyle.Bearer);
 
     public static readonly ProviderAuth None = new(AuthStyle.None);
+
+    /// <summary>A bearer key that is presented when connected and not needed to use the provider.</summary>
+    public static readonly ProviderAuth OptionalBearer = new(AuthStyle.Bearer, KeyOptional: true);
+
+    /// <summary>Whether the provider has a place for a key at all — one that can be connected, and is presented when it is.</summary>
+    public bool TakesKey => Style != AuthStyle.None;
+
+    /// <summary>Whether the provider cannot be used until a key is connected.</summary>
+    public bool KeyRequired => TakesKey && !KeyOptional;
 
     internal static string NameOf(AuthStyle style) => style switch
     {
@@ -135,8 +145,15 @@ internal sealed partial record ProviderDeclaration(
     /// <summary>Where the key of provider <paramref name="id"/> is kept in the vault.</summary>
     public static string VaultNameOf(string id) => $"llm/{id}";
 
+    /// <summary>
+    /// A place in the vault of its own for the key, when it is not <see cref="VaultNameOf"/> of the id — a server an administrator
+    /// listed keeps its key where a listed server's key has always been kept (<see cref="CompanyModel.VaultNameOf"/>), so a key already
+    /// connected stays connected. Not part of the file format.
+    /// </summary>
+    public string? KeyVault { get; init; }
+
     /// <summary>Where this provider's key is kept in the vault.</summary>
-    public string VaultName => VaultNameOf(Id);
+    public string VaultName => KeyVault ?? VaultNameOf(Id);
 
     /// <summary>The format <paramref name="model"/> is spoken in.</summary>
     public ProviderApi ApiOf(DeclaredModel model) => model.Api ?? Api;
@@ -149,6 +166,9 @@ internal sealed partial record ProviderDeclaration(
 
     [GeneratedRegex("^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")]
     private static partial Regex IdPattern();
+
+    /// <summary>Whether <paramref name="id"/> is one a declaration may carry: the pattern, and not one that names something else.</summary>
+    public static bool IsUsableId(string id) => IdPattern().IsMatch(id) && !Reserved.Contains(id);
 
     [GeneratedRegex("^[A-Za-z0-9-]{1,64}$")]
     private static partial Regex HeaderNamePattern();

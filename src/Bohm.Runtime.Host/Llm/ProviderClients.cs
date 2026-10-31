@@ -23,7 +23,7 @@ internal static class ProviderClients
     {
         var wire = WireOf(model is null ? provider.Api : provider.ApiOf(model));
         var auth = provider.Auth;
-        if (auth.Style == AuthStyle.None) key = null;
+        if (!auth.TakesKey) key = null;
 
         // A model that speaks another format or sits under another path is resolved here (wire and endpoint above), so the declaration handed over is already about that one model.
         var declaration = new Declared.ProviderDeclaration

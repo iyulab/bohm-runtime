@@ -71,7 +71,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     public EditModelMissing? Missing => Remembered switch
     {
         { Provider: CloudAccount.ProviderId } => !account.SignedIn ? new("account", CloudAccount.ProviderId) : null,
-        { } chosen => catalog.ById(chosen.Provider) is { } provider && (provider.Auth.Style == AuthStyle.None || !string.IsNullOrEmpty(vault.Read(provider.VaultName))) ? null : new("key", chosen.Provider),
+        { } chosen => catalog.ById(chosen.Provider) is { } provider && (!provider.Auth.KeyRequired || !string.IsNullOrEmpty(vault.Read(provider.VaultName))) ? null : new("key", chosen.Provider),
         null => company.Configured || local.Configured ? null : new("localModel", null),
     };
 
@@ -138,14 +138,18 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         }
 
         var provider = catalog.ById(chosen.Provider)!;
-        var key = provider.Auth.Style == AuthStyle.None ? null : vault.Read(provider.VaultName);
-        if (provider.Auth.Style != AuthStyle.None && string.IsNullOrEmpty(key)) return null;
+        var key = KeyOf(provider);
+        if (provider.Auth.KeyRequired && key is null) return null;
 
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var declared = provider.Find(chosen.Model);
         return new(Kept(chosen, provider.BaseUrl + "\n" + key, () => Counted(provider, declared, chosen.Model, key)),
             $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
     }
+
+    /// <summary>The key connected for <paramref name="provider"/>, or <see langword="null"/> when it takes none or none is connected.</summary>
+    private string? KeyOf(ProviderDeclaration provider) =>
+        provider.Auth.TakesKey && vault.Read(provider.VaultName) is { Length: > 0 } key ? key : null;
 
     /// <summary>
     /// The client for <paramref name="model"/> of <paramref name="provider"/>, counted as sent to the provider's host. A provider the
@@ -176,8 +180,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     public (IChatClient Client, string Name)? Reviewer()
     {
         if (options.ReviewModel is not { } review || catalog.ById(review.Provider) is not { } provider) return null;
-        var key = provider.Auth.Style == AuthStyle.None ? null : vault.Read(provider.VaultName);
-        if (provider.Auth.Style != AuthStyle.None && string.IsNullOrEmpty(key)) return null;
+        var key = KeyOf(provider);
+        if (provider.Auth.KeyRequired && key is null) return null;
         var identity = provider.BaseUrl + "\n" + key;
         lock (_clientLock)
         {

@@ -41,6 +41,45 @@ public sealed record CompanyModelList(IReadOnlyList<CompanyServer> Servers)
             ? found.Choice(listed)
             : null;
 
+    /// <summary>
+    /// The listed servers as the declarations they are (<see cref="ProviderOrigin.Policy"/>): an OpenAI-compatible server at the listed
+    /// address, its models as listed, and a key that is presented when the person connected one and is not needed otherwise.
+    /// A server's id is its name made into one (lowercase letters, digits and <c>-</c>); a name that cannot be one — or that another
+    /// listed server already took — gets a numbered id, so every listed server is a provider. The key stays where a listed server's key
+    /// has always been kept (<see cref="CompanyModel.VaultNameOf"/>), under the name in the list, whatever its id.
+    /// </summary>
+    internal IReadOnlyList<ProviderDeclaration> ToDeclarations()
+    {
+        var taken = new HashSet<string>();
+        var declarations = new List<ProviderDeclaration>();
+        foreach (var server in Servers)
+        {
+            var id = IdOf(server.Name, taken);
+            taken.Add(id);
+            declarations.Add(new ProviderDeclaration(id, server.Name.Length > 0 ? server.Name : "Organization", server.Endpoint, ProviderApi.OpenAIChat,
+                ProviderAuth.OptionalBearer,
+                server.Models.Select(m => new DeclaredModel(m.Id, m.Name, null, null, m.Limits, m.Input)).ToList(),
+                ProviderOrigin.Policy) { KeyVault = CompanyModel.VaultNameOf(server.Name) });
+        }
+
+        return declarations;
+    }
+
+    private static string IdOf(string name, HashSet<string> taken)
+    {
+        var slug = string.Join('-', System.Text.RegularExpressions.Regex.Split(name.ToLowerInvariant(), "[^a-z0-9]+").Where(part => part.Length > 0));
+        if (slug.Length > ProviderDeclaration.MaxId) slug = slug[..ProviderDeclaration.MaxId].TrimEnd('-');
+        if (slug.Length == 0) slug = "organization";
+        var stem = slug;
+        for (var n = 2; !ProviderDeclaration.IsUsableId(slug) || taken.Contains(slug); n++)
+        {
+            var suffix = "-" + n;
+            slug = stem[..Math.Min(stem.Length, ProviderDeclaration.MaxId - suffix.Length)].TrimEnd('-') + suffix;
+        }
+
+        return slug;
+    }
+
     /// <summary>A list of the one server and model given the older way — an address and a model's name.</summary>
     /// <remarks>Its server has no name, so its key stays where a server's key was kept before lists.</remarks>
     public static CompanyModelList Of(CompanyModelOptions server) =>

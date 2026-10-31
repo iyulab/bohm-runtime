@@ -1,8 +1,8 @@
 namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
-/// The providers the person may choose from: the built-in ones and the ones added (<see cref="ProviderStore"/>),
-/// one per id. A built-in provider whose traffic is sent to a gateway instead
+/// The providers the person may choose from: the built-in ones, the ones added (<see cref="ProviderStore"/>) and the servers an
+/// administrator listed (<see cref="RuntimeHostOptions.CompanyModels"/>, as <see cref="ProviderOrigin.Policy"/>), one per id. A built-in provider whose traffic is sent to a gateway instead
 /// (<see cref="RuntimeHostOptions.LlmEndpoints"/>) is listed with the gateway's address.
 /// </summary>
 internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
@@ -69,7 +69,7 @@ internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
     }
 
     private IReadOnlyList<ProviderDeclaration> Merged() =>
-        ProviderStore.Merge(ProviderDeclaration.BuiltIn.Select(Redirected), _added);
+        ProviderStore.Merge(ProviderDeclaration.BuiltIn.Select(Redirected), _added, options.CompanyModels?.ToDeclarations() ?? []);
 
     /// <summary>
     /// A built-in provider at the gateway its traffic is sent to, when one is set: the gateway's address
