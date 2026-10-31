@@ -67,7 +67,7 @@ internal enum AuthStyle
 
 /// <param name="Style">How the key is presented.</param>
 /// <param name="HeaderName">The header's name when <paramref name="Style"/> is <see cref="AuthStyle.Header"/>.</param>
-/// <param name="KeyOptional">The key is presented when one is connected but none is needed — a server an administrator listed, which may or may not ask for one. Not part of the file format: only a listed server has it.</param>
+/// <param name="KeyOptional">The key is presented when one is connected but none is needed — a server that may or may not ask for one (<c>"optional": true</c> in the declaration; an administrator's listed server always has it). A provider that takes no key has no key to make optional.</param>
 internal sealed record ProviderAuth(AuthStyle Style, string? HeaderName = null, bool KeyOptional = false)
 {
     public static readonly ProviderAuth Bearer = new(AuthStyle.Bearer);
@@ -305,13 +305,21 @@ internal sealed partial record ProviderDeclaration(
         auth = ProviderAuth.Bearer;
         if (!element.TryGetProperty("auth", out var value)) return true;
         if (value.ValueKind != JsonValueKind.Object) return false;
+        // «optional»: the key is presented when one is connected and is not needed to use the provider — a server that may or may not ask for one.
+        var optional = false;
+        if (value.TryGetProperty("optional", out var optionalValue))
+        {
+            if (optionalValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+            optional = optionalValue.GetBoolean();
+        }
+
         switch (Text(value, "style")?.ToLowerInvariant())
         {
             case null or "bearer":
-                auth = ProviderAuth.Bearer;
+                auth = optional ? ProviderAuth.OptionalBearer : ProviderAuth.Bearer;
                 return true;
             case "google":
-                auth = new ProviderAuth(AuthStyle.Google);
+                auth = new ProviderAuth(AuthStyle.Google, KeyOptional: optional);
                 return true;
             case "none":
                 auth = ProviderAuth.None;
@@ -319,7 +327,7 @@ internal sealed partial record ProviderDeclaration(
             case "header":
                 var header = Text(value, "name");
                 if (header is null || !HeaderNamePattern().IsMatch(header) || ForbiddenHeaders.Contains(header.ToLowerInvariant())) return false;
-                auth = new ProviderAuth(AuthStyle.Header, header);
+                auth = new ProviderAuth(AuthStyle.Header, header, optional);
                 return true;
             default:
                 return false;
@@ -398,6 +406,7 @@ internal sealed partial record ProviderDeclaration(
         writer.WriteStartObject("auth");
         writer.WriteString("style", ProviderAuth.NameOf(Auth.Style));
         if (Auth.HeaderName is { } header) writer.WriteString("name", header);
+        if (Auth.KeyOptional) writer.WriteBoolean("optional", true);
         writer.WriteEndObject();
         writer.WriteStartArray("models");
         foreach (var model in Models)

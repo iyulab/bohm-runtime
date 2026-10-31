@@ -115,6 +115,41 @@ public sealed class ProviderDeclarationTests
         Assert.Equal(ModelLimits.Unknown, declaration.Models[0].Limits);
     }
 
+    [Theory]
+    [InlineData("""{ "style": "bearer", "optional": true }""", "Bearer", null)]
+    [InlineData("""{ "optional": true }""", "Bearer", null)]
+    [InlineData("""{ "style": "header", "name": "x-token", "optional": true }""", "Header", "x-token")]
+    [InlineData("""{ "style": "google", "optional": true }""", "Google", null)]
+    public void A_key_may_be_declared_optional_and_it_reads_back(string auth, string style, string? header)
+    {
+        var declared = Parse($$"""{ "id": "mine", "baseUrl": "https://gw.example/", "api": "openai-chat", "auth": {{auth}} }""");
+
+        Assert.Equal(new ProviderAuth(Enum.Parse<AuthStyle>(style), header, KeyOptional: true), declared.Auth);
+        Assert.True(declared.Auth.TakesKey);
+        Assert.False(declared.Auth.KeyRequired);
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) declared.WriteTo(writer);
+        Assert.Equal(declared.Auth, Parse(System.Text.Encoding.UTF8.GetString(stream.ToArray())).Auth);
+    }
+
+    [Fact]
+    public void A_key_is_required_unless_declared_optional_and_a_provider_without_one_writes_no_flag()
+    {
+        var required = Parse("""{ "id": "a", "baseUrl": "https://gw.example/", "api": "openai-chat" }""");
+        var none = Parse("""{ "id": "b", "baseUrl": "http://localhost:1/", "api": "openai-chat", "auth": { "style": "none", "optional": true } }""");
+
+        Assert.True(required.Auth.KeyRequired);
+        Assert.False(none.Auth.TakesKey);   // nothing to make optional
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) required.WriteTo(writer);
+        Assert.DoesNotContain("optional", System.Text.Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
+    [Fact]
+    public void An_optional_that_is_not_true_or_false_is_refused() =>
+        Assert.Contains("auth", Refused("""{ "id": "a", "baseUrl": "https://gw.example/", "api": "openai-chat", "auth": { "optional": "yes" } }"""));
+
     [Fact]
     public void What_is_written_reads_back_the_same_and_has_no_key()
     {
