@@ -1082,7 +1082,7 @@ internal static partial class ControlPlane
             {
                 var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
                 if (!ProviderDeclaration.TryParse(System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)),
-                        ProviderOrigin.Person, out var declared, out var declaredProblem))
+                        ProviderOrigin.Person, out var declared, out var declaredProblem, strictLimits: true))
                 {
                     await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "invalid-provider", declaredProblem!).ConfigureAwait(false);
                     break;

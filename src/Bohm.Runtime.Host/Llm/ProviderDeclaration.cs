@@ -177,13 +177,15 @@ internal sealed partial record ProviderDeclaration(
     /// Reads one declaration. <paramref name="problem"/> says what was wrong with a refusal, naming the
     /// property — it is for the person who wrote the declaration, so it is plain words and never echoes a value.
     /// </summary>
-    public static bool TryParse(string? json, ProviderOrigin origin, out ProviderDeclaration? declaration, out string? problem)
+    /// <param name="strictLimits">Refuses a model whose limits do not fit together (a zero or negative size, an answer longer than the context) instead of
+    /// taking them as unknown — for a declaration a person is handing in now, who is told; a file read back keeps the server it holds.</param>
+    public static bool TryParse(string? json, ProviderOrigin origin, out ProviderDeclaration? declaration, out string? problem, bool strictLimits = false)
     {
         declaration = null;
         try
         {
             using var document = JsonDocument.Parse(json ?? "");
-            return TryParse(document.RootElement, origin, out declaration, out problem);
+            return TryParse(document.RootElement, origin, out declaration, out problem, strictLimits);
         }
         catch (JsonException)
         {
@@ -193,7 +195,7 @@ internal sealed partial record ProviderDeclaration(
     }
 
     /// <inheritdoc cref="TryParse(string?, ProviderOrigin, out ProviderDeclaration?, out string?)"/>
-    public static bool TryParse(JsonElement element, ProviderOrigin origin, out ProviderDeclaration? declaration, out string? problem)
+    public static bool TryParse(JsonElement element, ProviderOrigin origin, out ProviderDeclaration? declaration, out string? problem, bool strictLimits = false)
     {
         declaration = null;
         if (element.ValueKind != JsonValueKind.Object) return Refuse("not an object", out problem);
@@ -223,7 +225,7 @@ internal sealed partial record ProviderDeclaration(
             if (list.ValueKind != JsonValueKind.Array) return Refuse("models: not a list", out problem);
             foreach (var entry in list.EnumerateArray())
             {
-                if (!TryModel(entry, out var model, out var modelProblem)) return Refuse(modelProblem!, out problem);
+                if (!TryModel(entry, strictLimits, out var model, out var modelProblem)) return Refuse(modelProblem!, out problem);
                 if (models.Any(m => m.Id == model!.Id)) return Refuse("models: a model listed twice", out problem);
                 models.Add(model!);
             }
@@ -336,7 +338,7 @@ internal sealed partial record ProviderDeclaration(
         }
     }
 
-    private static bool TryModel(JsonElement entry, out DeclaredModel? model, out string? problem)
+    private static bool TryModel(JsonElement entry, bool strictLimits, out DeclaredModel? model, out string? problem)
     {
         model = null;
         if (entry.ValueKind != JsonValueKind.Object) return Refuse("models: an entry is not an object", out problem);
@@ -356,9 +358,12 @@ internal sealed partial record ProviderDeclaration(
             if (!TryPath(relative, out path)) return Refuse("models: a path must be relative, without '..', query or fragment", out problem);
         }
 
-        model = new DeclaredModel(id, Text(entry, "name"), api, path,
-            ModelLimits.TryCreate(Count(entry, "contextWindow"), Count(entry, "maxTokens"), Flag(entry, "reasoning"), out var limits) ? limits! : ModelLimits.Unknown,
-            Input(entry));
+        var (window, answer) = (Count(entry, "contextWindow"), Count(entry, "maxTokens"));
+        var fits = ModelLimits.TryCreate(window, answer, Flag(entry, "reasoning"), out var limits);
+        if (!fits && strictLimits && (window is not null || answer is not null))
+            return Refuse("models: contextWindow and maxTokens are positive whole numbers, and an answer cannot be longer than the context", out problem);
+
+        model = new DeclaredModel(id, Text(entry, "name"), api, path, fits ? limits! : ModelLimits.Unknown, Input(entry));
         problem = null;
         return true;
     }

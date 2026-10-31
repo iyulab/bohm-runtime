@@ -330,6 +330,37 @@ public sealed class AnswerModelRouteTests
         Assert.True((await GetAsync(host)).GetProperty("keyConnected").GetBoolean());
     }
 
+    [Theory]
+    [InlineData("""{"id":"m","contextWindow":8192,"maxTokens":16000}""")]
+    [InlineData("""{"id":"m","contextWindow":0}""")]
+    [InlineData("""{"id":"m","maxTokens":-5}""")]
+    public async Task Limits_that_do_not_fit_together_are_refused_when_a_person_hands_in_the_declaration_but_do_not_drop_a_server_read_back_from_a_file(string model)
+    {
+        var declaration = $$"""{ "id": "srv", "baseUrl": "http://models.example/v1", "api": "openai-chat", "auth": { "style": "none" }, "models": [ {{model}} ] }""";
+        await using var host = await RunningHost.StartAsync();
+
+        using var refused = await host.ControlClient().PutAsync("/__control/llm/providers", new StringContent(declaration, Encoding.UTF8, "application/json"));
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        Assert.Contains("maxTokens", await refused.Content.ReadAsStringAsync());
+
+        // Read back from a file, the same declaration keeps its server and takes the limits as unknown.
+        Assert.False(ProviderDeclaration.TryParse(declaration, ProviderOrigin.Person, out _, out _, strictLimits: true));
+        Assert.True(ProviderDeclaration.TryParse(declaration, ProviderOrigin.Person, out var read, out _));
+        Assert.Equal(ModelLimits.Unknown, read!.Models[0].Limits);
+    }
+
+    [Fact]
+    public async Task Limits_given_with_a_declared_model_are_the_answer_models_limits()
+    {
+        await using var host = await RunningHost.StartAsync();
+        await DeclareAsync(host, """{ "id": "srv", "baseUrl": "http://models.example/v1", "api": "openai-chat", "auth": { "style": "none" }, "models": [ { "id": "m", "contextWindow": 32768, "maxTokens": 4096, "reasoning": true } ] }""");
+        using (var chosen = await ChooseAsync(host, "srv", "m")) HttpAssert.Status(HttpStatusCode.OK, chosen);
+
+        var view = await GetAsync(host);
+
+        Assert.Equal((32768, 4096, true), (view.GetProperty("contextWindow").GetInt32(), view.GetProperty("maxTokens").GetInt32(), view.GetProperty("reasoning").GetBoolean()));
+    }
+
     /// <summary>A provider with one model at <paramref name="baseUrl"/>, as the person declares a server of their own: a key when one is connected.</summary>
     private static string Server(string baseUrl) =>
         $$"""{ "id": "srv", "name": "Srv", "baseUrl": "{{baseUrl}}", "api": "openai-chat", "auth": { "style": "bearer", "optional": true }, "models": [ { "id": "set-model" } ] }""";
