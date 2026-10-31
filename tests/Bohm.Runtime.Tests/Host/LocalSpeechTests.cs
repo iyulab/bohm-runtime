@@ -145,8 +145,11 @@ public sealed class LocalSpeechTests
         // That makes this the path every start after the first takes — a model said to be here, loaded with download off
         // in a process that did not get it — which is where a cache holding only the quantized files once failed to load.
         Assert.SkipWhen(Environment.GetEnvironmentVariable("BOHM_TEST_SPEECH") != "1", "BOHM_TEST_SPEECH is not set to 1.");
-        var native = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "native");
-        Assert.SkipUnless(OperatingSystem.IsWindows() && File.Exists(Path.Combine(native, "onnxruntime.dll")), "No native ONNX Runtime next to the tests.");
+        // Found the way the host finds it (Program.cs): by the platform's library name, next to the tests or under this platform's runtimes folder.
+        var onnxRuntime = OperatingSystem.IsWindows() ? "onnxruntime.dll" : OperatingSystem.IsMacOS() ? "libonnxruntime.dylib" : "libonnxruntime.so";
+        var native = new[] { AppContext.BaseDirectory, Path.Combine(AppContext.BaseDirectory, "runtimes", System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier, "native") }
+            .FirstOrDefault(d => File.Exists(Path.Combine(d, onnxRuntime)));
+        Assert.SkipUnless(native is not null, "No native ONNX Runtime next to the tests.");
         var source = new LMSupplySpeechModelSource(native);
         Assert.SkipUnless(await source.Artifacts.IsAvailableOfflineAsync("quality"), "The speech model is not in the model library's cache.");
         await using var host = await RunningHost.StartAsync(configure: o => o with
