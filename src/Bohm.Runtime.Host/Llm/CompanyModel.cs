@@ -559,9 +559,18 @@ internal sealed partial class CompanyModel : IDisposable
         var server = endpoint ?? Current?.Endpoint;
         if (server is null) return null;
         if (key is null && Current is { } current && current.Endpoint == server) key = Key;
+        return await ListModelsAsync(server, key, _egress, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The models the server at <paramref name="server"/> serves (<see cref="ModelsAsync"/>), with no server set or chosen —
+    /// nothing is remembered and nothing of an application's goes with it. Counted as sent to the server's host.
+    /// </summary>
+    internal static async Task<ModelsResult> ListModelsAsync(Uri server, string? key, Egress egress, CancellationToken cancellationToken)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(CheckTimeout);
-        _egress.Sent(server.Authority);
+        egress.Sent(server.Authority);
         try
         {
             using var finder = new OpenAICompatibleModelFinder(new OpenAICompatibleConfig { BaseUrl = server.AbsoluteUri, Path = "", ApiKey = key });

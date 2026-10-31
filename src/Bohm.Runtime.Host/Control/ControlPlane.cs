@@ -91,6 +91,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start; the model's limits as they were set, each null when unknown; <c>reportedContextWindow</c> the context window the server's model list reported for the model (vLLM's <c>max_model_len</c>) once it was asked — before the first proposal or question, or by a check — used when <c>contextWindow</c> is not set, null otherwise.</description></item>
 /// <item><term><c>GET /__control/llm/answer-model</c></term><description>The answer model — the model that answers an application's request with no key and makes proposals unless a provider is chosen — as <c>{ provider, model, name, endpoint, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow, choices: [{ provider, providerName, model, name, endpoint, contextWindow, maxTokens, reasoning, input, keyConnected }] }</c>; <c>choices</c> are the models of the providers the person declared that speak OpenAI Chat, or the listed servers' models when an administrator listed them.</description></item>
 /// <item><term><c>PUT /__control/llm/answer-model</c> · <c>DELETE</c></term><description>Chooses <c>{ provider, model }</c> among <c>choices</c> and remembers it (400 for a body that is not that, 409 for one that is not a choice), or chooses none (409 when the servers are listed); the provider's declaration stays. Its key is the provider's own.</description></item>
+/// <item><term><c>POST /__control/llm/answer-model/check</c></term><description>Asks the answer model's server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the answer model, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). It asks for a list, not for an answer: nothing is generated and no tokens are spent (the check of <c>POST /__control/llm/providers/{id}/check</c> asks one short question in the provider's own format). 404 when no model answers. Counted as sent to the server's host.</description></item>
+/// <item><term><c>POST /__control/llm/providers/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed, before any provider is declared for it: from <c>{ endpoint, key? }</c> — an OpenAI-compatible base address (the rules of a provider's <c>baseUrl</c>) and a key to try, left out to use the key connected for a declared provider at that address — answers <c>{ result, status, models: [{ id, contextWindow }], unreached }</c>: <c>result</c> as for the answer model's check; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. Nothing is declared or chosen by asking. 400 when the body is not that or the address is not usable. Counted as sent to the server's host.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). 404 when no server is set. Counted as sent to the server's host.</description></item>
@@ -1112,6 +1114,45 @@ internal static partial class ControlPlane
                 break;
             }
 
+            case ("POST", ["llm", "providers", "models"]):
+            {
+                Uri? listAt;
+                string? listWith;
+                try
+                {
+                    using var query = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                    var asked = query.RootElement;
+                    var at = asked.ValueKind == JsonValueKind.Object && asked.TryGetProperty("endpoint", out var addressValue) && addressValue.ValueKind == JsonValueKind.String
+                        ? addressValue.GetString() : null;
+                    listWith = asked.ValueKind == JsonValueKind.Object && asked.TryGetProperty("key", out var keyValue) && keyValue.ValueKind == JsonValueKind.String
+                        && keyValue.GetString() is { Length: > 0 } given ? given.Trim() : null;
+                    if (!ProviderDeclaration.TryBase(at, out listAt))
+                    {
+                        response.StatusCode = StatusCodes.Status400BadRequest;
+                        break;
+                    }
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                // A key belongs to the address it was connected for: asking a declared provider's address without a key tries that provider's.
+                if (listWith is null)
+                {
+                    var vault = context.RequestServices.GetRequiredService<ICredentialVault>();
+                    listWith = context.RequestServices.GetRequiredService<ProviderCatalog>().All
+                        .Where(p => p.Auth.TakesKey && p.BaseUrl == listAt)
+                        .Select(p => vault.Read(p.VaultName))
+                        .FirstOrDefault(k => !string.IsNullOrEmpty(k));
+                }
+
+                await WriteAsync(response, await CompanyModel.ListModelsAsync(listAt!, listWith, context.RequestServices.GetRequiredService<Egress>(), cancel).ConfigureAwait(false), cancel)
+                    .ConfigureAwait(false);
+                break;
+            }
+
             case ("DELETE", ["llm", "providers", var removeId]):
             {
                 var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
@@ -1217,6 +1258,20 @@ internal static partial class ControlPlane
                 }
 
                 await WriteAsync(response, AnswerModelViewOf(answering), cancel).ConfigureAwait(false);
+                break;
+            }
+
+            case ("POST", ["llm", "answer-model", "check"]):
+            {
+                var answerChecked = await context.RequestServices.GetRequiredService<CompanyModel>()
+                    .CheckAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy)), cancel).ConfigureAwait(false);
+                if (answerChecked is null)
+                {
+                    response.StatusCode = StatusCodes.Status404NotFound;
+                    break;
+                }
+
+                await WriteAsync(response, answerChecked, cancel).ConfigureAwait(false);
                 break;
             }
 
