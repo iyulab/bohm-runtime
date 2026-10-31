@@ -31,7 +31,7 @@ internal sealed record ChosenEditModel(IChatClient Client, string Name, bool OnT
 /// there, which is why it is the person's choice and never the default; every request is counted as sent.
 /// A provider's client owns its connections, so one is kept while the provider, model and key stay the same.
 /// </remarks>
-internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog) : IDisposable
+internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog, LearnedThinking learned) : IDisposable
 {
     /// <summary>The file at the data root the choice is remembered in.</summary>
     protected abstract string FileName { get; }
@@ -161,7 +161,13 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     private IChatClient Counted(ProviderDeclaration provider, DeclaredModel? declared, string model, string? key)
     {
         IChatClient client = new CountedAsSent(ProviderClients.Create(provider, declared, model, key), egress, provider.BaseUrl.Authority);
-        return provider.Origin == ProviderOrigin.BuiltIn ? client : new ModelFitChatClient(client, declared?.Limits ?? ModelLimits.Unknown);
+        if (provider.Origin == ProviderOrigin.BuiltIn) return client;
+
+        // A model that was learned to think stays one past this client's life: the next start knows it before a long task's first request.
+        var address = declared is null ? provider.BaseUrl : provider.RootOf(declared);
+        var limits = declared?.Limits ?? ModelLimits.Unknown;
+        if (limits.Reasoning is null && learned.Thinks(address, model)) limits = limits with { Reasoning = true };
+        return new ModelFitChatClient(client, limits, () => learned.Remember(address, model));
     }
 
     /// <summary>
@@ -246,8 +252,8 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 }
 
 /// <summary>The model the runtime's own agent proposes changes to an application with (<c>edit-model.json</c>).</summary>
-internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog)
-    : ProviderChoice(options, vault, local, company, account, egress, catalog)
+internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog, LearnedThinking learned)
+    : ProviderChoice(options, vault, local, company, account, egress, catalog, learned)
 {
     protected override string FileName => "edit-model.json";
 
@@ -258,8 +264,8 @@ internal sealed class EditModel(RuntimeHostOptions options, ICredentialVault vau
 /// The model questions about the open web pages go to (<c>agent-model.json</c>). The pages may be the
 /// organization's own, so a provider is only ever the person's explicit choice.
 /// </summary>
-internal sealed class AgentModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog)
-    : ProviderChoice(options, vault, local, company, account, egress, catalog)
+internal sealed class AgentModel(RuntimeHostOptions options, ICredentialVault vault, LocalModel local, CompanyModel company, CloudAccount account, Egress egress, ProviderCatalog catalog, LearnedThinking learned)
+    : ProviderChoice(options, vault, local, company, account, egress, catalog, learned)
 {
     protected override string FileName => "agent-model.json";
 

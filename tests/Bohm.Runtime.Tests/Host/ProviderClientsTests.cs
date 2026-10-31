@@ -211,6 +211,46 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_model_learned_to_think_is_known_to_the_next_start_and_to_the_next_client_before_it_is_asked()
+    {
+        _provider.Thinks = true;
+        await ChooseAsync("ollama", "llama");   // declared without a word on whether it thinks
+        var chosen = await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None);
+        Assert.Null(ModelLimits.Of(chosen!.Client, chosen.Limits).Reasoning);
+
+        await chosen.Client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+
+        Assert.True(ModelLimits.Of(chosen.Client, chosen.Limits).Reasoning);
+        var address = _host.Services.GetRequiredService<ProviderCatalog>().ById("ollama")!.BaseUrl;
+        Assert.True(new LearnedThinking(new Bohm.Runtime.Host.RuntimeHostOptions { DataRoot = _host.DataRoot }).Thinks(address, "llama"));   // a later start reads the file
+
+        // Another use of the same model, with a client of its own, knows it from the first request.
+        using var edit = new StringContent("""{"provider":"ollama","model":"llama"}""", System.Text.Encoding.UTF8, "application/json");
+        using var put = await _host.ControlClient().PutAsync("/__control/edit/model", edit);
+        HttpAssert.Status(HttpStatusCode.OK, put);
+        var later = await _host.Services.GetRequiredService<EditModel>().GetAsync(CancellationToken.None);
+        Assert.NotSame(chosen.Client, later!.Client);
+        Assert.True(ModelLimits.Of(later.Client, later.Limits).Reasoning);
+    }
+
+    [Fact]
+    public async Task A_model_the_declaration_says_does_not_think_is_not_marked_by_what_it_sends()
+    {
+        _provider.Thinks = true;
+        Assert.True(ProviderDeclaration.TryParse($$"""
+            { "id": "plain", "baseUrl": "{{_provider.Address}}", "api": "openai-chat", "auth": { "style": "none" }, "models": [ { "id": "p", "reasoning": false } ] }
+            """, ProviderOrigin.Person, out var plain, out var problem), problem);
+        await _host.Services.GetRequiredService<ProviderCatalog>().AddAsync(plain!, CancellationToken.None);
+        await ChooseAsync("plain", "p");
+        var chosen = await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None);
+
+        await chosen!.Client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+
+        Assert.False(ModelLimits.Of(chosen.Client, chosen.Limits).Reasoning);
+        Assert.False(new LearnedThinking(new Bohm.Runtime.Host.RuntimeHostOptions { DataRoot = _host.DataRoot }).Thinks(plain!.BaseUrl, "p"));
+    }
+
+    [Fact]
     public async Task A_provider_that_takes_a_key_is_missing_it_until_it_is_connected()
     {
         await ChooseAsync("keyed", "m");

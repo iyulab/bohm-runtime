@@ -70,12 +70,6 @@ internal sealed partial class CompanyModel : IDisposable
 
     private const string FileName = "company-model.json";
 
-    /// <summary>Format identifier written into <c>company-model-learned.json</c>.</summary>
-    public const string LearnedFormat = "bohm.company-model-learned/0";
-
-    /// <summary>What was learned of servers' models by asking them — kept apart from the choice, which a listed server takes from the list.</summary>
-    private const string LearnedFileName = "company-model-learned.json";
-
     /// <summary>The one short question that tells whether a model thinks — nothing of an application's goes with it.</summary>
     public const string ThinkingQuestion = "Reply with one word: ok";
 
@@ -85,19 +79,18 @@ internal sealed partial class CompanyModel : IDisposable
     private readonly RuntimeHostOptions _options;
     private readonly ICredentialVault _vault;
     private readonly Egress _egress;
+    private readonly LearnedThinking _learned;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
     private CompanyModelOptions? _current;
     private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
     private ModelFitChatClient? _askedFor;
     private ModelFitChatClient? _thinkingAskedFor;
-    private readonly HashSet<string> _thinks;
 
-    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress)
+    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress, LearnedThinking learned)
     {
-        (_options, _vault, _egress) = (options, vault, egress);
+        (_options, _vault, _egress, _learned) = (options, vault, egress, learned);
         var remembered = Read(options);
-        _thinks = ReadLearned(options);
         // A listed choice is taken from the list as it is now: a model no longer listed falls back to the first.
         _current = options.CompanyModels is { } list
             ? list.Find(remembered?.Server ?? "", remembered?.Model) ?? list.First
@@ -260,7 +253,7 @@ internal sealed partial class CompanyModel : IDisposable
     /// Whether the model thinks, when nobody said and it was not learned before: one short question, once
     /// per server, model and key. A model that thinks unasked spends a long task's whole answer thinking the
     /// first time — minutes on a server's model — before it is known; a few words of answer tell it first.
-    /// What it shows is remembered (<see cref="RememberThinks"/>). A server that does not answer in
+    /// What it shows is remembered (<see cref="LearnedThinking"/>). A server that does not answer in
     /// <see cref="ThinkingQuestionTimeout"/> leaves it unknown; the task goes on either way.
     /// </summary>
     private async Task AskThinkingAsync(ModelFitChatClient client, CancellationToken cancellationToken)
@@ -303,57 +296,13 @@ internal sealed partial class CompanyModel : IDisposable
         {
             if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
             var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key));
-            var limits = current.Limits.Reasoning is null && _thinks.Contains(LearnedName(current)) ? current.Limits with { Reasoning = true } : current.Limits;
+            var limits = current.Limits.Reasoning is null && _learned.Thinks(current.Endpoint, current.Model) ? current.Limits with { Reasoning = true } : current.Limits;
             var client = new ModelFitChatClient(
                 new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority), limits,
-                () => RememberThinks(current));
+                () => _learned.Remember(current.Endpoint, current.Model));
             _client = (current, key, client);
             return client;
         }
-    }
-
-    /// <summary>How a server's model is named among what was learned: its address and model name.</summary>
-    private static string LearnedName(CompanyModelOptions server) => server.Endpoint.AbsoluteUri + " " + server.Model;
-
-    /// <summary>
-    /// Remembers that <paramref name="server"/>'s model thinks, so the next start knows it before its first
-    /// long task. Written whole each time; a file that cannot be written leaves it learned for this run only.
-    /// </summary>
-    private void RememberThinks(CompanyModelOptions server)
-    {
-        string[] thinks;
-        lock (_clientLock)
-        {
-            if (!_thinks.Add(LearnedName(server))) return;
-            thinks = [.. _thinks.Order(StringComparer.Ordinal)];
-        }
-
-        try
-        {
-            Directory.CreateDirectory(_options.DataRoot);
-            var path = Path.Combine(_options.DataRoot, LearnedFileName);
-            AtomicFile.WriteAllText(path, JsonSerializer.Serialize(new Learned(LearnedFormat, thinks), CompanyModelJson.Default.Learned) + "\n");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Known for this run; asked again after the next start.
-        }
-    }
-
-    /// <summary>The servers' models learned to think, or none when there is no file or it cannot be read.</summary>
-    private static HashSet<string> ReadLearned(RuntimeHostOptions options)
-    {
-        try
-        {
-            var learned = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(options.DataRoot, LearnedFileName)), CompanyModelJson.Default.Learned);
-            if (learned is { Format: LearnedFormat, Thinks: { } thinks }) return [.. thinks.Where(t => !string.IsNullOrEmpty(t))];
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
-        {
-            // Nothing learned yet, or a file that cannot be used: learned again by asking.
-        }
-
-        return [];
     }
 
     /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
@@ -581,9 +530,6 @@ internal sealed partial class CompanyModel : IDisposable
         [property: System.Text.Json.Serialization.JsonPropertyName("reasoning")] bool? Reasoning = null,
         [property: System.Text.Json.Serialization.JsonPropertyName("server")] string? Server = null);
 
-    /// <summary><c>company-model-learned.json</c>: the servers' models (address and model name) learned to think.</summary>
-    internal sealed record Learned(string Format, string[]? Thinks);
-
     /// <summary>A whole number at <paramref name="name"/> that fits an <see cref="int"/>, or <see langword="null"/>.</summary>
     private static int? Number(JsonElement root, string name) =>
         root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number : null;
@@ -608,5 +554,4 @@ internal sealed class CountedAsSent(IChatClient inner, Egress egress, string hos
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
 [System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Stored))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Learned))]
 internal sealed partial class CompanyModelJson : System.Text.Json.Serialization.JsonSerializerContext;
