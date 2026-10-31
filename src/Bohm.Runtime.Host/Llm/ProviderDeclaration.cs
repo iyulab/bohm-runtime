@@ -212,7 +212,9 @@ internal sealed partial record ProviderDeclaration(
         if (!ProviderApis.TryParse(Text(element, "api"), out var api)) return Refuse("api: openai-chat, openai-responses, anthropic-messages or google-gemini", out problem);
 
         if (!TryAuth(element, out var auth)) return Refuse("auth: style bearer, header (with a name), google or none", out problem);
-        if (auth!.Style != AuthStyle.None && baseUrl!.Scheme == Uri.UriSchemeHttp && !IsLocalAddress(baseUrl.Host))
+        // A key that must be there does not travel over plain http away from this computer or a private network. A key that is only presented when connected
+        // is the organization's own server's (set by its address, as it always could be): the person decides what the address is.
+        if (auth!.KeyRequired && baseUrl!.Scheme == Uri.UriSchemeHttp && !IsLocalAddress(baseUrl.Host))
             return Refuse("baseUrl: a key does not travel over plain http away from this computer or a private network, use https", out problem);
 
         var models = new List<DeclaredModel>();

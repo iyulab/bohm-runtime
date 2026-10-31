@@ -50,9 +50,10 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 /// <summary>
 /// The organization's model server (<see cref="CompanyModelOptions"/>). Either listed by whoever started
 /// the runtime — an administrator's policy (<see cref="CompanyModelList"/>): the person chooses among the
-/// listed models and cannot set another — or set by the person by its address. The choice is remembered
-/// in <c>company-model.json</c> at the data root. A key, when a server wants one, is kept in the vault
-/// like a provider's — one per listed server.
+/// listed models and cannot set another — or set by the person by its address, which makes it a declaration
+/// of the person's own (<see cref="PersonServerId"/>) like any other provider. Which model answers is the
+/// <em>answer model</em>, remembered in <c>answer-model.json</c> at the data root (a provider and its model).
+/// A key, when a server wants one, is kept in the vault like a provider's.
 /// </summary>
 /// <remarks>
 /// When it is set, it answers an application's AI chat requests for a provider with no key connected,
@@ -62,13 +63,24 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 /// </remarks>
 internal sealed partial class CompanyModel : IDisposable
 {
-    /// <summary>Format identifier written into <c>company-model.json</c>.</summary>
-    public const string Format = "bohm.company-model/0";
-
-    /// <summary>Where the key of a server set by its address (or given the older way) is kept in the vault.</summary>
+    /// <summary>Where the key of a server given the older way (an unnamed listed server) was kept in the vault — and, before the answer model, the person's own server's.</summary>
     public const string VaultName = "llm/company-model";
 
-    private const string FileName = "company-model.json";
+    /// <summary>The id of the declaration a server the person set by its address becomes.</summary>
+    public const string PersonServerId = "my-server";
+
+    /// <summary>The name shown for it among the providers.</summary>
+    private const string PersonServerName = "My AI server";
+
+    /// <summary>Format identifier written into <c>answer-model.json</c>.</summary>
+    public const string AnswerFormat = "bohm.answer-model/0";
+
+    private const string AnswerFileName = "answer-model.json";
+
+    /// <summary>What a server the person set by its address was remembered in before the answer model (<see cref="MigrateLegacy"/> moves it).</summary>
+    private const string LegacyFormat = "bohm.company-model/0";
+
+    private const string LegacyFileName = "company-model.json";
 
     /// <summary>The one short question that tells whether a model thinks — nothing of an application's goes with it.</summary>
     public const string ThinkingQuestion = "Reply with one word: ok";
@@ -80,21 +92,21 @@ internal sealed partial class CompanyModel : IDisposable
     private readonly ICredentialVault _vault;
     private readonly Egress _egress;
     private readonly LearnedThinking _learned;
+    private readonly ProviderCatalog _catalog;
+    private readonly IReadOnlyList<ProviderDeclaration> _policy;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
-    private CompanyModelOptions? _current;
+    private (string Provider, string Model)? _selection;
     private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
     private ModelFitChatClient? _askedFor;
     private ModelFitChatClient? _thinkingAskedFor;
 
-    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress, LearnedThinking learned)
+    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress, LearnedThinking learned, ProviderCatalog catalog)
     {
-        (_options, _vault, _egress, _learned) = (options, vault, egress, learned);
-        var remembered = Read(options);
-        // A listed choice is taken from the list as it is now: a model no longer listed falls back to the first.
-        _current = options.CompanyModels is { } list
-            ? list.Find(remembered?.Server ?? "", remembered?.Model) ?? list.First
-            : remembered;
+        (_options, _vault, _egress, _learned, _catalog) = (options, vault, egress, learned, catalog);
+        _policy = options.CompanyModels?.ToDeclarations() ?? [];
+        MigrateLegacy();
+        _selection = ReadSelection();
     }
 
     /// <summary>Whether an administrator listed the servers, so the person only chooses among them.</summary>
@@ -104,16 +116,48 @@ internal sealed partial class CompanyModel : IDisposable
     public CompanyModelList? List => _options.CompanyModels;
 
     /// <summary>The server in use, or <see langword="null"/> when there is none.</summary>
-    public CompanyModelOptions? Current => _current;
+    public CompanyModelOptions? Current => Resolve();
+
+    /// <summary>
+    /// The answer model as a server and model: a listed model from the list as it is now (one no longer listed falls back to the first),
+    /// or the model of a declaration the person set by its address — none when nothing is chosen or the declaration was removed.
+    /// </summary>
+    private CompanyModelOptions? Resolve()
+    {
+        if (_options.CompanyModels is { } list)
+        {
+            if (_selection is { } chosen && IndexOfPolicy(chosen.Provider) is { } at
+                && list.Servers[at].Models.FirstOrDefault(m => m.Id == chosen.Model) is { } listed)
+                return list.Servers[at].Choice(listed);
+            return list.First;
+        }
+
+        if (_selection is not { } person || _catalog.ById(person.Provider) is not { Origin: ProviderOrigin.Person, Api: ProviderApi.OpenAIChat } declaration)
+            return null;
+        var declared = declaration.Find(person.Model);
+        return new CompanyModelOptions(declaration.BaseUrl, person.Model) { Limits = declared?.Limits ?? ModelLimits.Unknown, Input = declared?.Input };
+    }
+
+    /// <summary>Where, among the listed servers, the declaration with <paramref name="providerId"/> sits — the list and its declarations are in the same order.</summary>
+    private int? IndexOfPolicy(string providerId)
+    {
+        for (var i = 0; i < _policy.Count; i++)
+            if (_policy[i].Id == providerId) return i;
+        return null;
+    }
 
     /// <summary>Whether a server is set at all — not whether it answers.</summary>
     public bool Configured => Current is not null;
 
-    /// <summary>Where the key of <paramref name="server"/> (a listed server's name; empty or <see langword="null"/> otherwise) is kept.</summary>
+    /// <summary>Where the key of the listed server <paramref name="server"/> (its name in the list; empty for one given the older way) is kept.</summary>
     public static string VaultNameOf(string? server) => string.IsNullOrEmpty(server) ? VaultName : $"{VaultName}/{server}";
 
+    /// <summary>Where the key of the server in use is kept: a listed server's where it always was, the person's own server's among the providers' (<see cref="ProviderDeclaration.VaultNameOf"/>).</summary>
+    private string KeyVaultOf(string? server) =>
+        !string.IsNullOrEmpty(server) ? VaultNameOf(server) : Fixed ? VaultName : ProviderDeclaration.VaultNameOf(PersonServerId);
+
     /// <summary>Where the key of the server in use is kept.</summary>
-    public string KeyVaultName => VaultNameOf(Current?.Server);
+    public string KeyVaultName => KeyVaultOf(Current?.Server);
 
     /// <summary>The key of the server in use, or <see langword="null"/>.</summary>
     public string? Key => _vault.Read(KeyVaultName) is { Length: > 0 } key ? key : null;
@@ -122,14 +166,15 @@ internal sealed partial class CompanyModel : IDisposable
     public bool KeyConnected => Key is not null;
 
     /// <summary>Whether a key for <paramref name="server"/> is connected.</summary>
-    public bool KeyConnectedFor(string? server) => !string.IsNullOrEmpty(_vault.Read(VaultNameOf(server)));
+    public bool KeyConnectedFor(string? server) => !string.IsNullOrEmpty(_vault.Read(KeyVaultOf(server)));
 
     /// <summary>The host requests go to — what they are counted as sent to.</summary>
     public string? Host => Current?.Endpoint.Authority;
 
     /// <summary>
     /// Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> uses none.
-    /// When the servers are listed, the choice must be one of their models — taken as listed.
+    /// When the servers are listed, the choice must be one of their models — taken as listed. Otherwise the server is the person's
+    /// own declaration (<see cref="PersonServerId"/>), made or replaced here and taken away with <see langword="null"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The servers are listed and <paramref name="choice"/> is not one of their models.</exception>
     public async Task ChooseAsync(CompanyModelOptions? choice, CancellationToken cancellationToken)
@@ -144,26 +189,93 @@ internal sealed partial class CompanyModel : IDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var path = Path.Combine(_options.DataRoot, FileName);
-            if (choice is null)
+            if (List is { } listed)
             {
-                File.Delete(path);
+                var at = listed.Servers.Select((server, i) => (server, i)).First(x => string.Equals(x.server.Name, choice!.Server ?? "", StringComparison.OrdinalIgnoreCase)).i;
+                WriteSelection(_policy[at].Id, choice!.Model);
+            }
+            else if (choice is null)
+            {
+                // Set away: the declaration goes; its key stays where it is, for when a server is set again.
+                File.Delete(Path.Combine(_options.DataRoot, AnswerFileName));
+                _selection = null;
+                await _catalog.RemoveAsync(PersonServerId, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                Directory.CreateDirectory(_options.DataRoot);
-                await AtomicFile.WriteAllTextAsync(path,
-                    JsonSerializer.Serialize(new Stored(Format, choice.Endpoint.AbsoluteUri, choice.Model,
-                        choice.Limits.ContextWindow, choice.Limits.MaxOutputTokens, choice.Limits.Reasoning,
-                        string.IsNullOrEmpty(choice.Server) ? null : choice.Server), CompanyModelJson.Default.Stored) + "\n", cancellationToken).ConfigureAwait(false);
+                await _catalog.AddAsync(PersonDeclaration(choice), cancellationToken).ConfigureAwait(false);
+                WriteSelection(PersonServerId, choice.Model);
             }
-
-            _current = choice;
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>A server the person set by its address, as the declaration it is: OpenAI-compatible, a key when one is connected, the one model.</summary>
+    private static ProviderDeclaration PersonDeclaration(CompanyModelOptions server) =>
+        new(PersonServerId, PersonServerName, server.Endpoint, ProviderApi.OpenAIChat, ProviderAuth.OptionalBearer,
+            [new DeclaredModel(server.Model, null, null, null, server.Limits, server.Input)], ProviderOrigin.Person);
+
+    private void WriteSelection(string provider, string model)
+    {
+        Directory.CreateDirectory(_options.DataRoot);
+        AtomicFile.WriteAllText(Path.Combine(_options.DataRoot, AnswerFileName),
+            JsonSerializer.Serialize(new Answer(AnswerFormat, provider, model), CompanyModelJson.Default.Answer) + "\n");
+        _selection = (provider, model);
+    }
+
+    /// <summary>The remembered answer model, or <see langword="null"/> when there is none or it cannot be read.</summary>
+    private (string Provider, string Model)? ReadSelection()
+    {
+        try
+        {
+            var answer = JsonSerializer.Deserialize(File.ReadAllBytes(Path.Combine(_options.DataRoot, AnswerFileName)), CompanyModelJson.Default.Answer);
+            if (answer is { Format: AnswerFormat, Provider.Length: > 0, Model.Length: > 0 }) return (answer.Provider, answer.Model);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // None chosen, or a file that cannot be used: no answer model until one is chosen again.
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// What was remembered before the answer model (<c>company-model.json</c>) becomes it, once: a listed choice by its server's declaration, a server
+    /// the person set by its address as their own declaration (<see cref="PersonServerId"/>) with the key moved to where a provider's is kept. The
+    /// old file is not read again.
+    /// </summary>
+    private void MigrateLegacy()
+    {
+        var path = Path.Combine(_options.DataRoot, LegacyFileName);
+        if (!File.Exists(path)) return;
+        var legacy = ReadLegacy(path);
+        if (File.Exists(Path.Combine(_options.DataRoot, AnswerFileName)) || legacy is null)
+        {
+            File.Delete(path);
+            return;
+        }
+
+        if (_options.CompanyModels is { } list)
+        {
+            var at = list.Servers.Select((server, i) => (server, i)).FirstOrDefault(x => string.Equals(x.server.Name, legacy.Server ?? "", StringComparison.OrdinalIgnoreCase));
+            if (at.server is not null) WriteSelection(_policy[at.i].Id, legacy.Model);
+        }
+        else
+        {
+            _catalog.AddAsync(PersonDeclaration(legacy), CancellationToken.None).GetAwaiter().GetResult();
+            WriteSelection(PersonServerId, legacy.Model);
+            var moved = ProviderDeclaration.VaultNameOf(PersonServerId);
+            if (_vault.Read(VaultName) is { Length: > 0 } key)
+            {
+                if (string.IsNullOrEmpty(_vault.Read(moved))) _vault.Write(moved, key);
+                _vault.Delete(VaultName);
+            }
+        }
+
+        File.Delete(path);
     }
 
     /// <summary>
@@ -297,15 +409,15 @@ internal sealed partial class CompanyModel : IDisposable
         }
     }
 
-    /// <summary>The remembered choice, or <see langword="null"/> when there is none or it cannot be read.</summary>
-    private static CompanyModelOptions? Read(RuntimeHostOptions options)
+    /// <summary>What <c>company-model.json</c> remembered, or <see langword="null"/> when it cannot be read.</summary>
+    private static CompanyModelOptions? ReadLegacy(string path)
     {
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(options.DataRoot, FileName)));
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
             var root = document.RootElement;
             if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("format", out var format) && format.ValueEquals(Format)
+                && root.TryGetProperty("format", out var format) && format.ValueEquals(LegacyFormat)
                 && root.TryGetProperty("endpoint", out var endpoint) && root.TryGetProperty("model", out var model)
                 && CompanyModelOptions.TryCreate(endpoint.GetString(), model.GetString(), out var stored))
             {
@@ -516,11 +628,8 @@ internal sealed partial class CompanyModel : IDisposable
         _client?.Client.Dispose();
     }
 
-    internal sealed record Stored(string Format, string Endpoint, string Model,
-        [property: System.Text.Json.Serialization.JsonPropertyName("contextWindow")] int? ContextWindow = null,
-        [property: System.Text.Json.Serialization.JsonPropertyName("maxTokens")] int? MaxTokens = null,
-        [property: System.Text.Json.Serialization.JsonPropertyName("reasoning")] bool? Reasoning = null,
-        [property: System.Text.Json.Serialization.JsonPropertyName("server")] string? Server = null);
+    /// <summary><c>answer-model.json</c>: the provider and its model that answer when nothing else is chosen.</summary>
+    internal sealed record Answer(string Format, string Provider, string Model);
 
     /// <summary>A whole number at <paramref name="name"/> that fits an <see cref="int"/>, or <see langword="null"/>.</summary>
     private static int? Number(JsonElement root, string name) =>
@@ -545,5 +654,5 @@ internal sealed class CountedAsSent(IChatClient inner, Egress egress, string hos
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Stored))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Answer))]
 internal sealed partial class CompanyModelJson : System.Text.Json.Serialization.JsonSerializerContext;

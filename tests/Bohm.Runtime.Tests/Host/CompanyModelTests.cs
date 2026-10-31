@@ -62,8 +62,14 @@ public sealed class CompanyModelTests : IAsyncLifetime
             Assert.Equal("http://models.example:8000/v1/", JsonDocument.Parse(await set.Content.ReadAsStringAsync()).RootElement.GetProperty("endpoint").GetString());
         }
 
-        Assert.All(JsonDocument.Parse(await first.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray(),
+        var providers = JsonDocument.Parse(await first.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray().ToList();
+        Assert.All(providers.Where(p => p.GetProperty("origin").GetString() == "built-in"),
             p => Assert.Equal("company", p.GetProperty("answeredBy").GetString()));
+        // The server is a provider of the person's own like any other, and what answers is remembered as the answer model.
+        var mine = providers.Single(p => p.GetProperty("id").GetString() == CompanyModel.PersonServerId);
+        Assert.Equal(("added", "openai-chat", "models.example:8000"), (mine.GetProperty("origin").GetString(), mine.GetProperty("api").GetString(), mine.GetProperty("host").GetString()));
+        Assert.True(File.Exists(Path.Combine(dataRoot, "answer-model.json")));
+        Assert.False(File.Exists(Path.Combine(dataRoot, "company-model.json")));
         await first.StopKeepingDataAsync();
 
         await using var second = await RunningHost.StartAsync(dataRoot);
@@ -73,9 +79,51 @@ public sealed class CompanyModelTests : IAsyncLifetime
 
         using var cleared = await second.ControlClient().DeleteAsync("/__control/llm/company-model");
         HttpAssert.Status(HttpStatusCode.OK, cleared);
-        Assert.False(File.Exists(Path.Combine(dataRoot, "company-model.json")));
-        Assert.All(JsonDocument.Parse(await second.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray(),
-            p => Assert.Equal(JsonValueKind.Null, p.GetProperty("answeredBy").ValueKind));
+        Assert.False(File.Exists(Path.Combine(dataRoot, "answer-model.json")));
+        var after = JsonDocument.Parse(await second.ControlClient().GetStringAsync("/__control/llm")).RootElement.EnumerateArray().ToList();
+        Assert.All(after, p => Assert.Equal(JsonValueKind.Null, p.GetProperty("answeredBy").ValueKind));
+        Assert.DoesNotContain(after, p => p.GetProperty("id").GetString() == CompanyModel.PersonServerId);   // the declaration goes with it
+    }
+
+    [Fact]
+    public async Task What_an_older_launch_remembered_becomes_the_answer_model_once_and_its_key_moves_where_a_providers_key_is_kept()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-model-").FullName;
+        File.WriteAllText(Path.Combine(dataRoot, "company-model.json"),
+            """{"format":"bohm.company-model/0","endpoint":"http://models.example:8000/v1/","model":"qwen","contextWindow":32768,"maxTokens":4096,"reasoning":true}""");
+        var vault = new Bohm.Runtime.Credentials.MemoryCredentialVault();
+        vault.Write("llm/company-model", ServerKey);
+
+        await using var host = await RunningHost.StartAsync(dataRoot, configure: o => o with { Vault = vault });
+
+        var state = await GetAsync(host);
+        Assert.Equal(("http://models.example:8000/v1/", "qwen", 32768, 4096, true),
+            (state.GetProperty("endpoint").GetString(), state.GetProperty("model").GetString(), state.GetProperty("contextWindow").GetInt32(),
+             state.GetProperty("maxTokens").GetInt32(), state.GetProperty("reasoning").GetBoolean()));
+        Assert.True(state.GetProperty("keyConnected").GetBoolean());
+        Assert.False(File.Exists(Path.Combine(dataRoot, "company-model.json")));   // not read again
+        Assert.True(File.Exists(Path.Combine(dataRoot, "answer-model.json")));
+        Assert.Equal(ServerKey, vault.Read("llm/my-server"));
+        Assert.Null(vault.Read("llm/company-model"));
+        var declared = ProviderStore.Read(dataRoot).Single();
+        Assert.Equal((CompanyModel.PersonServerId, ProviderOrigin.Person), (declared.Id, declared.Origin));
+    }
+
+    [Fact]
+    public async Task A_listed_choice_is_remembered_as_the_answer_model_by_its_servers_provider()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-company-model-").FullName;
+        var list = Listed("""{"providers":{"gpu":{"baseUrl":"http://a.example/v1","models":[{"id":"big"}]},"cpu":{"baseUrl":"http://b.example/v1","models":[{"id":"tiny"}]}}}""");
+        var first = await RunningHost.StartAsync(dataRoot, configure: o => o with { CompanyModels = list });
+        using (var set = await SetAsync(first, """{"server":"cpu","model":"tiny"}""")) HttpAssert.Status(HttpStatusCode.OK, set);
+        // the provider id of the listed server, not its name in the list
+        Assert.Equal("cpu", JsonDocument.Parse(File.ReadAllText(Path.Combine(dataRoot, "answer-model.json"))).RootElement.GetProperty("provider").GetString());
+        await first.StopKeepingDataAsync();
+
+        await using var second = await RunningHost.StartAsync(dataRoot, configure: o => o with { CompanyModels = list });
+
+        var again = await GetAsync(second);
+        Assert.Equal(("cpu", "tiny"), (again.GetProperty("server").GetString(), again.GetProperty("model").GetString()));
     }
 
     [Fact]
