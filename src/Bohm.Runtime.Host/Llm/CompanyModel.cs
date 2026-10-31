@@ -138,6 +138,22 @@ internal sealed partial class CompanyModel : IDisposable
         return new CompanyModelOptions(declaration.BaseUrl, person.Model) { Limits = declared?.Limits ?? ModelLimits.Unknown, Input = declared?.Input };
     }
 
+    /// <summary>The id of the provider the answer model is a model of — a listed server's, or the person's own server's — or <see langword="null"/> when none answers.</summary>
+    public string? ProviderId
+    {
+        get
+        {
+            if (Current is null) return null;
+            if (_options.CompanyModels is { } list)
+            {
+                var at = list.Servers.Select((server, i) => (server, i)).FirstOrDefault(x => string.Equals(x.server.Name, Current.Server ?? "", StringComparison.OrdinalIgnoreCase));
+                return at.server is null ? _policy[0].Id : _policy[at.i].Id;
+            }
+
+            return PersonServerId;
+        }
+    }
+
     /// <summary>Where, among the listed servers, the declaration with <paramref name="providerId"/> sits — the list and its declarations are in the same order.</summary>
     private int? IndexOfPolicy(string providerId)
     {

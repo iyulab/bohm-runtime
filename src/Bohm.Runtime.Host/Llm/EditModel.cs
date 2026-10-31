@@ -42,9 +42,6 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     /// <summary>The name a proposal made by the model on this computer is reported with.</summary>
     public const string LocalName = "local";
 
-    /// <summary>The prefix a proposal made by the organization's model server is reported with, before the model's name.</summary>
-    public const string CompanyName = "company";
-
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
     private (EditModelChoice Choice, string Key, IChatClient Client)? _client;
@@ -117,7 +114,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         if (Remembered is not { } chosen)
         {
             if (company.Client() is { } organizations)
-                return new(organizations, $"{CompanyName}/{company.Current!.Model}", OnThisComputer: false,
+                return new(organizations, $"{company.ProviderId}/{company.Current!.Model}", OnThisComputer: false,
                     await company.LimitsAsync(cancellationToken).ConfigureAwait(false), company.Current.Input is { } input ? input.Contains("image") : null);
             if (!local.Configured) return null;
             var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);

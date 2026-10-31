@@ -51,7 +51,7 @@ public sealed class PageTranslationTests
         HttpAssert.Status(HttpStatusCode.OK, response);
         var answer = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal(["안녕하세요", "세계"], answer.GetProperty("texts").EnumerateArray().Select(e => e.GetString()!));
-        Assert.Equal("company/org-model", answer.GetProperty("model").GetString());
+        Assert.Equal("organization/org-model", answer.GetProperty("model").GetString());
         var asked = Assert.Single(server.Asked, r => r.Body.Contains(Instruction, StringComparison.Ordinal));
         Assert.Contains("json_object", asked.Body, StringComparison.Ordinal);
         Assert.Contains("Hello", asked.Body, StringComparison.Ordinal);

@@ -487,7 +487,7 @@ public sealed class WebAgentTests : IDisposable
 
         HttpAssert.Status(HttpStatusCode.OK, response);
         var turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
-        Assert.Equal("company/org-model", turn.GetProperty("model").GetString());
+        Assert.Equal("organization/org-model", turn.GetProperty("model").GetString());
         Assert.Equal(FakeProvider.Reply, turn.GetProperty("text").GetString());
         Assert.Empty(_model.Calls);
         using var sentBody = JsonDocument.Parse(Assert.Single(server.Asked).Body);
