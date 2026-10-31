@@ -32,7 +32,7 @@
   <!-- A JavaScript parser (no engine): an application's inline scripts are read before it is accepted, so a syntax
        error goes back to the model that wrote it instead of reaching the person. -->
   <ItemGroup>
-    <PackageReference Include="Acornima" Version="1.8.0" />
+    <PackageReference Include="Acornima" Version="1.9.1" />
   </ItemGroup>
 
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
@@ -66,7 +66,7 @@
     <PackageReference Include="IronHive.Providers.OpenAI" Version="0.75.0" />
     <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.75.0" />
     <PackageReference Include="LMSupply.Generator" Version="0.139.0" />
-    <PackageReference Include="Markdig" Version="1.4.1" />
+    <PackageReference Include="Markdig" Version="1.5.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
   </ItemGroup>
 
@@ -78,7 +78,7 @@
   -->
   <ItemGroup>
     <PackageReference Include="LMSupply.Transcriber" Version="0.139.0" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
   </ItemGroup>
 
   <Target Name="KeepOnnxRuntimeBesideTheExecutable" AfterTargets="ComputeResolvedFilesToPublishList">
