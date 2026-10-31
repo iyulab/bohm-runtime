@@ -228,18 +228,10 @@ internal sealed partial class CompanyModel : IDisposable
             (_askedFor, server, key) = (client, kept.Server, kept.Key);
         }
 
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(CheckTimeout);
-        _egress.Sent(server.Endpoint.Authority);
         try
         {
-            using var finder = new OpenAICompatibleModelFinder(ConfigOf(server, key));
-            if (await finder.FindModelAsync(server.Model, timeout.Token).ConfigureAwait(false) is LanguageModelCard { ContextWindow: { } window })
+            if (await ServerContextWindow.AskAsync(server.Endpoint, key, server.Model, _egress, cancellationToken).ConfigureAwait(false) is { } window)
                 client.Reported(window);
-        }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            // Not reported: the window stays unknown until a refusal tells it.
         }
         catch (OperationCanceledException)
         {

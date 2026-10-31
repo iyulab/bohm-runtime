@@ -233,6 +233,53 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
         Assert.True(ModelLimits.Of(later.Client, later.Limits).Reasoning);
     }
 
+    private async Task<ChosenEditModel> ChooseOpenAsync(string modelJson)
+    {
+        Assert.True(ProviderDeclaration.TryParse($$"""
+            { "id": "open", "baseUrl": "{{_provider.Address}}", "api": "openai-chat", "auth": { "style": "none" }, "models": [ {{modelJson}} ] }
+            """, ProviderOrigin.Person, out var open, out var problem), problem);
+        await _host.Services.GetRequiredService<ProviderCatalog>().AddAsync(open!, CancellationToken.None);
+        await ChooseAsync("open", "w");
+        return (await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None))!;
+    }
+
+    private int ModelListRequests => _provider.Received.Count(r => r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal));
+
+    [Fact]
+    public async Task A_model_nobody_gave_a_context_window_is_asked_of_its_server_once()
+    {
+        _provider.Models = """{"object":"list","data":[{"id":"w","object":"model","max_model_len":16384}]}""";
+
+        var chosen = await ChooseOpenAsync("""{ "id": "w" }""");
+
+        Assert.Equal(16384, ModelLimits.Of(chosen.Client, chosen.Limits).ContextWindow);
+        Assert.Equal(1, ModelListRequests);
+        await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None);
+        Assert.Equal(1, ModelListRequests);   // the same client is not asked again
+    }
+
+    [Fact]
+    public async Task A_declared_context_window_is_not_asked_of_the_server()
+    {
+        _provider.Models = """{"object":"list","data":[{"id":"w","object":"model","max_model_len":16384}]}""";
+
+        var chosen = await ChooseOpenAsync("""{ "id": "w", "contextWindow": 8192 }""");
+
+        Assert.Equal(8192, ModelLimits.Of(chosen.Client, chosen.Limits).ContextWindow);
+        Assert.Equal(0, ModelListRequests);
+    }
+
+    [Fact]
+    public async Task A_server_that_reports_no_window_leaves_it_unknown_and_the_request_goes_on()
+    {
+        _provider.Models = """{"object":"list","data":[{"id":"w","object":"model"}]}""";
+
+        var chosen = await ChooseOpenAsync("""{ "id": "w" }""");
+
+        Assert.Null(ModelLimits.Of(chosen.Client, chosen.Limits).ContextWindow);
+        Assert.Equal(FakeProvider.Reply, (await chosen.Client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")])).Text);
+    }
+
     [Fact]
     public async Task A_model_the_declaration_says_does_not_think_is_not_marked_by_what_it_sends()
     {

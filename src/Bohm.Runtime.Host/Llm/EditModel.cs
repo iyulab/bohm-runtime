@@ -143,8 +143,41 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var declared = provider.Find(chosen.Model);
-        return new(Kept(chosen, provider.BaseUrl + "\n" + key, () => Counted(provider, declared, chosen.Model, key)),
-            $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
+        var kept = Kept(chosen, provider.BaseUrl + "\n" + key, () => Counted(provider, declared, chosen.Model, key));
+        await AskWindowAsync(kept, provider, declared, chosen.Model, key, cancellationToken).ConfigureAwait(false);
+        return new(kept, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
+    }
+
+    private IChatClient? _windowAskedFor;
+
+    /// <summary>
+    /// A model of a provider the person added or an administrator listed that nobody gave a context window is asked of its server once —
+    /// per client, so per provider, model and key — the way the organization's own server is: the window the server reports (vLLM's
+    /// <c>max_model_len</c>) stands until a refusal says otherwise. Only an OpenAI-compatible list says it; a server that does not, or
+    /// does not answer in time, leaves the window unknown and the request it was asked for goes on either way.
+    /// </summary>
+    private async Task AskWindowAsync(IChatClient client, ProviderDeclaration provider, DeclaredModel? declared, string model, string? key, CancellationToken cancellationToken)
+    {
+        if (provider.Origin == ProviderOrigin.BuiltIn || client is not ModelFitChatClient fit || fit.Limits.ContextWindow is not null) return;
+        if ((declared is null ? provider.Api : provider.ApiOf(declared)) != ProviderApi.OpenAIChat) return;
+        lock (_clientLock)
+        {
+            if (ReferenceEquals(_windowAskedFor, client)) return;
+            _windowAskedFor = client;
+        }
+
+        try
+        {
+            var address = declared is null ? provider.BaseUrl : provider.RootOf(declared);
+            if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { } window)
+                fit.Reported(window);
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_clientLock)
+                if (ReferenceEquals(_windowAskedFor, client)) _windowAskedFor = null;   // asked again next time
+            throw;
+        }
     }
 
     /// <summary>The key connected for <paramref name="provider"/>, or <see langword="null"/> when it takes none or none is connected.</summary>
