@@ -123,8 +123,8 @@ public sealed class PolicyProviderTests
             Assert.True(JsonDocument.Parse(await key.Content.ReadAsStringAsync()).RootElement.GetProperty("keyConnected").GetBoolean());
         }
 
-        var company = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/company-model")).RootElement;
-        var choice = company.GetProperty("choices").EnumerateArray().First(c => c.GetProperty("server").GetString() == "GPU Server");
+        var company = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/answer-model")).RootElement;
+        var choice = company.GetProperty("choices").EnumerateArray().First(c => c.GetProperty("providerName").GetString() == "GPU Server");
         Assert.True(choice.GetProperty("keyConnected").GetBoolean());
     }
 

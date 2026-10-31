@@ -75,8 +75,11 @@ public sealed class AppPreviewTests : IAsyncLifetime
     [Fact]
     public async Task A_preview_routes_model_calls_as_the_application_does_and_declines_them()
     {
-        using (var set = await _host.ControlClient().PutAsync("/__control/llm/company-model", new StringContent(
-            """{"endpoint":"https://models.example.test/v1","model":"m"}""", Encoding.UTF8, "application/json"))) HttpAssert.Status(HttpStatusCode.OK, set);
+        using (var declared = await _host.ControlClient().PutAsync("/__control/llm/providers", new StringContent(
+            """{"id":"my-server","baseUrl":"https://models.example.test/v1","api":"openai-chat","auth":{"style":"bearer","optional":true},"models":[{"id":"m"}]}""",
+            Encoding.UTF8, "application/json"))) HttpAssert.Status(HttpStatusCode.OK, declared);
+        using (var chosen = await _host.ControlClient().PutAsync("/__control/llm/answer-model", new StringContent(
+            """{"provider":"my-server","model":"m"}""", Encoding.UTF8, "application/json"))) HttpAssert.Status(HttpStatusCode.OK, chosen);
         var id = await _host.AdoptAsync(Page);
         var (token, _) = await CreateAsync(id, Page);
         using var preview = _host.ClientFor($"pv-{token}.localhost");

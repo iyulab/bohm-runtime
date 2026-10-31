@@ -187,48 +187,6 @@ internal sealed partial class CompanyModel : IDisposable
     /// <summary>The host requests go to — what they are counted as sent to.</summary>
     public string? Host => Current?.Endpoint.Authority;
 
-    /// <summary>
-    /// Uses <paramref name="choice"/> from now on and remembers it; <see langword="null"/> uses none.
-    /// When the servers are listed, the choice must be one of their models — taken as listed. Otherwise the server is the person's
-    /// own declaration (<see cref="PersonServerId"/>), made or replaced here and taken away with <see langword="null"/>.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">The servers are listed and <paramref name="choice"/> is not one of their models.</exception>
-    public async Task ChooseAsync(CompanyModelOptions? choice, CancellationToken cancellationToken)
-    {
-        if (List is { } list)
-        {
-            choice = choice is null ? null : list.Find(choice.Server ?? "", choice.Model);
-            if (choice is null)
-                throw new InvalidOperationException("The organization's model servers were listed when the runtime was started.");
-        }
-
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (List is { } listed)
-            {
-                var at = listed.Servers.Select((server, i) => (server, i)).First(x => string.Equals(x.server.Name, choice!.Server ?? "", StringComparison.OrdinalIgnoreCase)).i;
-                WriteSelection(_policy[at].Id, choice!.Model);
-            }
-            else if (choice is null)
-            {
-                // Set away: the declaration goes; its key stays where it is, for when a server is set again.
-                File.Delete(Path.Combine(_options.DataRoot, AnswerFileName));
-                _selection = null;
-                await _catalog.RemoveAsync(PersonServerId, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _catalog.AddAsync(PersonDeclaration(choice), cancellationToken).ConfigureAwait(false);
-                WriteSelection(PersonServerId, choice.Model);
-            }
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
-
     /// <summary>One model the person may have answer, and the provider it is a model of.</summary>
     /// <param name="KeyConnected">Whether a key is connected for the provider.</param>
     internal sealed record AnswerChoice(string Provider, string ProviderName, DeclaredModel Model, Uri Endpoint, bool KeyConnected);

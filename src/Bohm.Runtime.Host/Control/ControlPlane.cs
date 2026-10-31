@@ -88,16 +88,10 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/local-model/describe</c></term><description>What getting the model named in the body (a catalog id or a Hugging Face repository) would take, before it starts: <c>{ result, model, name, license, licenseTier, sizeBytes, downloaded }</c> — <c>result</c> is <c>ok</c>, <c>not-found</c> or <c>unreachable</c>; the licence when the catalog knows the model. Asks the model host once — counted as sent to it.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/download</c> · <c>DELETE</c></term><description>Makes the model named in the body the model in use: at once when it is on this computer already (200 — nothing is downloaded or sent, and <c>download</c> is null), otherwise by getting it in the background (202 — progress is the <c>download</c> of <c>GET /__control/llm/local-model</c>: <c>{ model, name, bytes, total, failure }</c>; when it arrives it is the model in use and <c>download</c> is null, and the download is counted as sent to the model host). <c>DELETE</c> stops the one under way. 409 when one is under way or the model was fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
-/// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start; the model's limits as they were set, each null when unknown; <c>reportedContextWindow</c> the context window the server's model list reported for the model (vLLM's <c>max_model_len</c>) once it was asked — before the first proposal or question, or by a check — used when <c>contextWindow</c> is not set, null otherwise.</description></item>
 /// <item><term><c>GET /__control/llm/answer-model</c></term><description>The answer model — the model that answers an application's request with no key and makes proposals unless a provider is chosen — as <c>{ provider, model, name, endpoint, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow, choices: [{ provider, providerName, model, name, endpoint, contextWindow, maxTokens, reasoning, input, keyConnected }] }</c>; <c>choices</c> are the models of the providers the person declared that speak OpenAI Chat, or the listed servers' models when an administrator listed them.</description></item>
 /// <item><term><c>PUT /__control/llm/answer-model</c> · <c>DELETE</c></term><description>Chooses <c>{ provider, model }</c> among <c>choices</c> and remembers it (400 for a body that is not that, 409 for one that is not a choice), or chooses none (409 when the servers are listed); the provider's declaration stays. Its key is the provider's own.</description></item>
 /// <item><term><c>POST /__control/llm/answer-model/check</c></term><description>Asks the answer model's server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the answer model, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). It asks for a list, not for an answer: nothing is generated and no tokens are spent (the check of <c>POST /__control/llm/providers/{id}/check</c> asks one short question in the provider's own format). 404 when no model answers. Counted as sent to the server's host.</description></item>
 /// <item><term><c>POST /__control/llm/providers/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed, before any provider is declared for it: from <c>{ endpoint, key? }</c> — an OpenAI-compatible base address (the rules of a provider's <c>baseUrl</c>) and a key to try, left out to use the key connected for a declared provider at that address — answers <c>{ result, status, models: [{ id, contextWindow }], unreached }</c>: <c>result</c> as for the answer model's check; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. Nothing is declared or chosen by asking. 400 when the body is not that or the address is not usable. Counted as sent to the server's host.</description></item>
-/// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
-/// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
-/// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). 404 when no server is set. Counted as sent to the server's host.</description></item>
-/// <item><term><c>POST /__control/llm/company-model/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed — at <c>{ endpoint?, key? }</c>'s address (the same rules as setting one), or the server in use when none is given (with the connected key when no key is given): <c>{ result, status, models: [{ id, contextWindow }], unreached }</c> — <c>result</c> as for <c>check</c>; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. 400 when the address is not usable, 404 when none is given and no server is set. Counted as sent to the server's host.</description></item>
-/// <item><term><c>PUT /__control/llm/company-model/key</c> · <c>DELETE</c></term><description>Connects the key in the body for the server, stored in the vault, or disconnects it. Many servers want none.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
 /// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/agent/translate</c></term><description>A web page translated where it stands: <c>{ texts: [string], to }</c> — the page's text pieces in order and a language tag — answers <c>{ texts, model }</c>, each piece in that language in the same order (<c>null</c> for a piece the model did not answer — pieces go out numbered and are read back by number, the missing ones asked once more), from the model chosen at <c>/__control/agent/model</c>, as page material (no tools). At most 80 pieces and 6000 characters a request (413 past that — the caller sends batches); 409 and 503 as for <c>/__control/agent/turns</c>, and 503 <c>translate-failed</c> when the model answers none of them.</description></item>
@@ -1275,134 +1269,6 @@ internal static partial class ControlPlane
                 break;
             }
 
-            case ("GET", ["llm", "company-model"]):
-                await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
-                break;
-
-            case ("PUT" or "DELETE", ["llm", "company-model"]):
-                var companyModel = context.RequestServices.GetRequiredService<CompanyModel>();
-                CompanyModelOptions? setTo = null;
-                if (request.Method == "PUT")
-                {
-                    try
-                    {
-                        using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
-                        var root = body.RootElement;
-                        // A listed model is chosen by its server's name and its id, and comes with its listed limits.
-                        if (root.TryGetProperty("server", out var listedServer))
-                        {
-                            setTo = companyModel.List?.Find(listedServer.GetString(), root.GetProperty("model").GetString());
-                            if (setTo is null)
-                            {
-                                response.StatusCode = companyModel.List is null ? StatusCodes.Status400BadRequest : StatusCodes.Status409Conflict;
-                                break;
-                            }
-                        }
-                        // The model's limits are optional; each one left out (or null) is unknown.
-                        else if (!CompanyModelOptions.TryCreate(root.GetProperty("endpoint").GetString(), root.GetProperty("model").GetString(), out setTo)
-                            || !ModelLimits.TryCreate(OptionalCount(root, "contextWindow"), OptionalCount(root, "maxTokens"), OptionalFlag(root, "reasoning"), out var limits))
-                        {
-                            response.StatusCode = StatusCodes.Status400BadRequest;
-                            break;
-                        }
-                        else
-                        {
-                            setTo = setTo! with { Limits = limits! };
-                        }
-                    }
-                    catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
-                    {
-                        response.StatusCode = StatusCodes.Status400BadRequest;
-                        break;
-                    }
-                }
-
-                try
-                {
-                    await companyModel.ChooseAsync(setTo, cancel).ConfigureAwait(false);
-                }
-                catch (InvalidOperationException)
-                {
-                    response.StatusCode = StatusCodes.Status409Conflict;
-                    break;
-                }
-
-                await WriteAsync(response, CompanyModelViewOf(companyModel), cancel).ConfigureAwait(false);
-                break;
-
-            case ("POST", ["llm", "company-model", "check"]):
-                var checkedResult = await context.RequestServices.GetRequiredService<CompanyModel>()
-                    .CheckAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy)), cancel).ConfigureAwait(false);
-                if (checkedResult is null)
-                {
-                    response.StatusCode = StatusCodes.Status404NotFound;
-                    break;
-                }
-
-                await WriteAsync(response, checkedResult, cancel).ConfigureAwait(false);
-                break;
-
-            case ("POST", ["llm", "company-model", "models"]):
-                Uri? listFrom = null;
-                string? listKey = null;
-                try
-                {
-                    var listBody = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
-                    if (listBody.Length > 0)
-                    {
-                        using var listQuery = JsonDocument.Parse(listBody);
-                        var at = listQuery.RootElement.TryGetProperty("endpoint", out var given) && given.ValueKind == JsonValueKind.String ? given.GetString() : null;
-                        listKey = listQuery.RootElement.TryGetProperty("key", out var givenKey) && givenKey.ValueKind == JsonValueKind.String && givenKey.GetString() is { Length: > 0 } k ? k.Trim() : null;
-                        if (!string.IsNullOrWhiteSpace(at))
-                        {
-                            // The same rules as setting a server; the model's name is not known yet.
-                            if (!CompanyModelOptions.TryCreate(at, "-", out var asked))
-                            {
-                                response.StatusCode = StatusCodes.Status400BadRequest;
-                                break;
-                            }
-
-                            listFrom = asked!.Endpoint;
-                        }
-                    }
-                }
-                catch (JsonException)
-                {
-                    response.StatusCode = StatusCodes.Status400BadRequest;
-                    break;
-                }
-
-                var serverModels = await context.RequestServices.GetRequiredService<CompanyModel>().ModelsAsync(listFrom, listKey, cancel).ConfigureAwait(false);
-                if (serverModels is null)
-                {
-                    response.StatusCode = StatusCodes.Status404NotFound;
-                    break;
-                }
-
-                await WriteAsync(response, serverModels, cancel).ConfigureAwait(false);
-                break;
-
-            case ("PUT" or "DELETE", ["llm", "company-model", "key"]):
-                var companyKeys = context.RequestServices.GetRequiredService<ICredentialVault>();
-                if (request.Method == "DELETE")
-                {
-                    companyKeys.Delete(context.RequestServices.GetRequiredService<CompanyModel>().KeyVaultName);
-                }
-                else
-                {
-                    var companyKey = Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)).Trim();
-                    if (companyKey.Length == 0)
-                    {
-                        response.StatusCode = StatusCodes.Status400BadRequest;
-                        break;
-                    }
-
-                    companyKeys.Write(context.RequestServices.GetRequiredService<CompanyModel>().KeyVaultName, companyKey);
-                }
-
-                await WriteAsync(response, CompanyModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
-                break;
-
             case ("GET", ["llm", "local-model"]):
                 await WriteAsync(response, await LocalModelViewOfAsync(context, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
                 break;
@@ -2399,13 +2265,6 @@ internal static partial class ControlPlane
     /// <summary>One live link: its id (to take it back with), address, when it was made and ends, and the page's size.</summary>
     internal sealed record CloudLinkItem(string Id, string Url, DateTimeOffset? CreatedAt, DateTimeOffset? ExpiresAt, long? Bytes);
 
-    private static CompanyModelView CompanyModelViewOf(CompanyModel company) =>
-        new(company.Current?.Endpoint.AbsoluteUri, company.Current?.Model, company.Fixed, company.KeyConnected,
-            company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
-            company.ReportedContextWindow, NullIfEmpty(company.Current?.Server), company.Current?.DisplayName,
-            company.List?.Choices.Select(c => new CompanyModelChoiceView(NullIfEmpty(c.Server), c.Model, c.DisplayName, c.Endpoint.AbsoluteUri,
-                c.Limits.ContextWindow, c.Limits.MaxOutputTokens, c.Limits.Reasoning, c.Input ?? ["text"], company.KeyConnectedFor(c.Server))).ToList());
-
     private static AnswerModelView AnswerModelViewOf(CompanyModel company) =>
         new(company.Current is null ? null : company.ProviderId, company.Current?.Model, company.Current?.DisplayName, company.Current?.Endpoint.AbsoluteUri,
             company.Fixed, company.KeyConnected, company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
@@ -2429,39 +2288,6 @@ internal static partial class ControlPlane
         IReadOnlyList<string> Input, bool KeyConnected);
 
     private static string? NullIfEmpty(string? text) => string.IsNullOrEmpty(text) ? null : text;
-
-    /// <param name="Endpoint">The server's OpenAI-compatible base address, or <see langword="null"/> when none is set.</param>
-    /// <param name="ContextWindow">The model's context window as it was set, or <see langword="null"/> when unknown.</param>
-    /// <param name="MaxTokens">The most tokens one answer may have, as it was set, or <see langword="null"/> when unknown.</param>
-    /// <param name="Reasoning">Whether the model thinks before it answers, as it was set, or <see langword="null"/> when unknown.</param>
-    /// <param name="ReportedContextWindow">The context window the server reported for the model, once it was asked; used when <paramref name="ContextWindow"/> is not set.</param>
-    /// <param name="Fixed">Whether an administrator listed the servers, so the person only chooses among <paramref name="Choices"/>.</param>
-    /// <param name="Server">The listed server in use, by its name; <see langword="null"/> for one set by its address or given the older way.</param>
-    /// <param name="Name">The name to show for the model in use, when the list gives one.</param>
-    /// <param name="Choices">Every listed model, when the servers are listed; <see langword="null"/> otherwise.</param>
-    internal sealed record CompanyModelView(string? Endpoint, string? Model, bool Fixed, bool KeyConnected, int? ContextWindow, int? MaxTokens, bool? Reasoning,
-        int? ReportedContextWindow, string? Server, string? Name, IReadOnlyList<CompanyModelChoiceView>? Choices);
-
-    /// <summary>One listed model the person may choose.</summary>
-    /// <param name="KeyConnected">Whether a key is connected for its server.</param>
-    internal sealed record CompanyModelChoiceView(string? Server, string Model, string? Name, string Endpoint, int? ContextWindow, int? MaxTokens, bool? Reasoning,
-        IReadOnlyList<string> Input, bool KeyConnected);
-
-    /// <summary>
-    /// A whole number at <paramref name="name"/>, or <see langword="null"/> when it is missing or null.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">It is there but is not a whole number that fits.</exception>
-    private static int? OptionalCount(JsonElement root, string name) =>
-        !root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null ? null
-        : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) ? number
-        : throw new InvalidOperationException($"{name} is not a whole number.");
-
-    /// <summary>A true or false at <paramref name="name"/>, or <see langword="null"/> when it is missing or null.</summary>
-    /// <exception cref="InvalidOperationException">It is there but is neither true nor false.</exception>
-    private static bool? OptionalFlag(JsonElement root, string name) =>
-        !root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null ? null
-        : value.ValueKind is JsonValueKind.True or JsonValueKind.False ? value.GetBoolean()
-        : throw new InvalidOperationException($"{name} is neither true nor false.");
 
     internal sealed record DrainResult(bool Quiet);
 
@@ -2520,8 +2346,6 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.LocalModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AnswerModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AnswerChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]

@@ -151,7 +151,7 @@ public sealed class ProcessTests : IDisposable
             using var control = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/") };
             control.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
 
-            var state = JsonDocument.Parse(await control.GetStringAsync("/__control/llm/company-model")).RootElement;
+            var state = JsonDocument.Parse(await control.GetStringAsync("/__control/llm/answer-model")).RootElement;
             Assert.Equal("http://models.example:8000/v1/", state.GetProperty("endpoint").GetString());
             Assert.Equal("qwen", state.GetProperty("model").GetString());
             Assert.True(state.GetProperty("fixed").GetBoolean());

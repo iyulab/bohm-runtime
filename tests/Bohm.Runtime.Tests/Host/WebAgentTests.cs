@@ -877,7 +877,11 @@ public sealed class WebAgentTests : IDisposable
     {
         var host = await RunningHost.StartAsync(configure: o => o with { CompanyModels = CompanyModelList.Of(company) });
         if (Environment.GetEnvironmentVariable("BOHM_TEST_COMPANY_KEY") is { Length: > 0 } key)
-            using (var connected = await host.ControlClient().PutAsync("/__control/llm/company-model/key", new StringContent(key))) HttpAssert.Status(HttpStatusCode.OK, connected);
+        {
+            // The one server the organization lists, given no name, is the provider "organization"; its key is kept where a listed server's has always been.
+            using var connected = await host.ControlClient().PutAsync("/__control/llm/organization/key", new StringContent(key));
+            HttpAssert.Status(HttpStatusCode.OK, connected);
+        }
         return host;
     }
 
