@@ -150,7 +150,7 @@ internal sealed partial class CompanyModel : IDisposable
                 return at.server is null ? _policy[0].Id : _policy[at.i].Id;
             }
 
-            return PersonServerId;
+            return _selection?.Provider ?? PersonServerId;
         }
     }
 
@@ -170,7 +170,7 @@ internal sealed partial class CompanyModel : IDisposable
 
     /// <summary>Where the key of the server in use is kept: a listed server's where it always was, the person's own server's among the providers' (<see cref="ProviderDeclaration.VaultNameOf"/>).</summary>
     private string KeyVaultOf(string? server) =>
-        !string.IsNullOrEmpty(server) ? VaultNameOf(server) : Fixed ? VaultName : ProviderDeclaration.VaultNameOf(PersonServerId);
+        !string.IsNullOrEmpty(server) ? VaultNameOf(server) : Fixed ? VaultName : ProviderDeclaration.VaultNameOf(_selection?.Provider ?? PersonServerId);
 
     /// <summary>Where the key of the server in use is kept.</summary>
     public string KeyVaultName => KeyVaultOf(Current?.Server);
@@ -222,6 +222,63 @@ internal sealed partial class CompanyModel : IDisposable
                 await _catalog.AddAsync(PersonDeclaration(choice), cancellationToken).ConfigureAwait(false);
                 WriteSelection(PersonServerId, choice.Model);
             }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>One model the person may have answer, and the provider it is a model of.</summary>
+    /// <param name="KeyConnected">Whether a key is connected for the provider.</param>
+    internal sealed record AnswerChoice(string Provider, string ProviderName, DeclaredModel Model, Uri Endpoint, bool KeyConnected);
+
+    /// <summary>
+    /// Every model that may be the answer model: the listed servers' models when an administrator listed them, otherwise the models of the
+    /// providers the person declared that speak OpenAI Chat (the format a server answering without a key is asked in).
+    /// </summary>
+    public IReadOnlyList<AnswerChoice> Choices()
+    {
+        IEnumerable<ProviderDeclaration> candidates = Fixed
+            ? _policy
+            : _catalog.All.Where(p => p is { Origin: ProviderOrigin.Person, Api: ProviderApi.OpenAIChat });
+        return candidates
+            .SelectMany(p => p.Models.Select(m => new AnswerChoice(p.Id, p.Name, m, p.BaseUrl, !string.IsNullOrEmpty(_vault.Read(p.VaultName)))))
+            .ToList();
+    }
+
+    /// <summary>Has <paramref name="model"/> of the provider <paramref name="provider"/> answer from now on, and remembers it.</summary>
+    /// <exception cref="InvalidOperationException">It is not one of <see cref="Choices"/>.</exception>
+    public async Task ChooseAsync(string provider, string model, CancellationToken cancellationToken)
+    {
+        if (!Choices().Any(c => c.Provider == provider && c.Model.Id == model))
+            throw new InvalidOperationException("That provider's model may not be the answer model.");
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            WriteSelection(provider, model);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Has none answer from now on. The declaration the answer model was a model of stays — it is the person's provider like any other,
+    /// taken away from the providers' table.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The servers are listed, so one of them always answers.</exception>
+    public async Task ClearAsync(CancellationToken cancellationToken)
+    {
+        if (Fixed) throw new InvalidOperationException("The organization's model servers were listed when the runtime was started.");
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            File.Delete(Path.Combine(_options.DataRoot, AnswerFileName));
+            _selection = null;
         }
         finally
         {

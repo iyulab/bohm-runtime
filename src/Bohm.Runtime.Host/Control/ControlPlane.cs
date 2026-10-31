@@ -89,6 +89,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/local-model/download</c> · <c>DELETE</c></term><description>Makes the model named in the body the model in use: at once when it is on this computer already (200 — nothing is downloaded or sent, and <c>download</c> is null), otherwise by getting it in the background (202 — progress is the <c>download</c> of <c>GET /__control/llm/local-model</c>: <c>{ model, name, bytes, total, failure }</c>; when it arrives it is the model in use and <c>download</c> is null, and the download is counted as sent to the model host). <c>DELETE</c> stops the one under way. 409 when one is under way or the model was fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/local-model/load</c></term><description>Starts loading the chosen model now instead of on the first request (202 with the model's state — <c>loading</c> until it is loaded or <c>error</c> says why not); 409 when no model is chosen.</description></item>
 /// <item><term><c>GET /__control/llm/company-model</c></term><description>The organization's model server: <c>{ endpoint, model, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow }</c> — <c>endpoint</c> and <c>model</c> are null when none is set; <c>fixed</c> when it was set at start; the model's limits as they were set, each null when unknown; <c>reportedContextWindow</c> the context window the server's model list reported for the model (vLLM's <c>max_model_len</c>) once it was asked — before the first proposal or question, or by a check — used when <c>contextWindow</c> is not set, null otherwise.</description></item>
+/// <item><term><c>GET /__control/llm/answer-model</c></term><description>The answer model — the model that answers an application's request with no key and makes proposals unless a provider is chosen — as <c>{ provider, model, name, endpoint, fixed, keyConnected, contextWindow, maxTokens, reasoning, reportedContextWindow, choices: [{ provider, providerName, model, name, endpoint, contextWindow, maxTokens, reasoning, input, keyConnected }] }</c>; <c>choices</c> are the models of the providers the person declared that speak OpenAI Chat, or the listed servers' models when an administrator listed them.</description></item>
+/// <item><term><c>PUT /__control/llm/answer-model</c> · <c>DELETE</c></term><description>Chooses <c>{ provider, model }</c> among <c>choices</c> and remembers it (400 for a body that is not that, 409 for one that is not a choice), or chooses none (409 when the servers are listed); the provider's declaration stays. Its key is the provider's own.</description></item>
 /// <item><term><c>PUT /__control/llm/company-model</c></term><description>Sets the server from <c>{ endpoint, model, contextWindow?, maxTokens?, reasoning? }</c> — its OpenAI-compatible base address (http or https), a model's name and what is known of the model's limits (left out: unknown) — and remembers it; 400 when any is not usable, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/company-model</c></term><description>Sets none; 409 when fixed at start.</description></item>
 /// <item><term><c>POST /__control/llm/company-model/check</c></term><description>Asks the server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the model it was set with, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). 404 when no server is set. Counted as sent to the server's host.</description></item>
@@ -1171,6 +1173,50 @@ internal static partial class ControlPlane
                 using var checkClient = new CountedAsSent(ProviderClients.Create(checking, checkModel, checkModelId, checkKey),
                     context.RequestServices.GetRequiredService<Egress>(), checking.BaseUrl.Authority);
                 await WriteAsync(response, await ProviderCheck.RunAsync(checkClient, cancel).ConfigureAwait(false), cancel).ConfigureAwait(false);
+                break;
+            }
+
+            case ("GET", ["llm", "answer-model"]):
+                await WriteAsync(response, AnswerModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
+                break;
+
+            case ("PUT" or "DELETE", ["llm", "answer-model"]):
+            {
+                var answering = context.RequestServices.GetRequiredService<CompanyModel>();
+                try
+                {
+                    if (request.Method == "DELETE")
+                    {
+                        await answering.ClearAsync(cancel).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        using var body = JsonDocument.Parse(await ReadBodyAsync(request, cancel).ConfigureAwait(false));
+                        var root = body.RootElement;
+                        if (root.ValueKind != JsonValueKind.Object
+                            || !root.TryGetProperty("provider", out var providerId) || providerId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(providerId.GetString())
+                            || !root.TryGetProperty("model", out var modelId) || modelId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(modelId.GetString()))
+                        {
+                            response.StatusCode = StatusCodes.Status400BadRequest;
+                            break;
+                        }
+
+                        await answering.ChooseAsync(providerId.GetString()!.Trim(), modelId.GetString()!.Trim(), cancel).ConfigureAwait(false);
+                    }
+                }
+                catch (JsonException)
+                {
+                    response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Not one of the models that may answer, or the organization's servers are listed and one of them always does.
+                    response.StatusCode = StatusCodes.Status409Conflict;
+                    break;
+                }
+
+                await WriteAsync(response, AnswerModelViewOf(answering), cancel).ConfigureAwait(false);
                 break;
             }
 
@@ -2305,6 +2351,28 @@ internal static partial class ControlPlane
             company.List?.Choices.Select(c => new CompanyModelChoiceView(NullIfEmpty(c.Server), c.Model, c.DisplayName, c.Endpoint.AbsoluteUri,
                 c.Limits.ContextWindow, c.Limits.MaxOutputTokens, c.Limits.Reasoning, c.Input ?? ["text"], company.KeyConnectedFor(c.Server))).ToList());
 
+    private static AnswerModelView AnswerModelViewOf(CompanyModel company) =>
+        new(company.Current is null ? null : company.ProviderId, company.Current?.Model, company.Current?.DisplayName, company.Current?.Endpoint.AbsoluteUri,
+            company.Fixed, company.KeyConnected, company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
+            company.ReportedContextWindow,
+            company.Choices().Select(c => new AnswerChoiceView(c.Provider, c.ProviderName, c.Model.Id, c.Model.Name, c.Endpoint.AbsoluteUri,
+                c.Model.Limits.ContextWindow, c.Model.Limits.MaxOutputTokens, c.Model.Limits.Reasoning, c.Model.Input ?? ["text"], c.KeyConnected)).ToList());
+
+    /// <summary>The model that answers an application's request with no key and makes proposals, the models that may, and what is known of the one in use.</summary>
+    /// <param name="Provider">The id of the provider the answer model is a model of, or <see langword="null"/> when none answers.</param>
+    /// <param name="Name">The name to show for the model in use, when the list of servers gives one.</param>
+    /// <param name="Endpoint">The base address requests go to, or <see langword="null"/> when none answers.</param>
+    /// <param name="Fixed">Whether an administrator listed the servers, so one of their models always answers and the person only chooses among them.</param>
+    /// <param name="KeyConnected">Whether a key is connected for the provider in use.</param>
+    /// <param name="ReportedContextWindow">The context window the server reported for the model, once it was asked; used when the declaration gives none.</param>
+    /// <param name="Choices">Every model that may answer.</param>
+    internal sealed record AnswerModelView(string? Provider, string? Model, string? Name, string? Endpoint, bool Fixed, bool KeyConnected, int? ContextWindow, int? MaxTokens,
+        bool? Reasoning, int? ReportedContextWindow, IReadOnlyList<AnswerChoiceView> Choices);
+
+    /// <summary>One model that may answer.</summary>
+    internal sealed record AnswerChoiceView(string Provider, string ProviderName, string Model, string? Name, string Endpoint, int? ContextWindow, int? MaxTokens, bool? Reasoning,
+        IReadOnlyList<string> Input, bool KeyConnected);
+
     private static string? NullIfEmpty(string? text) => string.IsNullOrEmpty(text) ? null : text;
 
     /// <param name="Endpoint">The server's OpenAI-compatible base address, or <see langword="null"/> when none is set.</param>
@@ -2399,6 +2467,8 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.SpeechModelSize))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.CompanyModelChoiceView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AnswerModelView))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AnswerChoiceView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(Agent.TurnResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnText))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TurnFailure))]
