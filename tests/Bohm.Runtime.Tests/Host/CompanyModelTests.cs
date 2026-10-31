@@ -92,10 +92,22 @@ public sealed class CompanyModelTests : IAsyncLifetime
         (request.TryGetProperty("max_completion_tokens", out var bound) || request.TryGetProperty("max_tokens", out bound)) ? bound.GetInt32() : -1;
 
     [Fact]
-    public void A_check_that_ran_out_of_time_says_no_answer_and_an_unknown_failure_says_nothing()
+    public void A_failure_is_read_by_its_kind_however_the_provider_layer_wrapped_it_and_an_unknown_one_says_nothing()
     {
-        Assert.Equal("no-answer", AnswerModel.UnreachedOf(new TaskCanceledException()));
-        Assert.Null(AnswerModel.UnreachedOf(new HttpRequestException("reset", new IOException("reset"))));
+        Assert.Equal("no-answer", Unreached.Of(new TaskCanceledException()));
+        Assert.Null(Unreached.Of(new HttpRequestException("reset", new IOException("reset"))));
+
+        // A retry that gave up raises an AggregateException around the provider client's own exception around the transport failure.
+        var refused = new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused);
+        var wrapped = new AggregateException("Retry failed", new InvalidOperationException("client", new HttpRequestException(HttpRequestError.ConnectionError, "refused", refused)));
+        Assert.True(Unreached.Is(wrapped));
+        Assert.Equal("connection-refused", Unreached.Of(wrapped));
+
+        // A secure handshake that failed — a server that speaks http asked in https, or a certificate this computer does not trust — is not a refused connection.
+        var handshake = new HttpRequestException(HttpRequestError.SecureConnectionError, "tls", new System.Security.Authentication.AuthenticationException("handshake"));
+        Assert.Equal("secure-connection", Unreached.Of(new AggregateException(handshake)));
+        Assert.Equal("secure-connection", Unreached.Of(new System.Security.Authentication.AuthenticationException("certificate")));
+        Assert.False(Unreached.Is(new JsonException("not a list")));
     }
 
     [Theory]

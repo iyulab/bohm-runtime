@@ -198,25 +198,74 @@ public sealed class AnswerModelRouteTests
     }
 
     [Fact]
-    public async Task A_check_of_a_server_that_does_not_answer_says_so_and_with_none_chosen_there_is_nothing_to_check()
+    public async Task With_none_chosen_there_is_nothing_to_check()
     {
         await using var host = await RunningHost.StartAsync();
-        using (var none = await host.ControlClient().PostAsync("/__control/llm/answer-model/check", null)) HttpAssert.Status(HttpStatusCode.NotFound, none);
+        using var none = await host.ControlClient().PostAsync("/__control/llm/answer-model/check", null);
+        HttpAssert.Status(HttpStatusCode.NotFound, none);
+    }
 
-        // Port 1 on loopback: nothing listens there, so a connection is refused, and no other test's server can take it meanwhile —
-        // servers here ask for a port from the ephemeral range, which never hands out port 1. A port bound but not listening is not
-        // the same everywhere: macOS drops the connection attempt instead of refusing it.
-        await DeclareAsync(host, Server("http://127.0.0.1:1/v1/"));
-        using (var chosen = await ChooseAsync(host, "srv", "set-model")) HttpAssert.Status(HttpStatusCode.OK, chosen);
-        var refused = await CheckAsync(host);
-        Assert.Equal("unreachable", refused.GetProperty("result").GetString());
-        Assert.Equal("connection-refused", refused.GetProperty("unreached").GetString());
-        Assert.Equal(JsonValueKind.Null, refused.GetProperty("status").ValueKind);
+    /// <summary>The ways a server is asked a question when its address is only being tried: what a person who typed it sees.</summary>
+    public enum Asking
+    {
+        /// <summary>The list of the server's models (<c>llm/providers/models</c>) — an address not declared yet.</summary>
+        Listing,
 
-        await DeclareAsync(host, Server("http://models.invalid/v1/"));
-        var unresolved = await CheckAsync(host);
-        Assert.Equal("unreachable", unresolved.GetProperty("result").GetString());
-        Assert.Equal("host-not-found", unresolved.GetProperty("unreached").GetString());
+        /// <summary>The check of the answer model's server (<c>llm/answer-model/check</c>).</summary>
+        AnswerCheck,
+
+        /// <summary>The check of a declared provider (<c>llm/providers/{id}/check</c>).</summary>
+        ProviderCheck,
+    }
+
+    // Port 1 on loopback: nothing listens there, so a connection is refused, and no other test's server can take it meanwhile —
+    // servers here ask for a port from the ephemeral range, which never hands out port 1. A port bound but not listening is not
+    // the same everywhere: macOS drops the connection attempt instead of refusing it. «PLAIN-AS-HTTPS» is a server that speaks
+    // plain http, asked as if it spoke https.
+    [Theory]
+    [InlineData(Asking.Listing, "http://127.0.0.1:1/v1/", "connection-refused")]
+    [InlineData(Asking.AnswerCheck, "http://127.0.0.1:1/v1/", "connection-refused")]
+    [InlineData(Asking.ProviderCheck, "http://127.0.0.1:1/v1/", "connection-refused")]
+    [InlineData(Asking.Listing, "http://models.invalid/v1/", "host-not-found")]
+    [InlineData(Asking.AnswerCheck, "http://models.invalid/v1/", "host-not-found")]
+    [InlineData(Asking.ProviderCheck, "http://models.invalid/v1/", "host-not-found")]
+    [InlineData(Asking.Listing, "PLAIN-AS-HTTPS", "secure-connection")]
+    [InlineData(Asking.AnswerCheck, "PLAIN-AS-HTTPS", "secure-connection")]
+    [InlineData(Asking.ProviderCheck, "PLAIN-AS-HTTPS", "secure-connection")]
+    public async Task A_wrong_address_is_told_the_same_way_whichever_way_it_is_asked(Asking asking, string address, string unreached)
+    {
+        await using var plain = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync();
+        if (address == "PLAIN-AS-HTTPS")
+            address = new UriBuilder(plain.Address) { Scheme = Uri.UriSchemeHttps, Path = "v1/" }.Uri.AbsoluteUri;
+
+        JsonElement told;
+        switch (asking)
+        {
+            case Asking.Listing:
+                told = await ModelsAsync(host, new { endpoint = address });
+                Assert.Empty(told.GetProperty("models").EnumerateArray());
+                break;
+            case Asking.AnswerCheck:
+                await DeclareAsync(host, Server(address));
+                using (var chosen = await ChooseAsync(host, "srv", "set-model")) HttpAssert.Status(HttpStatusCode.OK, chosen);
+                told = await CheckAsync(host);
+                break;
+            default:
+                await DeclareAsync(host, Server(address));
+                using (var checkedOnce = await host.ControlClient().PostAsync("/__control/llm/providers/srv/check", null))
+                {
+                    HttpAssert.Status(HttpStatusCode.OK, checkedOnce);
+                    told = JsonDocument.Parse(await checkedOnce.Content.ReadAsStringAsync()).RootElement.Clone();
+                }
+
+                break;
+        }
+
+        Assert.Equal("unreachable", told.GetProperty("result").GetString());
+        Assert.Equal(unreached, told.GetProperty("unreached").GetString());
+        if (asking != Asking.ProviderCheck) Assert.Equal(JsonValueKind.Null, told.GetProperty("status").ValueKind);
+        Assert.Empty(plain.Received);   // the one that spoke plain http was never spoken to in it
     }
 
     [Fact]

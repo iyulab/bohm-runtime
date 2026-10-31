@@ -200,17 +200,6 @@ public sealed class ProviderControlTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task The_check_of_a_server_nothing_listens_at_says_unreachable()
-    {
-        await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("nowhere", """{ "style": "none" }""", address: "http://127.0.0.1:1/"));
-
-        var (_, result) = await SendAsync(HttpMethod.Post, "/__control/llm/providers/nowhere/check");
-
-        Assert.Equal("unreachable", result.GetProperty("result").GetString());
-        Assert.Equal("connection-refused", result.GetProperty("unreached").GetString());
-    }
-
-    [Fact]
     public async Task The_check_of_a_provider_that_lists_no_model_asks_which_one()
     {
         await SendAsync(HttpMethod.Put, "/__control/llm/providers",

@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using IronHive.Abstractions.Exceptions;
 using Microsoft.Extensions.AI;
 
@@ -13,7 +12,8 @@ namespace Bohm.Runtime.Host.Llm;
 /// format is served, or a format the server does not speak), <c>bad-request</c> (400 or 422 — the server did not take the request's shape or the model's name),
 /// <c>refused</c> (another status) or <c>unreachable</c> (no answer within the time allowed).</param>
 /// <param name="Status">The HTTP status of the refusal, when there was one.</param>
-/// <param name="Unreached">Why nothing answered, when that is the result: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>.</param>
+/// <param name="Unreached">Why nothing answered, when that is the result (<see cref="Llm.Unreached"/>): <c>host-not-found</c>, <c>connection-refused</c>,
+/// <c>secure-connection</c> or <c>no-answer</c>.</param>
 internal sealed record ProviderCheck(string Result, int? Status = null, string? Unreached = null)
 {
     /// <summary>How long a check waits before it calls the provider unreachable.</summary>
@@ -39,7 +39,7 @@ internal sealed record ProviderCheck(string Result, int? Status = null, string? 
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new("unreachable", Unreached: "no-answer");
+            return new("unreachable", Unreached: Llm.Unreached.NoAnswer);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -72,23 +72,8 @@ internal sealed record ProviderCheck(string Result, int? Status = null, string? 
         }
 
         // No status: nothing answered, or what answered was not the format that was declared.
-        for (var inner = exception; inner is not null; inner = inner.InnerException)
-        {
-            if (inner is SocketException socket)
-                return new("unreachable", Unreached: socket.SocketErrorCode switch
-                {
-                    SocketError.HostNotFound or SocketError.NoData => "host-not-found",
-                    SocketError.ConnectionRefused => "connection-refused",
-                    _ => "no-answer",
-                });
-            if (inner is HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError })
-                return new("unreachable", Unreached: "host-not-found");
-            if (inner is HttpRequestException { HttpRequestError: HttpRequestError.ConnectionError })
-                return new("unreachable", Unreached: "connection-refused");
-        }
-
-        return exception is HttpRequestException or TimeoutException
-            ? new("unreachable", Unreached: "no-answer")
+        return Llm.Unreached.Is(exception)
+            ? new("unreachable", Unreached: Llm.Unreached.Of(exception) ?? Llm.Unreached.NoAnswer)
             : new("refused");   // it answered, but not in the declared format
     }
 }
