@@ -219,7 +219,7 @@ public static class RuntimeHost
         builder.Services.AddSingleton<Llm.ModelDownloads>();
         builder.Services.AddSingleton<Llm.LocalSpeech>();
         builder.Services.AddSingleton<Llm.LearnedThinking>();
-        builder.Services.AddSingleton<Llm.CompanyModel>();
+        builder.Services.AddSingleton<Llm.AnswerModel>();
         builder.Services.AddSingleton<Llm.CloudAccount>();
         builder.Services.AddSingleton<Llm.ProviderCatalog>();
         builder.Services.AddSingleton<Llm.EditModel>();

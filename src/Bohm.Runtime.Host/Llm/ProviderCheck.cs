@@ -20,7 +20,7 @@ internal sealed record ProviderCheck(string Result, int? Status = null, string? 
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
 
     /// <summary>The one short question: any provider answers it, in any format, and nothing of anyone's goes with it.</summary>
-    public const string Question = CompanyModel.ThinkingQuestion;
+    public const string Question = AnswerModel.ThinkingQuestion;
 
     /// <summary>
     /// Asks <paramref name="modelId"/> of <paramref name="provider"/> the one short question through

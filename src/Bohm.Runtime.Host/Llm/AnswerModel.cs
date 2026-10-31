@@ -9,45 +9,6 @@ using Microsoft.Extensions.AI;
 namespace Bohm.Runtime.Host.Llm;
 
 /// <summary>
-/// A model server run by the person's organization on its own network, reached at an
-/// OpenAI-compatible base address — the address any OpenAI client is given, such as
-/// <c>http://models.example:8000/v1</c>.
-/// </summary>
-/// <param name="Endpoint">The OpenAI-compatible base address (<c>http</c> or <c>https</c>, no user name or password in it).</param>
-/// <param name="Model">The model's name as the server knows it.</param>
-public sealed record CompanyModelOptions(Uri Endpoint, string Model)
-{
-    /// <summary>What whoever set the server said about the model's limits.</summary>
-    public ModelLimits Limits { get; init; } = ModelLimits.Unknown;
-
-    /// <summary>The listed server it is on (<see cref="CompanyModelList"/>); <see langword="null"/> for one the person set by its address.</summary>
-    public string? Server { get; init; }
-
-    /// <summary>The name to show the person, when the list gives one.</summary>
-    public string? DisplayName { get; init; }
-
-    /// <summary>What the model takes in, when the list says: <c>text</c>, and <c>image</c>.</summary>
-    public IReadOnlyList<string>? Input { get; init; }
-
-    /// <summary>Whether <paramref name="endpoint"/> and <paramref name="model"/> name a usable model server, normalized.</summary>
-    public static bool TryCreate(string? endpoint, string? model, out CompanyModelOptions? options)
-    {
-        options = null;
-        if (!Uri.TryCreate(endpoint?.Trim(), UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("http" or "https")
-            || uri.UserInfo.Length > 0
-            || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)
-            || string.IsNullOrWhiteSpace(model))
-            return false;
-
-        // The base is appended to (…/chat/completions), so it ends with a slash.
-        var normalized = uri.AbsoluteUri.EndsWith('/') ? uri : new Uri(uri.AbsoluteUri + "/");
-        options = new CompanyModelOptions(normalized, model.Trim());
-        return true;
-    }
-}
-
-/// <summary>
 /// The organization's model server (<see cref="CompanyModelOptions"/>). Either listed by whoever started
 /// the runtime — an administrator's policy (<see cref="CompanyModelList"/>): the person chooses among the
 /// listed models and cannot set another — or set by the person by its address, which makes it a declaration
@@ -61,7 +22,7 @@ public sealed record CompanyModelOptions(Uri Endpoint, string Model)
 /// being the one the organization provides. Requests leave this computer, so each is counted as sent to
 /// the server's host.
 /// </remarks>
-internal sealed partial class CompanyModel : IDisposable
+internal sealed partial class AnswerModel : IDisposable
 {
     /// <summary>Where the key of a server given the older way (an unnamed listed server) was kept in the vault — and, before the answer model, the person's own server's.</summary>
     public const string VaultName = "llm/company-model";
@@ -101,7 +62,7 @@ internal sealed partial class CompanyModel : IDisposable
     private ModelFitChatClient? _askedFor;
     private ModelFitChatClient? _thinkingAskedFor;
 
-    public CompanyModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress, LearnedThinking learned, ProviderCatalog catalog)
+    public AnswerModel(RuntimeHostOptions options, ICredentialVault vault, Egress egress, LearnedThinking learned, ProviderCatalog catalog)
     {
         (_options, _vault, _egress, _learned, _catalog) = (options, vault, egress, learned, catalog);
         _policy = options.CompanyModels?.ToDeclarations() ?? [];
@@ -694,5 +655,5 @@ internal sealed class CountedAsSent(IChatClient inner, Egress egress, string hos
 
 [System.Text.Json.Serialization.JsonSourceGenerationOptions(PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.Answer))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(AnswerModel.Answer))]
 internal sealed partial class CompanyModelJson : System.Text.Json.Serialization.JsonSerializerContext;

@@ -46,7 +46,7 @@ public sealed record CompanyModelList(IReadOnlyList<CompanyServer> Servers)
     /// address, its models as listed, and a key that is presented when the person connected one and is not needed otherwise.
     /// A server's id is its name made into one (lowercase letters, digits and <c>-</c>); a name that cannot be one — or that another
     /// listed server already took — gets a numbered id, so every listed server is a provider. The key stays where a listed server's key
-    /// has always been kept (<see cref="CompanyModel.VaultNameOf"/>), under the name in the list, whatever its id.
+    /// has always been kept (<see cref="AnswerModel.VaultNameOf"/>), under the name in the list, whatever its id.
     /// </summary>
     internal IReadOnlyList<ProviderDeclaration> ToDeclarations()
     {
@@ -59,7 +59,7 @@ public sealed record CompanyModelList(IReadOnlyList<CompanyServer> Servers)
             declarations.Add(new ProviderDeclaration(id, server.Name.Length > 0 ? server.Name : "Organization", server.Endpoint, ProviderApi.OpenAIChat,
                 ProviderAuth.OptionalBearer,
                 server.Models.Select(m => new DeclaredModel(m.Id, m.Name, null, null, m.Limits, m.Input)).ToList(),
-                ProviderOrigin.Policy) { KeyVault = CompanyModel.VaultNameOf(server.Name) });
+                ProviderOrigin.Policy) { KeyVault = AnswerModel.VaultNameOf(server.Name) });
         }
 
         return declarations;

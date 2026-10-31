@@ -50,7 +50,7 @@ public sealed class PolicyProviderTests
 
         Assert.True(gpu.Auth.TakesKey);
         Assert.False(gpu.Auth.KeyRequired);   // it is the server that asks for a key, not the list
-        Assert.Equal(CompanyModel.VaultNameOf("GPU Server"), gpu.VaultName);   // under the name in the list, not the id made of it
+        Assert.Equal(AnswerModel.VaultNameOf("GPU Server"), gpu.VaultName);   // under the name in the list, not the id made of it
         Assert.Equal("llm/ollama", ProviderDeclaration.VaultNameOf("ollama"));
     }
 
@@ -83,7 +83,7 @@ public sealed class PolicyProviderTests
     {
         var older = CompanyModelList.Of(new CompanyModelOptions(new Uri("http://models.example:8000/v1/"), "fixed-model")).ToDeclarations().Single();
 
-        Assert.Equal(("organization", ProviderOrigin.Policy, CompanyModel.VaultName), (older.Id, older.Origin, older.VaultName));
+        Assert.Equal(("organization", ProviderOrigin.Policy, AnswerModel.VaultName), (older.Id, older.Origin, older.VaultName));
         Assert.Equal(["fixed-model"], older.Models.Select(m => m.Id));
     }
 

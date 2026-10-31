@@ -64,7 +64,7 @@ internal static class LlmProxy
         var rest = request.Path.Value![PathPrefix.Length..];
         var slash = rest.IndexOf('/', StringComparison.Ordinal);
         var providerPath = slash < 0 ? "" : rest[(slash + 1)..];
-        var company = context.RequestServices.GetRequiredService<CompanyModel>();
+        var company = context.RequestServices.GetRequiredService<AnswerModel>();
         if ((slash < 0 ? rest : rest[..slash]) == CompanyModelSegment)
         {
             // The application calls the organization's model server itself: relayed as it is, with the server's key.
@@ -230,7 +230,7 @@ internal static class LlmProxy
     /// learns it, to offer getting the model on this computer.
     /// </summary>
     /// <returns>Whether the request was answered; <see langword="false"/> leaves it to the key check, as with no AI at all.</returns>
-    private static async Task<bool> TranscribeKeylessAsync(HttpContext context, OpenApp? app, LlmProvider provider, CompanyModel company, bool localChat)
+    private static async Task<bool> TranscribeKeylessAsync(HttpContext context, OpenApp? app, LlmProvider provider, AnswerModel company, bool localChat)
     {
         var request = context.Request;
         var speech = context.RequestServices.GetRequiredService<LocalSpeech>();
@@ -308,7 +308,7 @@ internal static class LlmProxy
     /// The organization's server turns the recording into text with its speech model — the same form, with that
     /// model named, so the answer comes back in OpenAI's shape.
     /// </summary>
-    private static async Task TranscribeByCompanyModelAsync(HttpContext context, CompanyModel company, CompanyModelOptions server, string model, IFormCollection form)
+    private static async Task TranscribeByCompanyModelAsync(HttpContext context, AnswerModel company, CompanyModelOptions server, string model, IFormCollection form)
     {
         using var content = new MultipartFormDataContent();
         foreach (var (name, values) in form)

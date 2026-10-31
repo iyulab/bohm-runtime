@@ -264,7 +264,7 @@ internal static class AdoptedAppServing
     {
         var boot = JsonSerializer.Serialize(new Boot(tab, Llm.LlmProviders.Placeholder(appId),
             Llm.LlmProviders.All.Select(p => p.Host).ToList(),
-            context.RequestServices.GetRequiredService<Llm.CompanyModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
+            context.RequestServices.GetRequiredService<Llm.AnswerModel>().Current?.Endpoint.AbsoluteUri), BootJson.Default.Boot);
         return ShimTemplate.Value.Replace("__BOHM_BOOT__", boot, StringComparison.Ordinal);
     }
 

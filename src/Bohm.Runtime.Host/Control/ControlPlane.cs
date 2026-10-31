@@ -1142,7 +1142,7 @@ internal static partial class ControlPlane
                         .FirstOrDefault(k => !string.IsNullOrEmpty(k));
                 }
 
-                await WriteAsync(response, await CompanyModel.ListModelsAsync(listAt!, listWith, context.RequestServices.GetRequiredService<Egress>(), cancel).ConfigureAwait(false), cancel)
+                await WriteAsync(response, await AnswerModel.ListModelsAsync(listAt!, listWith, context.RequestServices.GetRequiredService<Egress>(), cancel).ConfigureAwait(false), cancel)
                     .ConfigureAwait(false);
                 break;
             }
@@ -1212,12 +1212,12 @@ internal static partial class ControlPlane
             }
 
             case ("GET", ["llm", "answer-model"]):
-                await WriteAsync(response, AnswerModelViewOf(context.RequestServices.GetRequiredService<CompanyModel>()), cancel).ConfigureAwait(false);
+                await WriteAsync(response, AnswerModelViewOf(context.RequestServices.GetRequiredService<AnswerModel>()), cancel).ConfigureAwait(false);
                 break;
 
             case ("PUT" or "DELETE", ["llm", "answer-model"]):
             {
-                var answering = context.RequestServices.GetRequiredService<CompanyModel>();
+                var answering = context.RequestServices.GetRequiredService<AnswerModel>();
                 try
                 {
                     if (request.Method == "DELETE")
@@ -1257,7 +1257,7 @@ internal static partial class ControlPlane
 
             case ("POST", ["llm", "answer-model", "check"]):
             {
-                var answerChecked = await context.RequestServices.GetRequiredService<CompanyModel>()
+                var answerChecked = await context.RequestServices.GetRequiredService<AnswerModel>()
                     .CheckAsync(context.RequestServices.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(LlmProxy)), cancel).ConfigureAwait(false);
                 if (answerChecked is null)
                 {
@@ -2223,7 +2223,7 @@ internal static partial class ControlPlane
         var connected = !provider.Auth.KeyRequired || keyConnected;
         // What answers an application's request for a built-in provider with no key — a provider the application cannot name has no such request.
         var answeredBy = connected || LlmProviders.ById(provider.Id) is not { } known || !ChatBridges.AnswersChat(known) ? null
-            : services.GetRequiredService<CompanyModel>().Configured ? "company"
+            : services.GetRequiredService<AnswerModel>().Configured ? "company"
             : services.GetRequiredService<LocalModel>().Configured ? "local"
             : null;
         return new(provider.Id, provider.Name, provider.BaseUrl.Authority, connected, answeredBy,
@@ -2265,7 +2265,7 @@ internal static partial class ControlPlane
     /// <summary>One live link: its id (to take it back with), address, when it was made and ends, and the page's size.</summary>
     internal sealed record CloudLinkItem(string Id, string Url, DateTimeOffset? CreatedAt, DateTimeOffset? ExpiresAt, long? Bytes);
 
-    private static AnswerModelView AnswerModelViewOf(CompanyModel company) =>
+    private static AnswerModelView AnswerModelViewOf(AnswerModel company) =>
         new(company.Current is null ? null : company.ProviderId, company.Current?.Model, company.Current?.DisplayName, company.Current?.Endpoint.AbsoluteUri,
             company.Fixed, company.KeyConnected, company.Current?.Limits.ContextWindow, company.Current?.Limits.MaxOutputTokens, company.Current?.Limits.Reasoning,
             company.ReportedContextWindow,
@@ -2362,8 +2362,8 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.AlreadyHereView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewView))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.PreviewReport))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.CheckResult))]
-[System.Text.Json.Serialization.JsonSerializable(typeof(CompanyModel.ModelsResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(AnswerModel.CheckResult))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(AnswerModel.ModelsResult))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(IReadOnlyList<ModelDownloads.CatalogView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ModelDownloads.Description))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]

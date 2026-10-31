@@ -67,7 +67,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal(ServerKey, vault.Read("llm/my-server"));
         Assert.Null(vault.Read("llm/company-model"));
         var declared = ProviderStore.Read(dataRoot).Single();
-        Assert.Equal((CompanyModel.PersonServerId, ProviderOrigin.Person), (declared.Id, declared.Origin));
+        Assert.Equal((AnswerModel.PersonServerId, ProviderOrigin.Person), (declared.Id, declared.Origin));
     }
 
     [Fact]
@@ -94,8 +94,8 @@ public sealed class CompanyModelTests : IAsyncLifetime
     [Fact]
     public void A_check_that_ran_out_of_time_says_no_answer_and_an_unknown_failure_says_nothing()
     {
-        Assert.Equal("no-answer", CompanyModel.UnreachedOf(new TaskCanceledException()));
-        Assert.Null(CompanyModel.UnreachedOf(new HttpRequestException("reset", new IOException("reset"))));
+        Assert.Equal("no-answer", AnswerModel.UnreachedOf(new TaskCanceledException()));
+        Assert.Null(AnswerModel.UnreachedOf(new HttpRequestException("reset", new IOException("reset"))));
     }
 
     [Theory]
@@ -177,7 +177,7 @@ public sealed class CompanyModelTests : IAsyncLifetime
     [InlineData("fastest-model", false)]
     [InlineData("lasr-7b", false)]
     public void A_speech_model_is_known_by_its_family_name(string id, bool speech) =>
-        Assert.Equal(speech, CompanyModel.IsTranscriptionModel(id));
+        Assert.Equal(speech, AnswerModel.IsTranscriptionModel(id));
 
     [Fact]
     public async Task An_Anthropic_shaped_request_is_answered_by_the_server_in_the_Anthropic_shape()
@@ -415,13 +415,13 @@ public sealed class CompanyModelTests : IAsyncLifetime
     {
         var declaration = JsonSerializer.Serialize(new
         {
-            id = CompanyModel.PersonServerId, name = "My AI server", baseUrl = endpoint, api = "openai-chat",
+            id = AnswerModel.PersonServerId, name = "My AI server", baseUrl = endpoint, api = "openai-chat",
             auth = new { style = "bearer", optional = true }, models = new[] { new { id = model } },
         });
         var declared = await host.ControlClient().PutAsync("/__control/llm/providers", new StringContent(declaration, Encoding.UTF8, "application/json"));
         if (declared.StatusCode != HttpStatusCode.OK) return declared;
         declared.Dispose();
-        return await ChooseAsync(host, CompanyModel.PersonServerId, model);
+        return await ChooseAsync(host, AnswerModel.PersonServerId, model);
     }
 
     private static async Task<HttpResponseMessage> PostFormFromAppAsync(RunningHost host, string app, string path, byte[] recording, params (string Name, string Value)[] fields)

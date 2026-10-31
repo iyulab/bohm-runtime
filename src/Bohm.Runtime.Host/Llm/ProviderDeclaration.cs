@@ -147,7 +147,7 @@ internal sealed partial record ProviderDeclaration(
 
     /// <summary>
     /// A place in the vault of its own for the key, when it is not <see cref="VaultNameOf"/> of the id — a server an administrator
-    /// listed keeps its key where a listed server's key has always been kept (<see cref="CompanyModel.VaultNameOf"/>), so a key already
+    /// listed keeps its key where a listed server's key has always been kept (<see cref="AnswerModel.VaultNameOf"/>), so a key already
     /// connected stays connected. Not part of the file format.
     /// </summary>
     public string? KeyVault { get; init; }

@@ -16,13 +16,13 @@ internal static class ServerContextWindow
     /// <summary>
     /// The window the server at <paramref name="address"/> (the whole address is the base — no API path is added) reports for
     /// <paramref name="model"/>, or <see langword="null"/> when it says none, does not list the model, or does not answer in
-    /// <see cref="CompanyModel.CheckTimeout"/>. The request it was asked for goes on either way.
+    /// <see cref="AnswerModel.CheckTimeout"/>. The request it was asked for goes on either way.
     /// </summary>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     public static async Task<int?> AskAsync(Uri address, string? key, string model, Egress egress, CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(CompanyModel.CheckTimeout);
+        timeout.CancelAfter(AnswerModel.CheckTimeout);
         egress.Sent(address.Authority);
         try
         {

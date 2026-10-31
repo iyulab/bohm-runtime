@@ -78,10 +78,10 @@ public sealed class FakeProvider : IAsyncDisposable
 
     private static bool IsPictureQuestion(ReceivedRequest r) => r.Body.Contains(Bohm.Runtime.Host.Llm.ImageInput.Question, StringComparison.Ordinal);
 
-    /// <summary>The questions whether the model thinks (<see cref="Bohm.Runtime.Host.Llm.CompanyModel.ThinkingQuestion"/>) received.</summary>
+    /// <summary>The questions whether the model thinks (<see cref="Bohm.Runtime.Host.Llm.AnswerModel.ThinkingQuestion"/>) received.</summary>
     public IReadOnlyList<ReceivedRequest> ThinkingQuestions => [.. Received.Where(IsThinkingQuestion)];
 
-    private static bool IsThinkingQuestion(ReceivedRequest r) => r.Body.Contains(Bohm.Runtime.Host.Llm.CompanyModel.ThinkingQuestion, StringComparison.Ordinal);
+    private static bool IsThinkingQuestion(ReceivedRequest r) => r.Body.Contains(Bohm.Runtime.Host.Llm.AnswerModel.ThinkingQuestion, StringComparison.Ordinal);
 
     /// <summary>Whether the OpenAI-compatible answers carry the model's thinking (<c>reasoning_content</c>), as a model that thinks unasked does.</summary>
     public bool Thinks { get; set; }
