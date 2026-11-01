@@ -93,7 +93,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/answer-model/check</c></term><description>Asks the answer model's server once for its models, with the key when one is connected: <c>{ result, status, modelListed, reportedContextWindow, unreached }</c> — <c>result</c> is <c>answers</c>, <c>key-refused</c> (401 or 403), <c>not-found</c> (404 — often a base address without its <c>/v1</c>), <c>refused</c> (another status) or <c>unreachable</c> (no answer within 10 seconds), and then <c>unreached</c> says why when the failure does: <c>host-not-found</c>, <c>connection-refused</c> or <c>no-answer</c>, null otherwise; <c>modelListed</c> whether its model list names the answer model, null when it gave no such list; when it does and no context window was set, the server is asked for the model's (as <c>reportedContextWindow</c> — null when it says none). It asks for a list, not for an answer: nothing is generated and no tokens are spent (the check of <c>POST /__control/llm/providers/{id}/check</c> asks one short question in the provider's own format). 404 when no model answers. Counted as sent to the server's host.</description></item>
 /// <item><term><c>POST /__control/llm/providers/models</c></term><description>Asks a server for the models it serves, so a name is picked rather than typed, before any provider is declared for it: from <c>{ endpoint, key? }</c> — an OpenAI-compatible base address (the rules of a provider's <c>baseUrl</c>) and a key to try, left out to use the key connected for a declared provider at that address — answers <c>{ result, status, models: [{ id, contextWindow }], unreached }</c>: <c>result</c> as for the answer model's check; <c>models</c> sorted by id, each <c>contextWindow</c> what the server reports (null when it says none), empty unless it <c>answers</c> with a list. Nothing is declared or chosen by asking. 400 when the body is not that or the address is not usable. Counted as sent to the server's host.</description></item>
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
-/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c>; 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
+/// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second, then that same turn object, or <c>{ status: "failed", detail, provider }</c> — what a 503 would carry — when the model cannot finish: the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c> — or, when the body has <c>model: { provider, model, effort? }</c>, of that model for this turn alone (nothing is remembered: the chosen model stands for the next turn; <c>effort</c> is <c>none</c>, <c>low</c>, <c>medium</c> or <c>high</c> and is taken only for a model known to think — otherwise 400 <c>effort-unsupported</c>; a provider not on the list or an empty model name is 400 <c>model-unknown</c>); 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/agent/translate</c></term><description>A web page translated where it stands: <c>{ texts: [string], to }</c> — the page's text pieces in order and a language tag — answers <c>{ texts, model }</c>, each piece in that language in the same order (<c>null</c> for a piece the model did not answer — pieces go out numbered and are read back by number, the missing ones asked once more), from the model chosen at <c>/__control/agent/model</c>, as page material (no tools). At most 80 pieces and 6000 characters a request (413 past that — the caller sends batches); 409 and 503 as for <c>/__control/agent/turns</c>, and 503 <c>translate-failed</c> when the model answers none of them.</description></item>
 /// <item><term><c>GET /__control/agent/mcp?name=</c></term><description>What the caller shows the person before a web question's call to an MCP tool named <c>name</c>: <c>{ server, tool, remote, description }</c> — <c>remote</c> when the server is at an address, <c>description</c> the first line of what the server says the tool does (null when it says nothing). 404 when no connected server has it.</description></item>
 /// <item><term><c>POST /__control/agent/mcp</c></term><description>Makes a web question's call to an MCP tool after the person allowed it, from <c>{ name, arguments }</c>: <c>{ text, failed }</c> — the text parts of what the tool returned (or the result as JSON), <c>failed</c> when the tool reported an error or threw. 404 when no connected server has that tool, 400 for a body not in that shape.</description></item>
@@ -1998,12 +1998,29 @@ internal static partial class ControlPlane
         var response = context.Response;
         List<Microsoft.Extensions.AI.ChatMessage> conversation;
         bool last;
+        Llm.EditModelChoice? picked = null;
+        Microsoft.Extensions.AI.ReasoningEffort? effort = null;
         try
         {
             using var body = JsonDocument.Parse(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false));
             conversation = Agent.WebAgent.ParseConversation(body.RootElement);
             // The caller's last round for this question: answer from what was read, with no more tool calls.
             last = body.RootElement.TryGetProperty("last", out var l) && l.ValueKind == JsonValueKind.True;
+            // The model this turn alone is asked of (and how hard it thinks): not remembered, so the chosen model stands for the next turn.
+            if (body.RootElement.TryGetProperty("model", out var pick) && pick.ValueKind != JsonValueKind.Null)
+            {
+                if (pick.ValueKind != JsonValueKind.Object) throw new FormatException("model is an object.");
+                picked = new Llm.EditModelChoice(pick.GetProperty("provider").GetString() ?? "", pick.GetProperty("model").GetString() ?? "");
+                if (pick.TryGetProperty("effort", out var level) && level.ValueKind != JsonValueKind.Null)
+                    effort = level.GetString() switch
+                    {
+                        "none" => Microsoft.Extensions.AI.ReasoningEffort.None,
+                        "low" => Microsoft.Extensions.AI.ReasoningEffort.Low,
+                        "medium" => Microsoft.Extensions.AI.ReasoningEffort.Medium,
+                        "high" => Microsoft.Extensions.AI.ReasoningEffort.High,
+                        _ => throw new FormatException("effort is none, low, medium or high."),
+                    };
+            }
         }
         catch (Exception e) when (e is JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
         {
@@ -2012,10 +2029,16 @@ internal static partial class ControlPlane
         }
 
         var agentModel = context.RequestServices.GetRequiredService<Llm.AgentModel>();
+        if (picked is not null && !agentModel.CanPick(picked))
+        {
+            await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "model-unknown", "Name a provider on the list and one of its models.").ConfigureAwait(false);
+            return;
+        }
+
         Llm.ChosenEditModel? model;
         try
         {
-            model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
+            model = picked is null ? await agentModel.GetAsync(cancel).ConfigureAwait(false) : await agentModel.GetForAsync(picked, cancel).ConfigureAwait(false);
         }
         catch (LocalModelUnavailableException e)
         {
@@ -2027,7 +2050,15 @@ internal static partial class ControlPlane
         if (model is not { } chosen)
         {
             response.StatusCode = StatusCodes.Status409Conflict;
-            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Llm.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "model-missing", (picked is null ? agentModel.Missing : agentModel.MissingFor(picked)) ?? new Llm.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            return;
+        }
+
+        // A level of thinking is asked only of a model known to think — a model nobody described does not get a setting it may refuse,
+        // and a box that says «high» for a model that cannot would be wrong.
+        if (effort is not null && Llm.ModelLimits.Of(chosen.Client, chosen.Limits).Reasoning != true)
+        {
+            await ControlProblems.RefuseAsync(context, StatusCodes.Status400BadRequest, "effort-unsupported", "This model is not known to think, so it takes no level.").ConfigureAwait(false);
             return;
         }
 
@@ -2051,7 +2082,7 @@ internal static partial class ControlPlane
             Agent.TurnResult turn;
             try
             {
-                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills, mcp, sees).ConfigureAwait(false);
+                turn = await Agent.WebAgent.RunTurnAsync(chosen.Client, chosen.Name, chosen.OnThisComputer, chosen.Limits, conversation, now, null, cancel, last, skills, mcp, sees, effort).ConfigureAwait(false);
             }
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
@@ -2086,7 +2117,7 @@ internal static partial class ControlPlane
                         html = AnswerMarkdown.ToHtml(written.ToString());
                     }
                     return WriteLineAsync(response, new TurnText(text, html), token);
-                }, cancel, last, skills, mcp, sees).ConfigureAwait(false);
+                }, cancel, last, skills, mcp, sees, effort).ConfigureAwait(false);
             await WriteLineAsync(response, turn, cancel).ConfigureAwait(false);
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)

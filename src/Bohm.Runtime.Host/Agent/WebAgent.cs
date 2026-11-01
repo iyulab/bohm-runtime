@@ -280,9 +280,10 @@ internal static class WebAgent
     /// like the page tools: a call goes to the caller, which asks the person and has the runtime make it; the result is material.
     /// </param>
     /// <param name="sees">Whether the model takes pictures in (<see cref="Llm.ImageInput"/>): <c>look</c> is declared only then.</param>
+    /// <param name="effort">How much the model thinks, when the caller asked for a level for this turn; otherwise thinking is left off as before.</param>
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
         DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null, IReadOnlyList<Extensions.McpTool>? mcp = null,
-        bool sees = false)
+        bool sees = false, ReasoningEffort? effort = null)
     {
         var systemPrompt = SystemPrompt + "\n" + Now(now);
         var loader = onThisComputer || skills is null ? null : SkillsLoader.Create(skills);
@@ -320,7 +321,9 @@ internal static class WebAgent
             .UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
             .ConfigureOptions(options =>
             {
-                if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
+                // The caller's asked-for level wins over the default of «off»; a level is only asked of a model known to think.
+                if (effort is { } asked) options.Reasoning = new ReasoningOptions { Effort = asked };
+                else if (ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.None };
                 if (onThisComputer) options.MaxOutputTokens ??= MaxOutputTokensPerRound;
                 if (last) options.ToolMode = ChatToolMode.None;
             })

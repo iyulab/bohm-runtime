@@ -65,12 +65,18 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
     /// <summary>What is missing before a proposal can be made, or <see langword="null"/> when nothing is.</summary>
     /// <remarks>The Bohm account (<see cref="CloudAccount"/>) needs its access token — <c>account</c>.</remarks>
-    public EditModelMissing? Missing => Remembered switch
+    public EditModelMissing? Missing => MissingFor(Remembered);
+
+    /// <summary>What is missing before <paramref name="choice"/> can be asked (<see langword="null"/>: the default), or <see langword="null"/> when nothing is.</summary>
+    public EditModelMissing? MissingFor(EditModelChoice? choice) => choice switch
     {
         { Provider: CloudAccount.ProviderId } => !account.SignedIn ? new("account", CloudAccount.ProviderId) : null,
         { } chosen => catalog.ById(chosen.Provider) is { } provider && (!provider.Auth.KeyRequired || !string.IsNullOrEmpty(vault.Read(provider.VaultName))) ? null : new("key", chosen.Provider),
         null => company.Configured || local.Configured ? null : new("localModel", null),
     };
+
+    /// <summary>Whether <paramref name="choice"/> names a provider that can be chosen and a model: what <see cref="ChooseAsync"/> accepts, and what <see cref="GetForAsync"/> takes.</summary>
+    public bool CanPick(EditModelChoice choice) => Choosable(choice.Provider) && !string.IsNullOrWhiteSpace(choice.Model);
 
     /// <summary>Whether <paramref name="provider"/> can be chosen: a provider on the list, or the Bohm account when there is one.</summary>
     private bool Choosable(string provider) =>
@@ -109,9 +115,20 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
     /// <summary>The chosen model, ready to be asked; <see langword="null"/> when something is <see cref="Missing"/>.</summary>
     /// <exception cref="LocalModelUnavailableException">The model on this computer cannot be loaded.</exception>
-    public async Task<ChosenEditModel?> GetAsync(CancellationToken cancellationToken)
+    public Task<ChosenEditModel?> GetAsync(CancellationToken cancellationToken) => ResolveAsync(Remembered, cancellationToken);
+
+    /// <summary>
+    /// The model <paramref name="choice"/> names, ready to be asked, for one request: nothing is remembered, so the choice that
+    /// <see cref="GetAsync"/> reads stands as it was. <see langword="null"/> when something is <see cref="MissingFor"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">No such provider, or no model name (<see cref="CanPick"/>).</exception>
+    public Task<ChosenEditModel?> GetForAsync(EditModelChoice choice, CancellationToken cancellationToken) =>
+        CanPick(choice) ? ResolveAsync(choice with { Model = choice.Model.Trim() }, cancellationToken)
+            : throw new ArgumentException("An AI provider and the name of one of its models.", nameof(choice));
+
+    private async Task<ChosenEditModel?> ResolveAsync(EditModelChoice? remembered, CancellationToken cancellationToken)
     {
-        if (Remembered is not { } chosen)
+        if (remembered is not { } chosen)
         {
             if (company.Client() is { } organizations)
                 return new(organizations, $"{company.ProviderId}/{company.Current!.Model}", OnThisComputer: false,
