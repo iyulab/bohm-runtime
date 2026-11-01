@@ -2056,7 +2056,7 @@ internal static partial class ControlPlane
             catch (Exception e) when (!cancel.IsCancellationRequested)
             {
                 response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, e.Message, Llm.ProviderRefusal.Of(e))).ConfigureAwait(false);
+                await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(null, e.Message, Llm.ProviderRefusal.Of(e), Unreached: Llm.Unreached.Of(e))).ConfigureAwait(false);
                 return;
             }
 
@@ -2091,7 +2091,7 @@ internal static partial class ControlPlane
         }
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
-            await WriteLineAsync(response, new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e)), cancel).ConfigureAwait(false);
+            await WriteLineAsync(response, new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e), Llm.Unreached.Of(e)), cancel).ConfigureAwait(false);
         }
     }
 
@@ -2154,7 +2154,7 @@ internal static partial class ControlPlane
         catch (Exception e) when (!cancel.IsCancellationRequested)
         {
             response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            await ControlProblems.RefuseAsync(response, "translate-failed", new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e))).ConfigureAwait(false);
+            await ControlProblems.RefuseAsync(response, "translate-failed", new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e), Llm.Unreached.Of(e))).ConfigureAwait(false);
         }
     }
 
@@ -2189,7 +2189,8 @@ internal static partial class ControlPlane
 
 
     /// <summary>A streamed turn the model could not finish — the fields of <see cref="ProposalFailure"/>, with the status a turn line has.</summary>
-    internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider);
+    internal sealed record TurnFailure(string Status, LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Unreached = null);
 
     /// <param name="Provider">The chosen provider's id, or <see langword="null"/> for the model on this computer.</param>
     /// <param name="Model">The chosen model's name, or <see langword="null"/>.</param>
@@ -2208,8 +2209,10 @@ internal static partial class ControlPlane
     /// <param name="Provider">The provider's refusal — its status and own message — when a provider refused.</param>
     /// <param name="Stopped">What ended the model's answer before it finished, when that is known: <c>output-limit</c> (its length limit) or <c>step-limit</c> (its rounds of tool calls).</param>
     /// <param name="Rounds">Where the model's rounds went, when it stopped at a limit.</param>
+    /// <param name="Unreached">Why the server was not reached, when that is why (<see cref="Llm.Unreached"/>): the same words the answer model's check and a provider's check use.</param>
     internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider, string? Stopped = null,
-        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ProposalRounds? Rounds = null);
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ProposalRounds? Rounds = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Unreached = null);
 
     /// <summary>Every provider to choose from — the built-in ones and the ones added.</summary>
     private static List<ProviderView> ProviderViewsOf(IServiceProvider services) =>

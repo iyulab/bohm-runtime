@@ -541,6 +541,34 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_web_question_whose_provider_cannot_be_reached_says_why_the_server_was_not_reached()
+    {
+        // An address nothing listens at: a port that was free a moment ago.
+        int port;
+        using (var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        }
+
+        var nowhere = new Uri($"http://127.0.0.1:{port}");
+        await using var host = await RunningHost.StartAsync(configure: o => o with
+        {
+            LlmEndpoints = LlmProviders.All.ToDictionary(p => p.Host, _ => nowhere),
+            LocalModel = new LocalModelOptions { ModelPath = "unused.gguf", Client = _model },
+        });
+        using (var key = await host.ControlClient().PutAsync("/__control/llm/openai/key", new StringContent("sk-real-0123456789"))) HttpAssert.Status(HttpStatusCode.OK, key);
+        using (var chose = await host.ControlClient().PutAsync("/__control/agent/model", Json("""{"provider":"openai","model":"for-pages"}"""))) HttpAssert.Status(HttpStatusCode.OK, chose);
+
+        using var failed = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, failed);
+        var body = JsonDocument.Parse(await failed.Content.ReadAsStringAsync()).RootElement;
+        Assert.True(body.TryGetProperty("unreached", out var why), body.GetRawText());
+        Assert.Equal("connection-refused", why.GetString());   // the road failed — not the model, not a provider's refusal
+        Assert.True(!body.TryGetProperty("provider", out var refused) || refused.ValueKind == JsonValueKind.Null, body.GetRawText());
+    }
+
+    [Fact]
     public async Task A_web_question_to_Anthropic_offers_the_page_tools_through_its_own_Messages_API()
     {
         // The page tools are declarations the caller runs; they must reach the provider as tools all the same.
