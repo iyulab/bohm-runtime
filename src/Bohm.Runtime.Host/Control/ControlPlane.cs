@@ -1848,6 +1848,7 @@ internal static partial class ControlPlane
     internal static Func<string, CancellationToken, Task> DiscardOf(RuntimeHostOptions options) =>
         options.Discard ?? ((folder, _) =>
         {
+            // TODO(upstream: DesktopHost.Files — Trash.Move on macOS): call the system Trash on macOS too once the package supports it, and drop the aside copy there.
             // The platform's trash, where the person restores it with the system's own tools. Where there is none (macOS for now,
             // or a drive the trash does not keep — a network share) the folder is kept aside in the data root, never deleted.
             if (OperatingSystem.IsWindows())
