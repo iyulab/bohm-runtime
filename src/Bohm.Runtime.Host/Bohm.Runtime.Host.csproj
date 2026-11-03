@@ -5,6 +5,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Bohm.Runtime.Host</RootNamespace>
+    <!-- This process serves one person on their own computer, so it collects with the workstation collector. The web SDK
+         defaults to the server collector, whose allocation budget grows with the core count: an idle runtime answering
+         a request a minute climbed from about 100 MB to over 400 MB before its first collection and kept it. Measured
+         with the same 30,000 requests: server 107 -> 435 MB, workstation 102 -> 141 MB. A host that serves many people
+         can switch back with DOTNET_gcServer=1. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
   <!-- The Bohm account (an AI the cloud service pays for) is in builds that carry it: Debug by default, never a release
