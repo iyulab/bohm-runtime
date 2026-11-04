@@ -241,6 +241,10 @@ internal sealed partial class AnswerModel : IDisposable
     /// </summary>
     private void MigrateLegacy()
     {
+        // TODO(remove after 2027-03-01): versions up to 0.15.0 kept the answer server in company-model.json (format bohm.company-model/0);
+        // the first release with the answer model reads that file once and deletes it. Remove this method, LegacyFormat, LegacyFileName,
+        // ReadLegacy and whatever only they use (PersonDeclaration) with their tests: anyone who skips every release until then only has to
+        // choose the answer model again (the key stays in the vault under its old name).
         var path = Path.Combine(_options.DataRoot, LegacyFileName);
         if (!File.Exists(path)) return;
         var legacy = ReadLegacy(path);
