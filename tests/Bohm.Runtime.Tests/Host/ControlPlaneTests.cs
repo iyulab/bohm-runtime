@@ -61,6 +61,54 @@ public sealed class ControlPlaneTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_journal_line_that_cannot_be_read_is_named_in_the_usage_record_and_only_what_came_before_it_is_kept()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("a", "1")]);   // closing folds it into the snapshot (sequence 1)
+        var storageDirectory = Path.Combine(_host.DataRoot, "adopted", id, "storage");
+        await File.WriteAllTextAsync(Path.Combine(storageDirectory, "journal.ndjson"), string.Join('\n',
+            "{\"seq\":2,\"op\":\"set\",\"key\":\"b\",\"value\":\"2\"}",
+            "not json",
+            "{\"seq\":4,\"op\":\"set\",\"key\":\"c\",\"value\":\"3\"}",
+            ""));
+
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.OK, page);
+
+        // Replay stops at the unreadable line — what follows it may have been a Remove or a Clear — and the person's record says so.
+        var kept = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(storageDirectory, "local.json"))).RootElement.GetProperty("items").EnumerateObject().Select(p => p.Name);
+        Assert.Equal(["a", "b"], kept.Order());
+        Assert.Single(Directory.GetFiles(storageDirectory, "journal.ndjson.unreadable-*"));
+        Assert.Equal(1, await RepairKindCountAsync(id, "corrupt-journal"));
+    }
+
+    [Fact]
+    public async Task A_snapshot_that_cannot_be_read_is_named_in_the_usage_record_and_set_aside_not_deleted()
+    {
+        var id = (await _host.Catalog.AdoptAsync(Encoding.UTF8.GetBytes(Page))).Id;
+        await using (var storage = await _host.Catalog.OpenStorageAsync(id))
+        {
+            await storage.ApplyAsync([LocalOrigin.Storage.KeyValueOperation.Set("a", "1")]);
+            await storage.CheckpointAsync();
+        }
+        var storageDirectory = Path.Combine(_host.DataRoot, "adopted", id, "storage");
+        await File.WriteAllBytesAsync(Path.Combine(storageDirectory, "local.json"), []);
+
+        using (var page = await _host.ClientForApp(id).GetAsync("/"))
+            HttpAssert.Status(HttpStatusCode.OK, page);
+
+        Assert.Single(Directory.GetFiles(storageDirectory, "local.json.unreadable-*"));
+        Assert.Equal(1, await RepairKindCountAsync(id, "used-previous-snapshot"));
+    }
+
+    private async Task<int> RepairKindCountAsync(string id, string kind)
+    {
+        var days = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement.GetProperty("days");
+        return days.EnumerateArray().Sum(d => d.GetProperty("repairKinds").TryGetProperty(kind, out var n) ? n.GetInt32() : 0);
+    }
+
+    [Fact]
     public async Task The_revision_history_names_files_without_their_folders()
     {
         var folder = Path.Combine(_host.DataRoot, "..", "Downloads");
