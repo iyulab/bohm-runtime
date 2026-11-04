@@ -11,6 +11,27 @@ public sealed class HostAddressTests : IDisposable
 
     public void Dispose() => Directory.Delete(_dataRoot, recursive: true);
 
+    /// <summary>
+    /// Binds a listener on a port a host has just given up. The stopped host's socket can take a moment to be let go of under load,
+    /// so wait for it rather than failing the test on our own bind.
+    /// </summary>
+    private static async Task<TcpListener> HoldAsync(int port)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, port);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                listener.Start();
+                return listener;
+            }
+            catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse && attempt < 40)
+            {
+                await Task.Delay(50);
+            }
+        }
+    }
+
     [Fact]
     public async Task A_data_root_is_served_on_the_same_port_after_a_restart()
     {
@@ -38,8 +59,7 @@ public sealed class HostAddressTests : IDisposable
         var port = first.Port;
         await first.StopKeepingDataAsync();
 
-        using var squatter = new TcpListener(IPAddress.Loopback, port);
-        squatter.Start();
+        using var squatter = await HoldAsync(port);
         var second = await RunningHost.StartAsync(_dataRoot);
         try
         {
@@ -61,21 +81,8 @@ public sealed class HostAddressTests : IDisposable
         var port = first.Port;
         await first.StopKeepingDataAsync();
 
-        // Stand in for the stopping runtime: hold the port. The first host's socket can take a moment to be let go of under load, so
-        // wait for it rather than failing the test on our own bind.
-        var stopping = new TcpListener(IPAddress.Loopback, port);
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                stopping.Start();
-                break;
-            }
-            catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse && attempt < 40)
-            {
-                await Task.Delay(50);
-            }
-        }
+        // Stand in for the stopping runtime: hold the port.
+        var stopping = await HoldAsync(port);
         var release = Task.Delay(700).ContinueWith(_ => stopping.Stop(), TaskScheduler.Default);
         var second = await RunningHost.StartAsync(_dataRoot);
         try
