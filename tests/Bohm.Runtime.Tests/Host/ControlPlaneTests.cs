@@ -56,6 +56,8 @@ public sealed class ControlPlaneTests : IAsyncLifetime
 
         var days = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement.GetProperty("days");
         Assert.Equal(1, days.EnumerateArray().Sum(d => d.GetProperty("repaired").GetInt32()));
+        // The record says what kind it was, so a repair that lost nothing reads differently from one that did.
+        Assert.Equal(1, days.EnumerateArray().Sum(d => d.GetProperty("repairKinds").TryGetProperty("truncated-journal-tail", out var n) ? n.GetInt32() : 0));
     }
 
     [Fact]

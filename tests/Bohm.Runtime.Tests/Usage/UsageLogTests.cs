@@ -72,6 +72,22 @@ public sealed class UsageLogTests : IDisposable
     }
 
     [Fact]
+    public void A_repair_can_name_its_kind_and_older_lines_stay_unnamed()
+    {
+        var log = Open("""{"date":"2026-09-12","event":"repaired"}""", """{"date":"2026-09-12","event":"repaired","kind":"corrupt-journal"}""");
+        log.RecordRepaired("truncated-journal-tail");
+        log.RecordRepaired("Not A Word");   // not a word the record accepts: counted, but unnamed
+        log.RecordRepaired("corrupt-journal");
+
+        var reopened = UsageLog.Open(Path.Combine(_dir, "usage.ndjson"));
+        var old = new DateOnly(2026, 9, 12);
+        Assert.Equal(2, reopened.Days.Single(d => d.Date == old).Repaired);
+        Assert.Equal(new Dictionary<string, int> { ["corrupt-journal"] = 1 }, reopened.RepairKindsOn(old));
+        Assert.Equal(3, reopened.Days.Single(d => d.Date == reopened.Today).Repaired);
+        Assert.Equal(new Dictionary<string, int> { ["truncated-journal-tail"] = 1, ["corrupt-journal"] = 1 }, reopened.RepairKindsOn(reopened.Today));
+    }
+
+    [Fact]
     public void Suspected_losses_are_counted_per_day_and_read_back()
     {
         var log = Open("""{"date":"2026-09-10","signal":"opened"}""", """{"date":"2026-09-12","event":"loss-suspected"}""");

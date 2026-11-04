@@ -27,7 +27,8 @@ public enum UsageSignal
 /// (<c>{"date":"2026-09-23","signal":"opened"}</c>) and one line per load failure
 /// (<c>{"date":"2026-09-23","event":"load-error"}</c>), one line per closing page whose last writes the
 /// host could not confirm as applied (<c>"event":"loss-suspected"</c>), one line per repair the storage made while
-/// loading (<c>"event":"repaired"</c> — e.g. an incomplete last line of a copied folder dropped), one line each time the person takes in
+/// loading (<c>"event":"repaired"</c> — e.g. an incomplete last line of a copied folder dropped; the line may name what kind of
+/// repair it was, <c>"kind":"corrupt-journal"</c>, so a repair that lost nothing can be told from one that did), one line each time the person takes in
 /// a new revision or goes back to the previous one (<c>"event":"revised"</c> / <c>"reverted"</c>), and
 /// one line per page load that reported how the running revision's reads matched the stored data
 /// (<c>{"date":…,"event":"keys","revision":2,"missing":1,"unread":3,"seeded":3}</c> — counts only, never key names).
@@ -45,6 +46,7 @@ public sealed class UsageLog
     private readonly Dictionary<DateOnly, int> _loadErrors = [];
     private readonly Dictionary<DateOnly, int> _lossSuspected = [];
     private readonly Dictionary<DateOnly, int> _repaired = [];
+    private readonly Dictionary<DateOnly, Dictionary<string, int>> _repairKinds = [];
     private readonly List<RevisionEvent> _revisions = [];
     private readonly SortedDictionary<int, KeyReport> _keys = [];
 
@@ -75,7 +77,11 @@ public sealed class UsageLog
                     {
                         case "load-error": log._loadErrors[date] = log._loadErrors.GetValueOrDefault(date) + 1; break;
                         case "loss-suspected": log._lossSuspected[date] = log._lossSuspected.GetValueOrDefault(date) + 1; break;
-                        case "repaired": log._repaired[date] = log._repaired.GetValueOrDefault(date) + 1; break;
+                        case "repaired":
+                            log._repaired[date] = log._repaired.GetValueOrDefault(date) + 1;
+                            if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && ValidKind(kind.GetString()) is { } named)
+                                log.CountRepairKind(date, named);
+                            break;
                         case "revised": log._revisions.Add(new RevisionEvent(date, Reverted: false)); break;
                         case "reverted": log._revisions.Add(new RevisionEvent(date, Reverted: true)); break;
                         case "keys" when ReadKeyReport(root, date) is { } keys: log._keys[keys.Revision] = keys; break;
@@ -133,17 +139,32 @@ public sealed class UsageLog
     /// <summary>
     /// Counts one repair the application's storage made while loading — something on disk was not
     /// whole (typically the last line of a folder copied while a write was in progress) and was set
-    /// aside so the rest could load. What was repaired stays in the runtime log; the record keeps the count.
+    /// aside so the rest could load. What was repaired stays in the runtime log; the record keeps the count
+    /// and, when the caller knows it, the <paramref name="kind"/> (a lower-case, hyphenated word such as
+    /// <c>corrupt-journal</c> — never a key or a value).
     /// </summary>
-    public void RecordRepaired()
+    public void RecordRepaired(string? kind = null)
     {
         var today = Today;
+        var named = ValidKind(kind);
         lock (_lock)
         {
             _repaired[today] = _repaired.GetValueOrDefault(today) + 1;
-            Append($$"""{"date":"{{today:yyyy-MM-dd}}","event":"repaired"}""");
+            if (named is not null) CountRepairKind(today, named);
+            Append(named is null
+                ? $$"""{"date":"{{today:yyyy-MM-dd}}","event":"repaired"}"""
+                : $$"""{"date":"{{today:yyyy-MM-dd}}","event":"repaired","kind":"{{named}}"}""");
         }
     }
+
+    private void CountRepairKind(DateOnly date, string kind)
+    {
+        if (!_repairKinds.TryGetValue(date, out var kinds)) _repairKinds[date] = kinds = new(StringComparer.Ordinal);
+        kinds[kind] = kinds.GetValueOrDefault(kind) + 1;
+    }
+
+    // A kind is a word the host chose, so it can be written into the record and read back as-is; anything else is dropped.
+    private static string? ValidKind(string? kind) => kind is { Length: > 0 and <= 40 } && kind.All(c => c is >= 'a' and <= 'z' or '-') ? kind : null;
 
     /// <summary>
     /// Records that the person took in a new revision (<c>{"event":"revised"}</c>) or went back to
@@ -233,6 +254,15 @@ public sealed class UsageLog
                     .ToList();
             }
         }
+    }
+
+    /// <summary>
+    /// How many of <paramref name="date"/>'s repairs named their kind, by kind. Repairs recorded without one (older lines,
+    /// callers that did not know it) are in <see cref="UsageDay.Repaired"/> only.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> RepairKindsOn(DateOnly date)
+    {
+        lock (_lock) return _repairKinds.TryGetValue(date, out var kinds) ? new Dictionary<string, int>(kinds) : [];
     }
 
     /// <summary>Each time the person took in a new revision or went back to the previous one, in order.</summary>

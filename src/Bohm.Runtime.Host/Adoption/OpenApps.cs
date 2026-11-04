@@ -238,7 +238,7 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         foreach (var repair in storage.Recovery)
         {
             LogRepair(logger, appId, repair.Kind, repair.Detail);
-            usage.RecordRepaired();
+            usage.RecordRepaired(System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(repair.Kind.ToString()));
         }
         return new OpenApp(storage, usage, catalog.OpenAssets(appId), catalog.OpenSources(appId), catalog.OpenPages(appId));
     }
