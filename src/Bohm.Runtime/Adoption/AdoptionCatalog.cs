@@ -17,6 +17,7 @@ namespace Bohm.Runtime.Adoption;
 /// The adopted applications under one data root. Each lives in its own folder, which is
 /// everything needed to move it elsewhere:
 /// <c>app.json</c> (the record), <c>app.html</c> (the adopted bytes, never modified),
+/// <c>meaning.json</c> (what it was asked for, see <see cref="AppMeaning"/> — when it was made from words),
 /// <c>storage/</c> (its data, see <see cref="KeyValueStore"/>), <c>usage.ndjson</c> (its local
 /// usage record, see <see cref="UsageLog"/>), <c>revisions/</c> (see <see cref="ReviseAsync"/>) and,
 /// for an application that reads web pages, <c>sources.json</c> and <c>sources/</c> (see <see cref="AppSources"/>) and,
@@ -82,8 +83,10 @@ public sealed partial class AdoptionCatalog
     /// </summary>
     /// <param name="unsaved">A result made for the person, kept only if they keep it (<see cref="AdoptedApp.Unsaved"/>).</param>
     /// <param name="title">The name of an application the runtime made (<see cref="AdoptedApp.Title"/>).</param>
+    /// <param name="request">The words the application was asked for with, kept beside it (<see cref="AppMeaning"/>) — none for a page brought in as it is.</param>
+    /// <param name="via">How it was asked for — one of <see cref="FirstRequest.Ways"/>; without one the words are not kept.</param>
     public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, string? title = null,
-        string? generatedBy = null, CancellationToken cancellationToken = default)
+        string? generatedBy = null, string? request = null, string? via = null, CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
@@ -104,6 +107,8 @@ public sealed partial class AdoptionCatalog
                 stream.Flush(flushToDisk: true);
             }
 
+            if (AppMeaning.Request(request, via, now) is { } asked)
+                await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, AppMeaning.FileName), AppMeaning.Write(asked), cancellationToken).ConfigureAwait(false);
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, AppDirectory(app.Id));
         }
@@ -124,6 +129,10 @@ public sealed partial class AdoptionCatalog
         if (!File.Exists(path)) return null;
         return ReadRecord(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
     }
+
+    /// <summary>What application <paramref name="id"/> was first asked for with (<see cref="AppMeaning"/>) — <see langword="null"/> for an unknown id or none kept.</summary>
+    public Task<FirstRequest?> GetFirstRequestAsync(string id, CancellationToken cancellationToken = default) =>
+        IsValidId(id) ? AppMeaning.ReadRequestAsync(AppDirectory(id), cancellationToken) : Task.FromResult<FirstRequest?>(null);
 
     /// <summary>
     /// Puts the application away (<see cref="AdoptedApp.ArchivedAt"/>) or brings it back. Only the
@@ -337,6 +346,9 @@ public sealed partial class AdoptionCatalog
         Directory.CreateDirectory(to);
         foreach (var file in new[] { RecordFile, HtmlFile })
             await CopyFileAsync(Path.Combine(from, file), Path.Combine(to, file), cancellationToken).ConfigureAwait(false);
+        // What the application means travels with its code (the person's words are taken out where a copy leaves this computer).
+        if (File.Exists(Path.Combine(from, AppMeaning.FileName)))
+            await CopyFileAsync(Path.Combine(from, AppMeaning.FileName), Path.Combine(to, AppMeaning.FileName), cancellationToken).ConfigureAwait(false);
         // The record of the last package travels with the code, so the next package counts on from it.
         if (File.Exists(Path.Combine(from, PublishedFile)))
             await CopyFileAsync(Path.Combine(from, PublishedFile), Path.Combine(to, PublishedFile), cancellationToken).ConfigureAwait(false);

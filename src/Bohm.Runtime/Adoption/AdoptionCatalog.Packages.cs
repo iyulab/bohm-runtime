@@ -136,10 +136,11 @@ public sealed partial class AdoptionCatalog
     /// <summary>
     /// Shortens every recorded original path in an exported folder to its file name, and drops the record of the
     /// registry it was installed from and the words a person asked a change with — where this computer's files and
-    /// registries are, and what its person said, is not the receiver's.
+    /// registries are, and what its person said — a change's words and the words it was first asked for with — is not the receiver's.
     /// </summary>
     private static async Task KeepWhatTravelsAsync(string folder, CancellationToken cancellationToken)
     {
+        await AppMeaning.KeepWhatTravelsAsync(folder, cancellationToken).ConfigureAwait(false);
         var records = new List<string> { Path.Combine(folder, RecordFile) };
         var revisions = Path.Combine(folder, RevisionsDirectory);
         if (Directory.Exists(revisions)) records.AddRange(Directory.EnumerateFiles(revisions, RevisionFile, SearchOption.AllDirectories));
