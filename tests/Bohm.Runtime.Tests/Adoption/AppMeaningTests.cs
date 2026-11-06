@@ -90,6 +90,23 @@ public sealed class AppMeaningTests : IDisposable
     }
 
     [Fact]
+    public async Task The_history_shows_the_first_revision_with_the_words_it_was_asked_for_with()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, request: "a reading log", via: "made");
+        Assert.Equal("a reading log", Assert.Single(await catalog.ListRevisionsAsync(app.Id)).Request);
+
+        await using (var storage = await catalog.OpenStorageAsync(app.Id))
+            await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<!doctype html><title>Reading log</title><p>v2</p>"), null, storage, request: "add a rating");
+
+        var history = await catalog.ListRevisionsAsync(app.Id);
+        Assert.Equal(["a reading log", "add a rating"], history.Select(r => r.Request));
+
+        var brought = await catalog.AdoptAsync(Html, "log.html");
+        Assert.Null(Assert.Single(await catalog.ListRevisionsAsync(brought.Id)).Request);
+    }
+
+    [Fact]
     public async Task A_copy_without_data_carries_the_file_and_a_package_leaves_the_persons_words_behind()
     {
         var catalog = new AdoptionCatalog(_root);

@@ -744,16 +744,21 @@ public sealed partial class AdoptionCatalog
                 }
 
                 revisions.Add(new AppRevision(record.Revision, record.Previous, record.TakenInAt ?? app.AdoptedAt, record.Source, record.Revision == app.Revision, undone,
-                    record.Request, record.RestoredFrom, incoming));
+                    record.Request ?? (record.Revision == 1 ? await FirstWordsAsync(id, cancellationToken).ConfigureAwait(false) : null), record.RestoredFrom, incoming));
             }
         }
 
         // The first revision has no folder of its own until another replaces it.
         if (!revisions.Exists(r => r.Revision == app.Revision))
-            revisions.Add(new AppRevision(app.Revision, null, app.RevisedAt ?? app.AdoptedAt, app.Source, true, null));
+            revisions.Add(new AppRevision(app.Revision, null, app.RevisedAt ?? app.AdoptedAt, app.Source, true, null,
+                app.Revision == 1 ? await FirstWordsAsync(id, cancellationToken).ConfigureAwait(false) : null));
         revisions.Sort((a, b) => a.Revision.CompareTo(b.Revision));
         return revisions;
     }
+
+    /// <summary>The words the first revision was asked for with (<see cref="AppMeaning"/>), for the history — the way a later revision shows the words of its change.</summary>
+    private async Task<string?> FirstWordsAsync(string id, CancellationToken cancellationToken) =>
+        (await AppMeaning.ReadRequestAsync(AppDirectory(id), cancellationToken).ConfigureAwait(false))?.Text;
 
     /// <summary>
     /// Takes the data revision <paramref name="revision"/> wrote — kept aside when the application was put
