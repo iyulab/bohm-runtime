@@ -46,6 +46,22 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_persons_names_for_what_the_application_remembers_come_with_the_list_and_their_headers_go_into_its_fields()
+    {
+        await Bohm.Runtime.Adoption.AppMeaning.SetCollectionsAsync(Path.Combine(_host.DataRoot, "adopted", _app),
+            [new Bohm.Runtime.Adoption.RememberedKind("books", "책", [new("title", "제목"), new("isbn", "ISBN 번호")])], TestContext.Current.CancellationToken);
+
+        var imports = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{_app}/imports")).RootElement;
+        var books = Assert.Single(imports.GetProperty("collections").EnumerateArray());
+        Assert.Equal("책", books.GetProperty("label").GetString());
+        Assert.Equal([null, "제목", "ISBN 번호"], books.GetProperty("fields").EnumerateArray().Select(f => f.TryGetProperty("label", out var l) ? l.GetString() : null));
+
+        using var preview = await PostAsync("imports/preview", Body("ISBN 번호,제목\n978-9,새 책", identity: "isbn"));
+        var plan = JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(["isbn", "title"], plan.GetProperty("columns").EnumerateArray().Select(c => c.GetProperty("field").GetString()));
+    }
+
+    [Fact]
     public async Task The_file_kinds_an_application_takes_in_itself_are_told()
     {
         var app = await _host.AdoptAsync("""<!doctype html><title>Ledger</title><input type="file" accept=".csv,.xlsx" hidden><script>localStorage.setItem("tx", "[]");</script>""");

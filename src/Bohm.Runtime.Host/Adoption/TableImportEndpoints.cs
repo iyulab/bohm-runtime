@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -31,7 +32,10 @@ internal static class TableImportEndpoints
         var collections = TableImport.Collections(app.Storage.GetItems())
             .Select(c => c with { Declaration = PersonNames.Recall(c.Declaration, kinds) })   // a table written out with the person's names comes back in
             .Select(c => memory.TryGetValue(c.Declaration.Collection, out var settled) ? c with { Declaration = settled.Recall(c.Declaration) } : c)
-            .Select(c => new CollectionView(c.Declaration.Collection, c.Records, [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind))], c.Declaration.Identity))
+            .Select(c => PersonNames.For(kinds, c.Declaration.Collection) is var kind
+                ? new CollectionView(c.Declaration.Collection, c.Records,
+                    [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind, kind?.Fields.FirstOrDefault(n => n.Key == f.Name).Value))], c.Declaration.Identity, kind?.Label)
+                : throw new UnreachableException())
             .ToList();
         var imports = await catalog.TableImportsAsync(appId, cancel).ConfigureAwait(false);
         var fileTypes = AppFileInputs.Accepts(System.Text.Encoding.UTF8.GetString(await catalog.ReadHtmlAsync(appId, cancel).ConfigureAwait(false)));
@@ -142,10 +146,14 @@ internal static class TableImportEndpoints
         return JsonSerializer.SerializeAsync(response.Body, value, type, cancel);
     }
 
-    internal sealed record FieldView(string Name, string Kind);
+    /// <param name="Label">The person's name for the field (<see cref="PersonNames"/>), when the application keeps one.</param>
+    internal sealed record FieldView(string Name, string Kind,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Label = null);
 
     /// <param name="Identity">The field earlier imports told the same record apart by, or <see langword="null"/>.</param>
-    internal sealed record CollectionView(string Collection, int Records, IReadOnlyList<FieldView> Fields, string? Identity);
+    /// <param name="Label">The person's name for the records (<see cref="PersonNames"/>), when the application keeps one.</param>
+    internal sealed record CollectionView(string Collection, int Records, IReadOnlyList<FieldView> Fields, string? Identity,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Label = null);
 
     /// <param name="FileTypes">The file extensions the application's own file inputs take (<see cref="AppFileInputs"/>) — a table file of one of them is better taken in by the application itself.</param>
     internal sealed record ImportsView(IReadOnlyList<CollectionView> Collections, IReadOnlyList<TableImportRecord> Imports, IReadOnlyList<string> FileTypes);
