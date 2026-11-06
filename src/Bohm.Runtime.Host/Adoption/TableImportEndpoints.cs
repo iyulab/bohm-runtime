@@ -27,7 +27,9 @@ internal static class TableImportEndpoints
         var app = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false);
         var catalog = context.RequestServices.GetRequiredService<AdoptionCatalog>();
         var memory = await catalog.ImportMemoryAsync(appId, cancel).ConfigureAwait(false);
+        var kinds = await catalog.GetCollectionsAsync(appId, cancel).ConfigureAwait(false);
         var collections = TableImport.Collections(app.Storage.GetItems())
+            .Select(c => c with { Declaration = PersonNames.Recall(c.Declaration, kinds) })   // a table written out with the person's names comes back in
             .Select(c => memory.TryGetValue(c.Declaration.Collection, out var settled) ? c with { Declaration = settled.Recall(c.Declaration) } : c)
             .Select(c => new CollectionView(c.Declaration.Collection, c.Records, [.. c.Declaration.Fields.Select(f => new FieldView(f.Name, f.Kind))], c.Declaration.Identity))
             .ToList();
@@ -109,7 +111,8 @@ internal static class TableImportEndpoints
                 : columns?.Values.Any(f => f is not null && !found.Declaration.Fields.Any(d => d.Name == f)) == true ? "unknown-field"
                 : null;
             // What earlier imports settled (headers put into fields of another name) matches columns by name again.
-            var declaration = found is not null && memory.TryGetValue(found.Declaration.Collection, out var settled) ? settled.Recall(found.Declaration) : found?.Declaration;
+            var named = found is null ? null : PersonNames.Recall(found.Declaration, await context.RequestServices.GetRequiredService<AdoptionCatalog>().GetCollectionsAsync(appId, cancel).ConfigureAwait(false));
+            var declaration = named is not null && memory.TryGetValue(named.Collection, out var settled) ? settled.Recall(named) : named;
             if (problem is null) return new ImportRequest(declaration! with { Identity = identity }, table, name, sameRecord, columns);
         }
         catch (TableFileException e)

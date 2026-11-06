@@ -64,6 +64,45 @@ public sealed record RememberedKind(string Name, string Label, IReadOnlyList<Key
     }
 }
 
+/// <summary>The person's names (<see cref="RememberedKind"/>) laid on the tables an application's records make.</summary>
+public static class PersonNames
+{
+    /// <summary>The kind kept for <paramref name="collection"/> (its storage key), if any.</summary>
+    public static RememberedKind? For(IReadOnlyList<RememberedKind> kinds, string collection) =>
+        kinds.FirstOrDefault(k => k.Name == collection);
+
+    /// <summary>
+    /// <paramref name="declaration"/> with the person's name of each field as one more header that means it — so a table written
+    /// out with those names (<see cref="TableImports.TableExport"/>) comes back in to the same fields.
+    /// </summary>
+    public static TableImports.ImportDeclaration Recall(TableImports.ImportDeclaration declaration, IReadOnlyList<RememberedKind> kinds)
+    {
+        if (For(kinds, declaration.Collection) is not { } kind) return declaration;
+        var labels = kind.Fields.ToDictionary(f => f.Key, f => f.Value, StringComparer.Ordinal);
+        return declaration with
+        {
+            Fields = [.. declaration.Fields.Select(f => labels.TryGetValue(f.Name, out var label) && label != f.Name ? f with { Aliases = [.. f.Aliases ?? [], label] } : f)],
+        };
+    }
+
+    /// <summary>The header for each of <paramref name="fields"/>: the person's name where one is kept, the field's own name otherwise — each header once.</summary>
+    public static IReadOnlyList<string> Headers(IReadOnlyList<string> fields, RememberedKind? kind)
+    {
+        var labels = kind?.Fields.ToDictionary(f => f.Key, f => f.Value, StringComparer.Ordinal) ?? [];
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var headers = new List<string>(fields.Count);
+        foreach (var field in fields)
+        {
+            // Two fields the person named alike, or a name equal to another field's own name, would read back into one field: keep the field's name then.
+            var header = labels.TryGetValue(field, out var label) && !fields.Contains(label, StringComparer.OrdinalIgnoreCase) && used.Add(label) ? label : field;
+            if (header == field) used.Add(field);
+            headers.Add(header);
+        }
+
+        return headers;
+    }
+}
+
 /// <summary>
 /// The file beside an application's code that says what the application means: what it was first asked for
 /// (<see cref="FirstRequest"/>), and — in later versions of the format — what it remembers and the names of its fields.

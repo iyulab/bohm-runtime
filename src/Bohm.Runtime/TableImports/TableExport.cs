@@ -25,12 +25,14 @@ public static class TableExport
     /// or a carriage return) gets a leading apostrophe: the data was written by an application nobody reviewed,
     /// and a cell must open as what it says, not run.
     /// </remarks>
-    public static byte[] Csv(CollectionCandidate collection, string stored)
+    /// <param name="headers">What to write over each field's column, in the fields' order — the person's names (<see cref="Adoption.PersonNames.Headers"/>); the fields' own names when not given.</param>
+    public static byte[] Csv(CollectionCandidate collection, string stored, IReadOnlyList<string>? headers = null)
     {
         ArgumentNullException.ThrowIfNull(collection);
         var fields = collection.Declaration.Fields.Select(f => f.Name).ToList();
+        if (headers is not null && headers.Count != fields.Count) throw new ArgumentException("A header for each field.", nameof(headers));
         var text = new StringBuilder();
-        AppendRow(text, fields);
+        AppendRow(text, headers ?? fields);
         foreach (var record in TableImport.Records(stored) ?? [])
             AppendRow(text, fields.Select(f => Cell(record[f])));
         return [.. Utf8Mark, .. Encoding.UTF8.GetBytes(text.ToString())];

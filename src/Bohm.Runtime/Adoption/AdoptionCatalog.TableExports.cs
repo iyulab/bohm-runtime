@@ -35,6 +35,7 @@ public sealed partial class AdoptionCatalog
             ?? await KeyValueStore.PeekAsync(Path.Combine(AppDirectory(id), StorageDirectory), AppStorageFormat.Options(), cancellationToken).ConfigureAwait(false);
         var collections = TableImport.Collections(items);
         if (collections.Count == 0) return [];
+        var kinds = await GetCollectionsAsync(id, cancellationToken).ConfigureAwait(false);   // the person's names, when the application keeps them
 
         var written = new List<TableExportRecord>(collections.Count);
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -45,10 +46,12 @@ public sealed partial class AdoptionCatalog
             foreach (var collection in collections)
             {
                 var key = collection.Declaration.Collection;
-                var file = TableExport.FileName(key);
+                var kind = PersonNames.For(kinds, key);
+                var file = TableExport.FileName(kind?.Label ?? key);
                 // Two keys that differ only where a file name cannot hold them, or only in case, still get a file each.
-                for (var n = 2; !names.Add(file); n++) file = Path.GetFileNameWithoutExtension(TableExport.FileName(key)) + $" {n}.csv";
-                await File.WriteAllBytesAsync(Path.Combine(partial, file), TableExport.Csv(collection, items[key]), cancellationToken).ConfigureAwait(false);
+                for (var n = 2; !names.Add(file); n++) file = Path.GetFileNameWithoutExtension(TableExport.FileName(kind?.Label ?? key)) + $" {n}.csv";
+                var fields = collection.Declaration.Fields.Select(f => f.Name).ToList();
+                await File.WriteAllBytesAsync(Path.Combine(partial, file), TableExport.Csv(collection, items[key], PersonNames.Headers(fields, kind)), cancellationToken).ConfigureAwait(false);
                 written.Add(new TableExportRecord(key, file, collection.Records, [.. collection.Declaration.Fields.Select(f => f.Name)]));
             }
 
