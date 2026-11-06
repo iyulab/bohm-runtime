@@ -283,7 +283,7 @@ internal static class WebAgent
     /// <param name="effort">How much the model thinks, when the caller asked for a level for this turn; otherwise thinking is left off as before.</param>
     public static async Task<TurnResult> RunTurnAsync(IChatClient model, string modelName, bool onThisComputer, ModelLimits limits, IReadOnlyList<ChatMessage> conversation,
         DateTimeOffset now, Func<string, CancellationToken, Task>? onText, CancellationToken cancellationToken, bool last = false, SkillsConfig? skills = null, IReadOnlyList<Extensions.McpTool>? mcp = null,
-        bool sees = false, ReasoningEffort? effort = null)
+        bool sees = false, ReasoningEffort? effort = null, Func<CancellationToken, Task>? onRestart = null)
     {
         var systemPrompt = SystemPrompt + "\n" + Now(now);
         var loader = onThisComputer || skills is null ? null : SkillsLoader.Create(skills);
@@ -343,7 +343,19 @@ internal static class WebAgent
         {
             // Too long for the model's context because of the pages read: the same turn once more with
             // their text cut by as much as did not fit. A second refusal stands.
+            sent = shorter;
             (produced, conversation) = await StreamAsync(shorter).ConfigureAwait(false);
+        }
+
+        // An answer that is the page it read, written back out, is asked for once more (see CopiedAnswer). The text
+        // shown so far is taken back first; the second answer stands, whatever it is.
+        if (!last && !Calls(produced) && CopiedAnswer.Copies(written.ToString(), conversation))
+        {
+            written.Clear();
+            if (onRestart is not null) await onRestart(cancellationToken).ConfigureAwait(false);
+            var first = use;
+            (produced, _) = await StreamAsync([.. sent, .. produced, new ChatMessage(ChatRole.User, CopiedAnswer.Note)]).ConfigureAwait(false);
+            use = Llm.ModelUse.Add(first, use);
         }
 
         async Task<(IList<ChatMessage> Produced, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
@@ -402,6 +414,13 @@ internal static class WebAgent
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName, Usage: use)
             : new("done", text ?? "", [], modelName, cutShort ? Llm.ProposalFailedException.OutputLimit : null, use);
+    }
+
+    /// <summary>Whether the model's messages hold a call for the host to make.</summary>
+    private static bool Calls(IList<ChatMessage> produced)
+    {
+        var answered = produced.SelectMany(m => m.Contents).OfType<FunctionResultContent>().Select(r => r.CallId).ToHashSet(StringComparer.Ordinal);
+        return produced.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Any(call => !answered.Contains(call.CallId));
     }
 
     /// <summary>A page text shorter than this is not worth cutting.</summary>
