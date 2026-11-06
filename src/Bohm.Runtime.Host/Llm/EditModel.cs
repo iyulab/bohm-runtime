@@ -130,9 +130,14 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     {
         if (remembered is not { } chosen)
         {
-            if (company.Client() is { } organizations)
-                return new(organizations, $"{company.ProviderId}/{company.Current!.Model}", OnThisComputer: false,
-                    await company.LimitsAsync(cancellationToken).ConfigureAwait(false), company.Current.Input is { } input ? input.Contains("image") : null);
+            if (company.Client() is not null)
+            {
+                // Limits first: asking the server may change how its client is made (AnswerModel.LimitsAsync) — the one after is used.
+                var limits = await company.LimitsAsync(cancellationToken).ConfigureAwait(false);
+                if (company.Client() is { } organizations)
+                    return new(organizations, $"{company.ProviderId}/{company.Current!.Model}", OnThisComputer: false,
+                        limits, company.Current.Input is { } input ? input.Contains("image") : null);
+            }
             if (!local.Configured) return null;
             var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);
             return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits, Sees: false);
@@ -183,7 +188,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         try
         {
             var address = declared is null ? provider.BaseUrl : provider.RootOf(declared);
-            if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { } window)
+            if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { ContextWindow: { } window })
                 fit.Reported(window);
         }
         catch (OperationCanceledException)

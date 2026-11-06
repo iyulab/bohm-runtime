@@ -161,6 +161,25 @@ public sealed class AnswerModelRouteTests
         Assert.Equal(server.Address.Authority, sent.GetProperty("host").GetString());
     }
 
+    [Theory]
+    [InlineData("gpustack", false)]
+    [InlineData("vllm", true)]
+    public async Task On_a_gpustack_server_tool_schemas_go_out_without_null_in_their_type_lists(string ownedBy, bool keepsNull)
+    {
+        await using var server = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync();
+        await ServeAsync(host, server);
+        server.Models = "{\"object\":\"list\",\"data\":[{\"id\":\"set-model\",\"object\":\"model\",\"owned_by\":\"" + ownedBy + "\"}]}";
+        var company = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Bohm.Runtime.Host.Llm.AnswerModel>(host.Services);
+
+        await company.LimitsAsync(CancellationToken.None, thinking: false);
+        var tool = Microsoft.Extensions.AI.AIFunctionFactory.Create((string? note) => note ?? "", "remember", "Keeps a note.");
+        await company.Client()!.GetResponseAsync([new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Keep a note.")], new Microsoft.Extensions.AI.ChatOptions { Tools = [tool] });
+
+        var sent = server.Asked.Last(r => r.Body.Contains("\"remember\"", StringComparison.Ordinal)).Body;
+        Assert.Equal(keepsNull, sent.Contains("\"null\"", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task A_check_takes_the_context_window_a_vllm_server_reports_for_the_model()
     {

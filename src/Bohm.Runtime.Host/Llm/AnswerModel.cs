@@ -58,7 +58,10 @@ internal sealed partial class AnswerModel : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
     private (string Provider, string Model)? _selection;
-    private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
+    private (CompanyModelOptions Server, string? Key, bool StripNull, ModelFitChatClient Client)? _client;
+
+    // What each server's model list said when it was asked (ServerContextWindow) — whether it is GPUStack decides how tools go out.
+    private readonly Dictionary<Uri, ServerModel> _listed = [];
     private ModelFitChatClient? _askedFor;
     private ModelFitChatClient? _thinkingAskedFor;
 
@@ -321,6 +324,13 @@ internal sealed partial class AnswerModel : IDisposable
     {
         if (FittedClient() is not { } client) return ModelLimits.Unknown;
         await AskWindowAsync(client, again, cancellationToken).ConfigureAwait(false);
+        // What the list said may change how the client is made (a GPUStack server) — the new one is asked for its window too.
+        if (FittedClient() is { } remade && !ReferenceEquals(remade, client))
+        {
+            client = remade;
+            await AskWindowAsync(client, again: true, cancellationToken).ConfigureAwait(false);
+        }
+
         if (thinking) await AskThinkingAsync(client, cancellationToken).ConfigureAwait(false);
         return client.Limits;
     }
@@ -331,15 +341,19 @@ internal sealed partial class AnswerModel : IDisposable
         string? key;
         lock (_clientLock)
         {
-            if (client.Limits.ContextWindow is not null || (!again && ReferenceEquals(_askedFor, client)) || _client is not { } kept || kept.Client != client)
+            if (_client is not { } kept || kept.Client != client || (!again && ReferenceEquals(_askedFor, client))
+                || client.Limits.ContextWindow is not null && _listed.ContainsKey(kept.Server.Endpoint))
                 return;
             (_askedFor, server, key) = (client, kept.Server, kept.Key);
         }
 
         try
         {
-            if (await ServerContextWindow.AskAsync(server.Endpoint, key, server.Model, _egress, cancellationToken).ConfigureAwait(false) is { } window)
-                client.Reported(window);
+            if (await ServerContextWindow.AskAsync(server.Endpoint, key, server.Model, _egress, cancellationToken).ConfigureAwait(false) is { } listed)
+            {
+                lock (_clientLock) _listed[server.Endpoint] = listed;
+                if (client.Limits.ContextWindow is null && listed.ContextWindow is { } window) client.Reported(window);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -385,8 +399,14 @@ internal sealed partial class AnswerModel : IDisposable
     }
 
     /// <summary>The whole address the person gave is the base — no API path is added to it.</summary>
-    private static OpenAICompatibleConfig ConfigOf(CompanyModelOptions server, string? key) =>
-        new() { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key };
+    /// <remarks>
+    /// On a GPUStack server, tool schemas go out with <c>"null"</c> taken out of their type lists: its streamed tool calls end with
+    /// <c>{"error": "unhashable type: 'list'"}</c> when the model fills a parameter typed <c>["string", "null"]</c> — what an optional
+    /// parameter is written as. TODO(upstream: https://github.com/gpustack/gpustack/issues/6598): send them as they are once it is fixed.
+    /// </remarks>
+    private static OpenAICompatibleConfig ConfigOf(CompanyModelOptions server, string? key, bool gpuStack) => gpuStack
+        ? new IronHive.Providers.OpenAI.Compatible.GpuStack.GpuStackConfig { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key }.ToOpenAICompatible()
+        : new() { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key };
 
     private ModelFitChatClient? FittedClient()
     {
@@ -394,13 +414,15 @@ internal sealed partial class AnswerModel : IDisposable
         var key = Key;
         lock (_clientLock)
         {
-            if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
-            var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key));
+            var stripNull = _listed.TryGetValue(current.Endpoint, out var listed) && listed.ServedByGpuStack;
+            if (_client is { } kept && kept.Server == current && kept.Key == key && kept.StripNull == stripNull) return kept.Client;
+            var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key, stripNull));
             var limits = current.Limits.Reasoning is null && _learned.Thinks(current.Endpoint, current.Model) ? current.Limits with { Reasoning = true } : current.Limits;
             var client = new ModelFitChatClient(
                 new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority), limits,
                 () => _learned.Remember(current.Endpoint, current.Model));
-            _client = (current, key, client);
+            _client?.Client.Dispose();
+            _client = (current, key, stripNull, client);
             return client;
         }
     }

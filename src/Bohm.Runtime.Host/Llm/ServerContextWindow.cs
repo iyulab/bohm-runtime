@@ -14,12 +14,12 @@ namespace Bohm.Runtime.Host.Llm;
 internal static class ServerContextWindow
 {
     /// <summary>
-    /// The window the server at <paramref name="address"/> (the whole address is the base — no API path is added) reports for
-    /// <paramref name="model"/>, or <see langword="null"/> when it says none, does not list the model, or does not answer in
+    /// What the server at <paramref name="address"/> (the whole address is the base — no API path is added) reports for
+    /// <paramref name="model"/> — its context window and who serves it, as its model list says — or <see langword="null"/> when it does not list the model, or does not answer in
     /// <see cref="AnswerModel.CheckTimeout"/>. The request it was asked for goes on either way.
     /// </summary>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    public static async Task<int?> AskAsync(Uri address, string? key, string model, Egress egress, CancellationToken cancellationToken)
+    public static async Task<ServerModel?> AskAsync(Uri address, string? key, string model, Egress egress, CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(AnswerModel.CheckTimeout);
@@ -27,7 +27,9 @@ internal static class ServerContextWindow
         try
         {
             using var finder = new OpenAICompatibleModelFinder(new OpenAICompatibleConfig { BaseUrl = address.AbsoluteUri, Path = "", ApiKey = key });
-            return await finder.FindModelAsync(model, timeout.Token).ConfigureAwait(false) is LanguageModelCard { ContextWindow: { } window } ? window : null;
+            return await finder.FindModelAsync(model, timeout.Token).ConfigureAwait(false) is { } card
+                ? new ServerModel((card as LanguageModelCard)?.ContextWindow, string.IsNullOrWhiteSpace(card.OwnedBy) ? null : card.OwnedBy.Trim())
+                : null;
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
@@ -35,4 +37,12 @@ internal static class ServerContextWindow
             return null;
         }
     }
+}
+
+/// <summary>What an OpenAI-compatible server's model list says of one model: its context window, and its <c>owned_by</c> — which
+/// for a GPUStack server is <c>gpustack</c>.</summary>
+internal sealed record ServerModel(int? ContextWindow, string? OwnedBy)
+{
+    /// <summary>Whether the model is served by GPUStack, whose streamed tool calls end with an error when a parameter's schema is a type list.</summary>
+    public bool ServedByGpuStack => string.Equals(OwnedBy, "gpustack", StringComparison.OrdinalIgnoreCase);
 }
