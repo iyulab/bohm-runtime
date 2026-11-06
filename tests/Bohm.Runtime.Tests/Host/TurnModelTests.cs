@@ -117,7 +117,21 @@ public sealed class TurnModelTests : IAsyncLifetime
         await AssertRememberedChoiceStandsAsync();
     }
 
+    [Fact]
+    public async Task The_model_on_this_computer_can_be_named_for_a_turn_and_is_missing_while_none_is_set()
+    {
+        // Named by its provider alone (no model name to read); with none set, what is missing is said, as for the default.
+        using var missing = await TurnAsync(""","model":{"provider":"local"}""");
+
+        HttpAssert.Status(HttpStatusCode.Conflict, missing);
+        var body = JsonDocument.Parse(await missing.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal("localModel", body.GetProperty("needs").GetString());
+        Assert.Empty(_provider.Asked);
+        await AssertRememberedChoiceStandsAsync();
+    }
+
     [Theory]
+    [InlineData(""","model":{"provider":"srv"}""", "model-unknown")]
     [InlineData(""","model":{"provider":"nowhere","model":"m"}""", "model-unknown")]
     [InlineData(""","model":{"provider":"srv","model":"  "}""", "model-unknown")]
     [InlineData(""","model":{"provider":"srv","model":"thinker","effort":"max"}""", "bad-request")]

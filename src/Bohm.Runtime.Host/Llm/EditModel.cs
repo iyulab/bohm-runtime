@@ -70,13 +70,19 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     /// <summary>What is missing before <paramref name="choice"/> can be asked (<see langword="null"/>: the default), or <see langword="null"/> when nothing is.</summary>
     public EditModelMissing? MissingFor(EditModelChoice? choice) => choice switch
     {
+        { Provider: LocalName } => local.Configured ? null : new("localModel", null),
         { Provider: CloudAccount.ProviderId } => !account.SignedIn ? new("account", CloudAccount.ProviderId) : null,
         { } chosen => catalog.ById(chosen.Provider) is { } provider && (!provider.Auth.KeyRequired || !string.IsNullOrEmpty(vault.Read(provider.VaultName))) ? null : new("key", chosen.Provider),
         null => company.Configured || local.Configured ? null : new("localModel", null),
     };
 
-    /// <summary>Whether <paramref name="choice"/> names a provider that can be chosen and a model: what <see cref="ChooseAsync"/> accepts, and what <see cref="GetForAsync"/> takes.</summary>
-    public bool CanPick(EditModelChoice choice) => Choosable(choice.Provider) && !string.IsNullOrWhiteSpace(choice.Model);
+    /// <summary>
+    /// Whether <paramref name="choice"/> names a provider that can be chosen and a model — what <see cref="GetForAsync"/> takes — or
+    /// <see cref="LocalName"/> (its model name is not read): the one on this computer can be asked for one request when another
+    /// answers by default, as when the organization's server cannot be reached — while none is set, it is <see cref="MissingFor"/>.
+    /// </summary>
+    public bool CanPick(EditModelChoice choice) =>
+        choice.Provider == LocalName || (Choosable(choice.Provider) && !string.IsNullOrWhiteSpace(choice.Model));
 
     /// <summary>Whether <paramref name="provider"/> can be chosen: a provider on the list, or the Bohm account when there is one.</summary>
     private bool Choosable(string provider) =>
@@ -123,8 +129,13 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
     /// </summary>
     /// <exception cref="ArgumentException">No such provider, or no model name (<see cref="CanPick"/>).</exception>
     public Task<ChosenEditModel?> GetForAsync(EditModelChoice choice, CancellationToken cancellationToken) =>
-        CanPick(choice) ? ResolveAsync(choice with { Model = choice.Model.Trim() }, cancellationToken)
-            : throw new ArgumentException("An AI provider and the name of one of its models.", nameof(choice));
+        !CanPick(choice) ? throw new ArgumentException("An AI provider and the name of one of its models.", nameof(choice))
+            : choice.Provider == LocalName ? OnThisComputerAsync(cancellationToken)
+            : ResolveAsync(choice with { Model = choice.Model.Trim() }, cancellationToken);
+
+    /// <summary>The model on this computer, ready to be asked; <see langword="null"/> when none is set.</summary>
+    private async Task<ChosenEditModel?> OnThisComputerAsync(CancellationToken cancellationToken) =>
+        !local.Configured ? null : new(await local.GetAsync(cancellationToken).ConfigureAwait(false), LocalName, OnThisComputer: true, local.Limits, Sees: false);
 
     private async Task<ChosenEditModel?> ResolveAsync(EditModelChoice? remembered, CancellationToken cancellationToken)
     {
@@ -138,9 +149,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
                     return new(organizations, $"{company.ProviderId}/{company.Current!.Model}", OnThisComputer: false,
                         limits, company.Current.Input is { } input ? input.Contains("image") : null);
             }
-            if (!local.Configured) return null;
-            var onThisComputer = await local.GetAsync(cancellationToken).ConfigureAwait(false);
-            return new(onThisComputer, LocalName, OnThisComputer: true, local.Limits, Sees: false);
+            return await OnThisComputerAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (chosen.Provider == CloudAccount.ProviderId)

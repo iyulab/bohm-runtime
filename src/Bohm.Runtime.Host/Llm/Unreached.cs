@@ -7,7 +7,7 @@ namespace Bohm.Runtime.Host.Llm;
 /// Why a server was not reached, as far as the failure says — the one reading every way of asking a server a question shares
 /// (the answer model's check, the list of a server's models, a provider's check), so a wrong address is told the same wherever
 /// it was typed. The values name what to look at: the address's spelling, the port and whether the server runs, the scheme
-/// and the server's certificate, or the network. Read from the failure's kind, never its message, which the system words in
+/// and the server's certificate, the network, or this computer's own road out. Read from the failure's kind, never its message, which the system words in
 /// its own language.
 /// </summary>
 internal static class Unreached
@@ -26,6 +26,12 @@ internal static class Unreached
     /// speaks plain <c>http</c>, or its certificate is not one this computer trusts. The failure does not tell the two apart.
     /// </summary>
     public const string SecureConnection = "secure-connection";
+
+    /// <summary>
+    /// This computer has no road to the network the server is on: no network at all, no route to it, or a firewall on this
+    /// computer that does not let the connection out — not the server's doing, so the address is not what to look at.
+    /// </summary>
+    public const string NoNetwork = "no-network";
 
     /// <summary>
     /// Whether the failure is the road to the server failing — nothing it said: the connection, the name, the secure handshake or
@@ -53,6 +59,7 @@ internal static class Unreached
                 SocketError.ConnectionRefused => ConnectionRefused,
                 SocketError.HostNotFound or SocketError.NoData => HostNotFound,
                 SocketError.TimedOut => NoAnswer,
+                SocketError.NetworkUnreachable or SocketError.HostUnreachable or SocketError.NetworkDown or SocketError.AccessDenied => NoNetwork,
                 _ => null,
             };
             if (why is not null) return why;

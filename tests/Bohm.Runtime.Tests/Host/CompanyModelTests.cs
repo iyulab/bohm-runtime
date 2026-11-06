@@ -108,6 +108,10 @@ public sealed class CompanyModelTests : IAsyncLifetime
         Assert.Equal("secure-connection", Unreached.Of(new AggregateException(handshake)));
         Assert.Equal("secure-connection", Unreached.Of(new System.Security.Authentication.AuthenticationException("certificate")));
         Assert.False(Unreached.Is(new JsonException("not a list")));
+
+        // This computer's own road out failing — no network, no route, a firewall here — is not the server's address to check.
+        foreach (var code in new[] { System.Net.Sockets.SocketError.NetworkUnreachable, System.Net.Sockets.SocketError.HostUnreachable, System.Net.Sockets.SocketError.NetworkDown, System.Net.Sockets.SocketError.AccessDenied })
+            Assert.Equal("no-network", Unreached.Of(new HttpRequestException(HttpRequestError.ConnectionError, "no road", new System.Net.Sockets.SocketException((int)code))));
     }
 
     [Theory]
