@@ -2,6 +2,7 @@ using System.Text.Json;
 using DesktopHost.Files;
 using LMSupply.Generator.Abstractions;
 using LMSupply.Generator;
+using LMSupply.Llama.Gguf;
 using LMSupply.Llama.Server;
 using Microsoft.Extensions.AI;
 
@@ -186,6 +187,17 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 // The loaded model serves every request after this one: a request that gives up while it
                 // loads does not throw away a load the next request would only have to start again.
                 _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, progress: null, CancellationToken.None).ConfigureAwait(false);
+                // Left to size the context itself, the library may bound it by memory to a length the runtime's own
+                // requests do not fit; started again with the length they are written for, capped at what the model was trained on.
+                if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } sized
+                    && Reload(sized.MaxContextLength, (await GgufMetadataReader.ReadAsync(settings.ModelPath, cancellationToken: CancellationToken.None).ConfigureAwait(false))?.ContextLength) is { } wanted)
+                {
+                    var small = _generator;
+                    _generator = null;
+                    await small.DisposeAsync().ConfigureAwait(false);
+                    generatorOptions.MaxContextLength = wanted;
+                    _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, progress: null, CancellationToken.None).ConfigureAwait(false);
+                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -212,6 +224,25 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     {
         await UnloadAsync().ConfigureAwait(false);
         _gate.Dispose();
+    }
+
+    /// <summary>
+    /// The context length the runtime's own requests are written for — a conversation with its tools, or making an
+    /// application from a description, whose prompt and answer together run to tens of thousands of tokens. It is the
+    /// library's own request when nothing is named; what the library may shrink it to by its memory estimate (4096 for a
+    /// 35B model on a 32 GB computer) leaves even a one-word question without room to be answered.
+    /// </summary>
+    internal const int WorkingContextLength = 32768;
+
+    /// <summary>
+    /// The context length to start the model again with when the library chose <paramref name="started"/> by itself,
+    /// or <see langword="null"/> to keep it: a length below <see cref="WorkingContextLength"/> is raised to it, but never
+    /// past what the model was trained on (<paramref name="trained"/>, when the file says).
+    /// </summary>
+    internal static int? Reload(int started, int? trained)
+    {
+        var wanted = trained is > 0 ? Math.Min(WorkingContextLength, trained.Value) : WorkingContextLength;
+        return started < wanted ? wanted : null;
     }
 
     private async Task UnloadAsync()
