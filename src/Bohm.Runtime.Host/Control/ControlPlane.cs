@@ -423,12 +423,14 @@ internal static partial class ControlPlane
                 if (await promoting.PromoteAsync(context, cancel).ConfigureAwait(false) is { } promoted)
                 {
                     // What the person wrote while trying it (`?preview=<token>` — the proposed new application's preview) is
-                    // theirs: it becomes the application's first data.
+                    // theirs: it becomes the application's first data, and today a day they used it (opened, typed in, stored) —
+                    // the Library said «no input in 14 days» right after the records were entered.
                     if (context.Request.Query["preview"].ToString() is { Length: > 0 } triedIn
                         && await context.RequestServices.GetRequiredService<AppPreviews>().TakeWrittenAsync(triedIn).ConfigureAwait(false) is { Count: > 0 } written)
                     {
-                        var store = (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(promoted.Id).ConfigureAwait(false)).Storage;
-                        await store.ApplyAsync([.. written.Select(w => KeyValueOperation.Set(w.Key, w.Value))], CancellationToken.None).ConfigureAwait(false);
+                        var taken = await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(promoted.Id).ConfigureAwait(false);
+                        await taken.Storage.ApplyAsync([.. written.Select(w => KeyValueOperation.Set(w.Key, w.Value))], CancellationToken.None).ConfigureAwait(false);
+                        foreach (var signal in (UsageSignal[])[UsageSignal.Opened, UsageSignal.Input, UsageSignal.Wrote]) taken.Usage.Record(signal);
                     }
 
                     response.StatusCode = StatusCodes.Status201Created;
