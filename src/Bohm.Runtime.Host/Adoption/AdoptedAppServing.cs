@@ -31,13 +31,18 @@ internal static class AdoptedAppServing
         RequestHeader = RequestHeader,
         SessionCookie = SessionCookie,
         HandleName = "__bohm",
+        // A write in a proposed new application's preview (its scope is the preview's) is no use of any application.
         Applied = async (context, appId, _) =>
-            (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.Record(UsageSignal.Wrote),
+        {
+            if (appId.StartsWith(AppPreviews.HostPrefix, StringComparison.Ordinal)) return;
+            (await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false)).Usage.Record(UsageSignal.Wrote);
+        },
         // A page whose code was replaced while it was still writing: the write is refused (the new code owns the
         // data now) but it was a write the person made — kept beside the application as it was made, counted where
         // a host's unconfirmed close is, and said in the application's status (without the values).
         RefusedFromRetiredTab = async refused =>
         {
+            if (refused.Scope.StartsWith(AppPreviews.HostPrefix, StringComparison.Ordinal)) return;   // a preview has no application to keep them beside
             var services = refused.Context.RequestServices;
             var app = await services.GetRequiredService<OpenApps>().GetAsync(refused.Scope).ConfigureAwait(false);
             var kept = await services.GetRequiredService<AdoptionCatalog>()

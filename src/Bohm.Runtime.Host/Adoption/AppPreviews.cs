@@ -1,6 +1,7 @@
 using Bohm.Runtime.Pages;
 using Bohm.Runtime.Sources;
 using LocalOrigin.Previews;
+using LocalOrigin.Storage;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -12,9 +13,18 @@ namespace Bohm.Runtime.Host.Adoption;
 /// the rows just read for its sources in place of theirs, and the pages the person sends it to try it with.
 /// Held in memory only, while it is used and a short while after (<see cref="PreviewOrigins{T}"/>); a
 /// preview's token is its scope name without <see cref="HostPrefix"/>.
+/// What a person writes while trying a proposed new application is kept with that preview, in a store of its own
+/// (<see cref="ScratchAsync"/>), and goes with it when it is taken in (<see cref="TakeWrittenAsync"/>): records entered
+/// while trying it are the person's data. A preview of an existing application keeps nothing — its writes would
+/// otherwise land beside the application's real data.
 /// </summary>
-internal sealed class AppPreviews(TimeProvider time)
+internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
 {
+    // One folder per runtime process for the stores of proposed new applications' previews; gone with the process.
+    // Opening, handing over and dropping the previews' stores, one at a time — rare, and never long.
+    private readonly SemaphoreSlim _writtenGate = new(1, 1);
+    private readonly string _scratchRoot = Path.Combine(Path.GetTempPath(), $"bohm-preview-data-{Environment.ProcessId}-{Guid.NewGuid():N}");
+
     public const string HostPrefix = "pv-";
 
     /// <summary>
@@ -35,10 +45,15 @@ internal sealed class AppPreviews(TimeProvider time)
 
         /// <summary>How many errors the report held when the first call to a model was declined; <see langword="null"/> before.</summary>
         public int? ErrorsBeforeModel;
+
+        /// <summary>For a proposed new application, what the person wrote while trying it; <see langword="null"/> until the first write.</summary>
+        public KeyValueStore? Written;
     }
 
     public sealed class Preview(Preview<Content> held)
     {
+        internal Preview<Content> Held => held;
+
         /// <summary>The application previewed, or <see langword="null"/> for a proposed new one.</summary>
         public string? AppId => held.Content.AppId;
 
@@ -112,7 +127,114 @@ internal sealed class AppPreviews(TimeProvider time)
     /// <summary>The preview of <paramref name="appId"/> — or, for <see langword="null"/>, of a proposed new application — named by <paramref name="token"/>, if there is one.</summary>
     public Preview? Find(string? appId, string token) => Find(token) is { } preview && preview.AppId == appId ? preview : null;
 
-    public bool Remove(string? appId, string token) => Find(appId, token) is not null && _origins.Remove(HostPrefix + token);
+    public bool Remove(string? appId, string token)
+    {
+        if (Find(appId, token) is not { } preview) return false;
+        _ = DropWrittenAsync(preview.Held.Content, token);
+        return _origins.Remove(HostPrefix + token);
+    }
+
+    /// <summary>
+    /// The store a proposed new application's preview writes to, opened on its first write. Stores of previews that are
+    /// gone (left alone past their lifetime) are removed on the way.
+    /// </summary>
+    public async ValueTask<KeyValueStore> ScratchAsync(Preview preview, string token)
+    {
+        if (preview.AppId is not null) throw new InvalidOperationException("A preview of an application keeps no writes.");
+        var content = preview.Held.Content;
+        await _writtenGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (content.Written is { } open) return open;
+            SweepGone();
+            Directory.CreateDirectory(_scratchRoot);
+            return content.Written = await KeyValueStore.OpenAsync(Path.Combine(_scratchRoot, token)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writtenGate.Release();
+        }
+    }
+
+    /// <summary>What has been written in the preview so far (empty when nothing has), to serve the page with again.</summary>
+    public static IReadOnlyDictionary<string, string> Written(Preview preview) =>
+        preview.Held.Content.Written?.GetItems() ?? new Dictionary<string, string>();
+
+    /// <summary>
+    /// Hands over what the person wrote while trying the proposed new application <paramref name="token"/> names, and lets the
+    /// preview's store go; empty when there is no such preview or nothing was written.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> TakeWrittenAsync(string token)
+    {
+        if (Find(null, token) is not { } preview) return new Dictionary<string, string>();
+        var content = preview.Held.Content;
+        await _writtenGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var items = content.Written?.GetItems() ?? new Dictionary<string, string>();
+            await DropWrittenLockedAsync(content, token).ConfigureAwait(false);
+            return items;
+        }
+        finally
+        {
+            _writtenGate.Release();
+        }
+    }
+
+    private async Task DropWrittenAsync(Content content, string token)
+    {
+        await _writtenGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await DropWrittenLockedAsync(content, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writtenGate.Release();
+        }
+    }
+
+    private async Task DropWrittenLockedAsync(Content content, string token)
+    {
+        if (content.Written is { } store)
+        {
+            content.Written = null;
+            await store.DisposeAsync().ConfigureAwait(false);
+        }
+
+        TryDelete(Path.Combine(_scratchRoot, token));
+    }
+
+    private void SweepGone()
+    {
+        if (!Directory.Exists(_scratchRoot)) return;
+        foreach (var folder in Directory.EnumerateDirectories(_scratchRoot))
+            if (Find(Path.GetFileName(folder)) is null) TryDelete(folder);
+    }
+
+    private static void TryDelete(string folder)
+    {
+        try
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Still open — swept with the rest when the runtime ends.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Directory.Exists(_scratchRoot))
+            foreach (var folder in Directory.EnumerateDirectories(_scratchRoot))
+                if (Find(Path.GetFileName(folder)) is { Held.Content.Written: { } store }) await store.DisposeAsync().ConfigureAwait(false);
+        TryDelete(_scratchRoot);
+        _writtenGate.Dispose();
+    }
 
     /// <summary>The preview a request is addressed to, from its <c>Host</c> header.</summary>
     public static string? TokenOf(HttpRequest request)

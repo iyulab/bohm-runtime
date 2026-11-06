@@ -53,8 +53,12 @@ internal static class PreviewServing
         var app = preview.AppId is { } appId ? await context.RequestServices.GetRequiredService<OpenApps>().GetAsync(appId).ConfigureAwait(false) : null;
         if (path == AdoptedAppServing.StoragePath)
         {
-            // Acknowledged as applied, so the page goes on as it would, and kept nowhere.
-            await context.RequestServices.GetRequiredService<StorageChannel>().DiscardAsync(context).ConfigureAwait(false);
+            var writes = context.RequestServices.GetRequiredService<StorageChannel>();
+            // A proposed new application keeps what the person writes while trying it — it goes with the application when
+            // taken in. A preview of an existing application acknowledges its writes as applied, so the page goes on as it
+            // would, and keeps them nowhere.
+            if (preview.AppId is null) await writes.HandleAsync(context, preview.Scope, _ => previews.ScratchAsync(preview, token)).ConfigureAwait(false);
+            else await writes.DiscardAsync(context).ConfigureAwait(false);
             return;
         }
 
@@ -104,9 +108,9 @@ internal static class PreviewServing
         }
 
         var channel = context.RequestServices.GetRequiredService<StorageChannel>();
-        var items = app is null ? new Dictionary<string, string>() : app.Storage.GetItems();
+        var items = app is null ? AppPreviews.Written(preview) : app.Storage.GetItems();
         // One that pages can be sent to gets a session, as an application's page does — what lets its own page, and no
-        // other, call a model once a page has arrived. Its writes still go nowhere.
+        // other, call a model once a page has arrived, and write to the store kept with it.
         var page = preview.Pages is null ? new ChannelPage("preview", channel.Script("preview", items)) : channel.Open(context, preview.Scope, items);
         var (body, charset) = AdoptedAppServing.Inject(context, preview.Html, page, app, preview.AppId ?? "preview");
         response.Headers.CacheControl = "no-store";
