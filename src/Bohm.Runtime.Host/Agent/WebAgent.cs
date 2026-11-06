@@ -82,7 +82,7 @@ internal static class WebAgent
             "Suggests a change to the app the person has open in front (an app made in Bohm), as they asked for it in words. The browser makes the suggestion in that app's edit panel, where the person reviews it, can ask for more changes on top of it, and applies it — nothing changes until they apply. Call it once, only when they ask to change that app.",
             JsonDocument.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"What to change, in the person's own words and language."}},"required":["request"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("make_page",
-            "Opens a new tab with a page you write — a summary, a comparison, notes or a report made from what you read. The tabs you read for this question are listed on it as its sources; the person can keep it or close it. Call it only when the person asks for such a page — never on your own, and never to show what you did on a site: the site's own page shows that, and your answer says it.",
+            "Opens a new tab with a page you write from what you read — a document, notes or a report the person asked to have as a page. The tabs you read for this question are listed on it as its sources; the person can keep it or close it. Call it only when the person asks for a page — never on your own, never for a summary or an answer they asked for in the chat, and never to show what you did on a site: the site's own page shows that, and your answer says it.",
             JsonDocument.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("propose_skill",
             "Proposes a skill: instructions the AI reads when a request fits the description — when it makes and changes the person's apps, and in this chat. The browser shows the whole skill to the person, who adds it or not; the result says which.",
@@ -226,10 +226,12 @@ internal static class WebAgent
         When the person is looking at an app made in Bohm and asks to change it (how it looks, its fields, what it does),
         call change_app once with what they asked, in their words, and answer in one short sentence that the suggestion is
         being made in the app's edit panel.
-        When the person asks for a page, a document, a report or a summary made from the pages, read them,
-        then call make_page once with the whole content, and answer in one short sentence that it is open.
-        Do not call make_page otherwise: not to report a task you did on a site (a form sent, an item found), and not
-        to add to an answer — say it in the answer.
+        When the person asks for a page, a document or a report of its own — words such as "make a page", "write it up
+        as a document", "open it in a new tab" — read the pages, then call make_page once with the whole content, and
+        answer in one short sentence that it is open.
+        A request to summarize, explain, compare or translate is a question: answer it in the chat, however long the
+        answer. Do not call make_page for it, nor to report a task you did on a site (a form sent, an item found), nor to
+        add to an answer.
         When they ask for an app, a tool or a tracker that keeps reading the pages, do not look for a way to
         build it on a page: answer, in the language of the question, with what it would show from the pages you
         read (for example the rows gathered and how changes would be marked). The browser itself offers to save
