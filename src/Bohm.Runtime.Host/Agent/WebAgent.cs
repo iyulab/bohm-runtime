@@ -82,7 +82,7 @@ internal static class WebAgent
             "Suggests a change to the app the person has open in front (an app made in Bohm), as they asked for it in words. The browser makes the suggestion in that app's edit panel, where the person reviews it, can ask for more changes on top of it, and applies it — nothing changes until they apply. Call it once, only when they ask to change that app.",
             JsonDocument.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"What to change, in the person's own words and language."}},"required":["request"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("make_page",
-            "Opens a new tab with a page you write — a summary, a comparison, notes or a report made from what you read. The tabs you read for this question are listed on it as its sources; the person can keep it or close it.",
+            "Opens a new tab with a page you write — a summary, a comparison, notes or a report made from what you read. The tabs you read for this question are listed on it as its sources; the person can keep it or close it. Call it only when the person asks for such a page — never on your own, and never to show what you did on a site: the site's own page shows that, and your answer says it.",
             JsonDocument.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("propose_skill",
             "Proposes a skill: instructions the AI reads when a request fits the description — when it makes and changes the person's apps, and in this chat. The browser shows the whole skill to the person, who adds it or not; the result says which.",
@@ -228,6 +228,8 @@ internal static class WebAgent
         being made in the app's edit panel.
         When the person asks for a page, a document, a report or a summary made from the pages, read them,
         then call make_page once with the whole content, and answer in one short sentence that it is open.
+        Do not call make_page otherwise: not to report a task you did on a site (a form sent, an item found), and not
+        to add to an answer — say it in the answer.
         When they ask for an app, a tool or a tracker that keeps reading the pages, do not look for a way to
         build it on a page: answer, in the language of the question, with what it would show from the pages you
         read (for example the rows gathered and how changes would be marked). The browser itself offers to save
