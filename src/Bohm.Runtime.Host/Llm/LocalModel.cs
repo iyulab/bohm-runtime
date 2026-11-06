@@ -174,11 +174,15 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                     new LocalModelFailure(LocalModelFailure.ServerMissing),
                     "The program that runs models on this computer (llama-server) is not installed with this copy."));
 
+            // Left to size the context itself, the library may bound it by memory to a length the runtime's own requests do not
+            // fit; a length named here is used as it is. So the model starts once, with the length those requests are written
+            // for, capped at what the model was trained on (read from the file before loading).
+            var contextLength = settings.ContextLength ?? Working(await TrainedLengthAsync(settings.ModelPath).ConfigureAwait(false));
             var generatorOptions = new GeneratorOptions
             {
                 // Only what is on this computer: a missing model fails instead of being downloaded.
                 DisableAutoDownload = true,
-                MaxContextLength = settings.ContextLength,
+                MaxContextLength = contextLength,
                 ServerUpdateOptions = new LlamaServerUpdateOptions { ServerBinaryPath = settings.ServerPath, AutoDownloadUpdates = false },
                 LlamaOptions = new LlamaOptions { RequestTimeout = RequestTimeout },
             };
@@ -187,17 +191,6 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 // The loaded model serves every request after this one: a request that gives up while it
                 // loads does not throw away a load the next request would only have to start again.
                 _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, progress: null, CancellationToken.None).ConfigureAwait(false);
-                // Left to size the context itself, the library may bound it by memory to a length the runtime's own
-                // requests do not fit; started again with the length they are written for, capped at what the model was trained on.
-                if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } sized
-                    && Reload(sized.MaxContextLength, (await GgufMetadataReader.ReadAsync(settings.ModelPath, cancellationToken: CancellationToken.None).ConfigureAwait(false))?.ContextLength) is { } wanted)
-                {
-                    var small = _generator;
-                    _generator = null;
-                    await small.DisposeAsync().ConfigureAwait(false);
-                    generatorOptions.MaxContextLength = wanted;
-                    _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, progress: null, CancellationToken.None).ConfigureAwait(false);
-                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -208,8 +201,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
 
             LastFailure = null;
             _client = new ModelFitChatClient(_generator.AsChatClient(), new ModelLimits(settings.ContextLength));
-            // Without a length set here the model library sizes the context itself (the model's trained length,
-            // bounded by memory) and says what it started the model with — the length every request must fit.
+            // The model library says what it started the model with — the length every request must fit.
             if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } started)
                 _client.Reported(started.MaxContextLength);
             return _client;
@@ -235,15 +227,23 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     internal const int WorkingContextLength = 32768;
 
     /// <summary>
-    /// The context length to start the model again with when the library chose <paramref name="started"/> by itself,
-    /// or <see langword="null"/> to keep it: a length below <see cref="WorkingContextLength"/> is raised to it, but never
-    /// past what the model was trained on (<paramref name="trained"/>, when the file says).
+    /// The context length to start a model with when the person has not named one: <see cref="WorkingContextLength"/>,
+    /// but never past what the model was trained on (<paramref name="trained"/>, when the file says).
     /// </summary>
-    internal static int? Reload(int started, int? trained)
+    /// <summary>The context length the model file says it was trained on, or <see langword="null"/> when it does not say or cannot be read (loading then reports the file).</summary>
+    private static async Task<int?> TrainedLengthAsync(string path)
     {
-        var wanted = trained is > 0 ? Math.Min(WorkingContextLength, trained.Value) : WorkingContextLength;
-        return started < wanted ? wanted : null;
+        try
+        {
+            return (await GgufMetadataReader.ReadAsync(path, cancellationToken: CancellationToken.None).ConfigureAwait(false))?.ContextLength;
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or FormatException)
+        {
+            return null;
+        }
     }
+
+    internal static int Working(int? trained) => trained is > 0 ? Math.Min(WorkingContextLength, trained.Value) : WorkingContextLength;
 
     private async Task UnloadAsync()
     {
