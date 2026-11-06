@@ -49,6 +49,46 @@ public sealed class AppMeaningTests : IDisposable
     }
 
     [Fact]
+    public async Task What_an_application_remembers_is_kept_with_the_persons_names_cleaned_and_travels_in_a_package()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        RememberedKind[] given =
+        [
+            new("books", " Books ", [new("title", "Title"), new("author", "Author"), new("title", "again"), new("", "blank"), new("shelf", " ")]),
+            new("books", "Twice", []),
+            new(" ", "No name", []),
+            new("loans", "Loans", []),
+        ];
+
+        var app = await catalog.AdoptAsync(Html, request: "a loan log", via: "made", collections: given);
+
+        var kept = await new AdoptionCatalog(_root).GetCollectionsAsync(app.Id);
+        Assert.Equal(["books", "loans"], kept.Select(c => c.Name));
+        Assert.Equal("Books", kept[0].Label);
+        Assert.Equal([new("title", "Title"), new KeyValuePair<string, string>("author", "Author")], kept[0].Fields);
+
+        var package = Path.Combine(_root, "loans.bohm");
+        await catalog.PackAsync(app.Id, package, PackageData.None, new Dictionary<string, string>());
+        using var zip = ZipFile.OpenRead(package);
+        var meaning = JsonNode.Parse(new StreamReader(zip.GetEntry(AppMeaning.FileName)!.Open()).ReadToEnd())!.AsObject();
+        Assert.False(meaning.ContainsKey("request"));
+        Assert.Equal("Books", (string?)meaning["collections"]![0]!["label"]);
+    }
+
+    [Fact]
+    public async Task Collections_alone_make_a_file_and_nothing_at_all_makes_none()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var only = await catalog.AdoptAsync(Html, collections: [new RememberedKind("notes", "Notes", [])]);
+        var nothing = await catalog.AdoptAsync(Html, collections: []);
+
+        Assert.Null(await catalog.GetFirstRequestAsync(only.Id));
+        Assert.Equal("Notes", Assert.Single(await catalog.GetCollectionsAsync(only.Id)).Label);
+        Assert.False(File.Exists(Path.Combine(Folder(nothing.Id), AppMeaning.FileName)));
+        Assert.Empty(await catalog.GetCollectionsAsync("not-an-id"));
+    }
+
+    [Fact]
     public async Task A_very_long_request_is_cut_to_its_opening()
     {
         var app = await new AdoptionCatalog(_root).AdoptAsync(Html, request: new string('x', FirstRequest.MaxLength + 50), via: "promoted");

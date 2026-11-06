@@ -85,8 +85,9 @@ public sealed partial class AdoptionCatalog
     /// <param name="title">The name of an application the runtime made (<see cref="AdoptedApp.Title"/>).</param>
     /// <param name="request">The words the application was asked for with, kept beside it (<see cref="AppMeaning"/>) — none for a page brought in as it is.</param>
     /// <param name="via">How it was asked for — one of <see cref="FirstRequest.Ways"/>; without one the words are not kept.</param>
+    /// <param name="collections">What it remembers, named for the person (<see cref="RememberedKind"/>) — kept beside it with the request.</param>
     public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, string? title = null,
-        string? generatedBy = null, string? request = null, string? via = null, CancellationToken cancellationToken = default)
+        string? generatedBy = null, string? request = null, string? via = null, IReadOnlyList<RememberedKind>? collections = null, CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
@@ -107,8 +108,8 @@ public sealed partial class AdoptionCatalog
                 stream.Flush(flushToDisk: true);
             }
 
-            if (AppMeaning.Request(request, via, now) is { } asked)
-                await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, AppMeaning.FileName), AppMeaning.Write(asked), cancellationToken).ConfigureAwait(false);
+            if (AppMeaning.Write(AppMeaning.Request(request, via, now), RememberedKind.Clean(collections)) is { } meaning)
+                await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, AppMeaning.FileName), meaning, cancellationToken).ConfigureAwait(false);
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, AppDirectory(app.Id));
         }
@@ -129,6 +130,10 @@ public sealed partial class AdoptionCatalog
         if (!File.Exists(path)) return null;
         return ReadRecord(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
     }
+
+    /// <summary>What application <paramref name="id"/> remembers, named for the person (<see cref="AppMeaning"/>) — empty for an unknown id or none kept.</summary>
+    public Task<IReadOnlyList<RememberedKind>> GetCollectionsAsync(string id, CancellationToken cancellationToken = default) =>
+        IsValidId(id) ? AppMeaning.ReadCollectionsAsync(AppDirectory(id), cancellationToken) : Task.FromResult<IReadOnlyList<RememberedKind>>([]);
 
     /// <summary>What application <paramref name="id"/> was first asked for with (<see cref="AppMeaning"/>) — <see langword="null"/> for an unknown id or none kept.</summary>
     public Task<FirstRequest?> GetFirstRequestAsync(string id, CancellationToken cancellationToken = default) =>

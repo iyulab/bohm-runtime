@@ -22,6 +22,49 @@ public sealed record FirstRequest(string Text, DateTimeOffset At, string Via)
 }
 
 /// <summary>
+/// One kind of record an application remembers, named for the person: the storage key its records live under, what the
+/// person calls them, and what they call each field.
+/// </summary>
+/// <param name="Name">The storage key (the collection).</param>
+/// <param name="Label">The person's name for the records.</param>
+/// <param name="Fields">Field name → the person's name for it, in the order given.</param>
+public sealed record RememberedKind(string Name, string Label, IReadOnlyList<KeyValuePair<string, string>> Fields)
+{
+    /// <summary>The most kinds of record kept, and the most fields kept for one.</summary>
+    public const int MaxCollections = 32, MaxFields = 64;
+
+    /// <summary>The longest name or label kept, in characters.</summary>
+    public const int MaxText = 200;
+
+    /// <summary>
+    /// The collections given, cleaned for keeping: trimmed, each name once, nothing empty or over <see cref="MaxText"/>,
+    /// at most <see cref="MaxCollections"/> of them and <see cref="MaxFields"/> fields each.
+    /// </summary>
+    public static IReadOnlyList<RememberedKind> Clean(IEnumerable<RememberedKind>? given)
+    {
+        static string? Text(string? s) => s?.Trim() is { Length: > 0 and <= MaxText } t ? t : null;
+        var kept = new List<RememberedKind>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in given ?? [])
+        {
+            if (kept.Count == MaxCollections) break;
+            if (c is null || Text(c.Name) is not { } name || Text(c.Label) is not { } label || !names.Add(name)) continue;
+            var fields = new List<KeyValuePair<string, string>>();
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (key, value) in c.Fields ?? [])
+            {
+                if (fields.Count == MaxFields) break;
+                if (Text(key) is { } k && Text(value) is { } v && keys.Add(k)) fields.Add(new(k, v));
+            }
+
+            kept.Add(new RememberedKind(name, label, fields));
+        }
+
+        return kept;
+    }
+}
+
+/// <summary>
 /// The file beside an application's code that says what the application means: what it was first asked for
 /// (<see cref="FirstRequest"/>), and — in later versions of the format — what it remembers and the names of its fields.
 /// </summary>
@@ -40,21 +83,59 @@ public static class AppMeaning
 
     private static readonly JsonSerializerOptions Writer = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    /// <summary>A new file holding only <paramref name="request"/>.</summary>
-    public static byte[] Write(FirstRequest request)
+    /// <summary>A new file holding <paramref name="request"/> and <paramref name="collections"/> — either may be absent; <see langword="null"/> when both are.</summary>
+    public static byte[]? Write(FirstRequest? request, IReadOnlyList<RememberedKind>? collections = null)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        var node = new JsonObject
-        {
-            ["format"] = Format,
-            ["request"] = new JsonObject
+        if (request is null && collections is not { Count: > 0 }) return null;
+        var node = new JsonObject { ["format"] = Format };
+        if (request is not null)
+            node["request"] = new JsonObject
             {
                 ["text"] = request.Text,
                 ["at"] = request.At.ToString("O", CultureInfo.InvariantCulture),
                 ["via"] = request.Via,
-            },
-        };
+            };
+        if (collections is { Count: > 0 }) node["collections"] = CollectionsNode(collections);
         return JsonSerializer.SerializeToUtf8Bytes(node, Writer);
+    }
+
+    private static JsonArray CollectionsNode(IReadOnlyList<RememberedKind> collections)
+    {
+        var array = new JsonArray();
+        foreach (var c in collections)
+        {
+            var fields = new JsonObject();
+            foreach (var (key, label) in c.Fields) fields[key] = label;
+            array.Add(new JsonObject { ["name"] = c.Name, ["label"] = c.Label, ["fields"] = fields });
+        }
+
+        return array;
+    }
+
+    /// <summary>The collections in the file at <paramref name="folder"/> — empty when there are none or it cannot be read.</summary>
+    public static async Task<IReadOnlyList<RememberedKind>> ReadCollectionsAsync(string folder, CancellationToken cancellationToken = default)
+    {
+        var path = Path.Combine(folder, FileName);
+        if (!File.Exists(path)) return [];
+        try
+        {
+            return ParseCollections(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception e) when (e is JsonException or IOException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>The collections in <paramref name="file"/>'s bytes, cleaned (<see cref="RememberedKind.Clean"/>) — empty when not of this format.</summary>
+    public static IReadOnlyList<RememberedKind> ParseCollections(ReadOnlySpan<byte> file)
+    {
+        if (JsonNode.Parse(file) is not JsonObject root || root["format"]?.GetValueKind() != JsonValueKind.String
+            || !IsThisFormat(root["format"]!.GetValue<string>()) || root["collections"] is not JsonArray array) return [];
+        static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+        var given = array.OfType<JsonObject>().Select(c => new RememberedKind(Str(c["name"]) ?? "", Str(c["label"]) ?? "",
+            c["fields"] is JsonObject f ? [.. f.Select(m => new KeyValuePair<string, string>(m.Key, Str(m.Value) ?? ""))] : []));
+        return RememberedKind.Clean(given);
     }
 
     /// <summary>
