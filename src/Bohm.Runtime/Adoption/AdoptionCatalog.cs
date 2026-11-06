@@ -365,7 +365,7 @@ public sealed partial class AdoptionCatalog
             {
                 var copy = Path.Combine(to, RevisionsDirectory, Path.GetFileName(revision));
                 Directory.CreateDirectory(copy);
-                foreach (var file in new[] { HtmlFile, RevisionFile })
+                foreach (var file in new[] { HtmlFile, RevisionFile, AppMeaning.FileName })
                     if (File.Exists(Path.Combine(revision, file)))
                         await CopyFileAsync(Path.Combine(revision, file), Path.Combine(copy, file), cancellationToken).ConfigureAwait(false);
             }
@@ -598,9 +598,10 @@ public sealed partial class AdoptionCatalog
     /// </param>
     /// <exception cref="InvalidOperationException">The bytes are the revision already in use.</exception>
     /// <param name="generatedBy">The AI model that wrote this revision's code, when one did (<see cref="AdoptionSource.GeneratedBy"/>).</param>
+    /// <param name="collections">What the new revision remembers, named for the person (<see cref="AppMeaning"/>) — when not given, what the revision in use remembers carries on.</param>
     public Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage, string? request = null,
-        string? generatedBy = null, CancellationToken cancellationToken = default) =>
-        ReviseAsync(id, html, originalPath, storage, Note(request), null, ModelName(generatedBy), cancellationToken);
+        string? generatedBy = null, IReadOnlyList<RememberedKind>? collections = null, CancellationToken cancellationToken = default) =>
+        ReviseAsync(id, html, originalPath, storage, Note(request), null, ModelName(generatedBy), collections is null ? null : RememberedKind.Clean(collections), cancellationToken);
 
     /// <summary>The most characters of a model's name a source keeps.</summary>
     public const int MaxModelNameLength = 200;
@@ -637,11 +638,13 @@ public sealed partial class AdoptionCatalog
         // The code goes back, and so does what wrote it.
         var wrote = revision == 1 && !Directory.Exists(RevisionFolder(id, 1)) ? app.Source.GeneratedBy
             : (await ReadRevisionAsync(RevisionFolder(id, revision), cancellationToken).ConfigureAwait(false))?.Source.GeneratedBy;
-        return await ReviseAsync(id, html, null, storage, null, revision, wrote, cancellationToken).ConfigureAwait(false);
+        // …and what it remembered.
+        var remembered = await AppMeaning.ReadCollectionsAsync(RevisionFolder(id, revision), cancellationToken).ConfigureAwait(false);
+        return await ReviseAsync(id, html, null, storage, null, revision, wrote, remembered, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<AdoptedApp> ReviseAsync(string id, ReadOnlyMemory<byte> html, string? originalPath, KeyValueStore storage,
-        string? request, int? restoredFrom, string? generatedBy, CancellationToken cancellationToken)
+        string? request, int? restoredFrom, string? generatedBy, IReadOnlyList<RememberedKind>? collections, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
@@ -659,6 +662,13 @@ public sealed partial class AdoptionCatalog
             await DurableFile.WriteAtomicallyAsync(current, WriteRevision(app.Revision, null, app.RevisedAt, app.Source), cancellationToken).ConfigureAwait(false);
         }
 
+        // What each revision remembers is kept with it, so going back to its code brings back its names. The revision in use gets
+        // its copy now, from the application's own file, unless it has one — a revision made before this was kept has none, and remembered nothing.
+        var inUse = await AppMeaning.ReadCollectionsAsync(AppDirectory(id), cancellationToken).ConfigureAwait(false);
+        if (!File.Exists(Path.Combine(RevisionFolder(id, app.Revision), AppMeaning.FileName)))
+            await AppMeaning.SetCollectionsAsync(RevisionFolder(id, app.Revision), inUse, cancellationToken).ConfigureAwait(false);
+        var remembers = collections ?? inUse;
+
         var now = _clock.GetUtcNow();
         var number = Math.Max(app.Revision, HighestRevisionFolder(revisions)) + 1;
         var staging = Path.Combine(revisions, StagingPrefix + number.ToString(CultureInfo.InvariantCulture));
@@ -674,6 +684,7 @@ public sealed partial class AdoptionCatalog
 
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RevisionFile), WriteRevision(number, app.Revision, now, source, request, restoredFrom), cancellationToken).ConfigureAwait(false);
             await storage.SaveSnapshotAsync(Path.Combine(staging, DataBeforeFile), cancellationToken).ConfigureAwait(false);
+            await AppMeaning.SetCollectionsAsync(staging, remembers, cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, RevisionFolder(id, number));
         }
         catch
@@ -687,6 +698,7 @@ public sealed partial class AdoptionCatalog
         // again). From the first revision on, the name is held in Title and later revisions do not rename it.
         var title = app.Title ?? NameOf(await PathsTakenInAsync(app, cancellationToken).ConfigureAwait(false));
         var revised = app with { Source = source, Revision = number, RevisedAt = now, Title = title };
+        await AppMeaning.SetCollectionsAsync(AppDirectory(id), remembers, cancellationToken).ConfigureAwait(false);
         await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(revised), cancellationToken).ConfigureAwait(false);
         return revised;
     }
@@ -712,6 +724,7 @@ public sealed partial class AdoptionCatalog
         await storage.RestoreAsync(Path.Combine(folder, DataBeforeFile), cancellationToken).ConfigureAwait(false);
 
         var reverted = app with { Source = target.Source, Revision = target.Revision, RevisedAt = target.TakenInAt };
+        await AppMeaning.SetCollectionsAsync(AppDirectory(id), await AppMeaning.ReadCollectionsAsync(RevisionFolder(id, target.Revision), cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         await DurableFile.WriteAtomicallyAsync(Path.Combine(AppDirectory(id), RecordFile), WriteRecord(reverted), cancellationToken).ConfigureAwait(false);
         return reverted;
     }

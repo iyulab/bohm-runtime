@@ -76,6 +76,44 @@ public sealed class AppMeaningTests : IDisposable
     }
 
     [Fact]
+    public async Task What_a_revision_remembers_goes_with_it_when_going_back_and_when_bringing_a_revision_back()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        RememberedKind[] first = [new("loans", "Loans", [new("book", "Book")])];
+        RememberedKind[] second = [new("loans", "Loans", [new("book", "Book"), new("due", "Due")])];
+        var app = await catalog.AdoptAsync(Html, request: "a loan log", via: "made", collections: first);
+        static byte[] V(int n) => Encoding.UTF8.GetBytes($"<!doctype html><title>Loans</title><p>v{n}</p>");
+
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+        await catalog.ReviseAsync(app.Id, V(2), null, storage, request: "add a due date", collections: second);
+        Assert.Equal(2, (await catalog.GetCollectionsAsync(app.Id))[0].Fields.Count);
+
+        await catalog.ReviseAsync(app.Id, V(3), null, storage, request: "bigger title");   // says nothing about what it remembers: it carries on
+        Assert.Equal(2, (await catalog.GetCollectionsAsync(app.Id))[0].Fields.Count);
+
+        await catalog.RevertAsync(app.Id, storage);   // back to 2
+        await catalog.RevertAsync(app.Id, storage);   // back to 1
+        Assert.Single((await catalog.GetCollectionsAsync(app.Id))[0].Fields);
+        Assert.Equal("a loan log", (await catalog.GetFirstRequestAsync(app.Id))?.Text);   // the request is not the revision's: it stays
+
+        await catalog.RestoreAsync(app.Id, 2, storage);   // bringing revision 2's code back brings its names back
+        Assert.Equal(["book", "due"], (await catalog.GetCollectionsAsync(app.Id))[0].Fields.Select(f => f.Key));
+    }
+
+    [Fact]
+    public async Task A_revision_that_remembers_nothing_leaves_the_request_and_no_names()
+    {
+        var catalog = new AdoptionCatalog(_root);
+        var app = await catalog.AdoptAsync(Html, request: "a loan log", via: "made", collections: [new RememberedKind("loans", "Loans", [])]);
+        await using var storage = await catalog.OpenStorageAsync(app.Id);
+
+        await catalog.ReviseAsync(app.Id, Encoding.UTF8.GetBytes("<!doctype html><p>plain</p>"), null, storage, collections: []);
+
+        Assert.Empty(await catalog.GetCollectionsAsync(app.Id));
+        Assert.Equal("a loan log", (await catalog.GetFirstRequestAsync(app.Id))?.Text);
+    }
+
+    [Fact]
     public async Task Collections_alone_make_a_file_and_nothing_at_all_makes_none()
     {
         var catalog = new AdoptionCatalog(_root);

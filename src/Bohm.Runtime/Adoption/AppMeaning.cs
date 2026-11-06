@@ -217,6 +217,35 @@ public static class AppMeaning
     }
 
     /// <summary>
+    /// Sets what the file in <paramref name="folder"/> says the application remembers to <paramref name="collections"/>, keeping
+    /// everything else it holds (the request, members of a later format). A file left with nothing but its format is removed;
+    /// none is made for no collections.
+    /// </summary>
+    public static async Task SetCollectionsAsync(string folder, IReadOnlyList<RememberedKind> collections, CancellationToken cancellationToken = default)
+    {
+        var path = Path.Combine(folder, FileName);
+        JsonObject root;
+        try
+        {
+            root = File.Exists(path) && JsonNode.Parse(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false)) is JsonObject read ? read : new JsonObject { ["format"] = Format };
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject { ["format"] = Format };
+        }
+
+        if (collections.Count > 0) root["collections"] = CollectionsNode(collections);
+        else root.Remove("collections");
+        if (root.All(member => member.Key == "format"))
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return;
+        }
+
+        await DurableFile.WriteAtomicallyAsync(path, JsonSerializer.SerializeToUtf8Bytes(root, Writer), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Takes the person's words out of the file in <paramref name="folder"/> — for a copy that leaves this computer
     /// (the words a person asked with are theirs, not the receiver's). What else the file holds stays; a file left with
     /// nothing but its format is removed.

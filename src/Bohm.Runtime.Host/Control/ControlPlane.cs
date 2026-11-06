@@ -365,7 +365,7 @@ internal static partial class ControlPlane
                 var revisedFor = Escaped(request, RequestHeader);
                 var revisedBy = Escaped(request, ModelHeader);
                 await ChangeRevisionAsync(context, revisedId, StatusCodes.Status201Created,
-                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, revisedFor, revisedBy, cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
+                    storage => catalog.ReviseAsync(revisedId, revisedHtml, revisedPath, storage, revisedFor, revisedBy, cancellationToken: cancel), app => app.Usage.RecordRevision(reverted: false)).ConfigureAwait(false);
                 break;
 
             case ("POST", ["apps", var restoredId, "revisions", var restoreTo, "restore"]):
