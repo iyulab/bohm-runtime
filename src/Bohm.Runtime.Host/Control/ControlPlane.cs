@@ -81,7 +81,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/llm/providers/{provider}/check</c></term><description>Asks the provider one short question in its declared format (<c>{ "model": "…" }</c>, or the first listed): <c>{ result, status, unreached }</c> — <c>ok</c>, <c>key-refused</c> (401 · 403), <c>not-found</c> (404 — often an address whose path is not where the format is served), <c>bad-request</c> (400 · 422), <c>refused</c>, <c>unreachable</c> (<c>host-not-found</c> · <c>connection-refused</c> · <c>no-answer</c>) or <c>no-key</c> (nothing was sent). Counted as sent to the provider's host.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault. 409 for a provider declared as taking none.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
-/// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
+/// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, its name to show (<c>name</c> — the catalog's, else the one the file gives itself, else null), whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
 /// <item><term><c>PUT /__control/llm/local-model</c></term><description>Chooses the model file named in the body (a full path to a <c>.gguf</c> file) and remembers it; 400 when there is no such file, 409 when fixed at start.</description></item>
 /// <item><term><c>DELETE /__control/llm/local-model</c></term><description>Chooses none.</description></item>
 /// <item><term><c>GET /__control/llm/local-model/catalog</c></term><description>The models the model library knows by a short name, to get onto this computer: <c>[{ id, name, description, parameters, license, licenseTier, sizeBytes, downloaded }]</c> — read without the network.</description></item>
@@ -1897,8 +1897,10 @@ internal static partial class ControlPlane
     private static async Task<LocalModelView> LocalModelViewOfAsync(HttpContext context, CancellationToken cancel)
     {
         var local = context.RequestServices.GetRequiredService<LocalModel>();
-        var download = await context.RequestServices.GetRequiredService<ModelDownloads>().CurrentAsync(cancel).ConfigureAwait(false);
-        return new(local.Current?.ModelPath, local.Loaded, local.Fixed, local.Loading, local.LastFailure, download);
+        var downloads = context.RequestServices.GetRequiredService<ModelDownloads>();
+        var download = await downloads.CurrentAsync(cancel).ConfigureAwait(false);
+        var name = await local.NameAsync(downloads.NameOfFile).ConfigureAwait(false);
+        return new(local.Current?.ModelPath, name, local.Loaded, local.Fixed, local.Loading, local.LastFailure, download);
     }
 
     private static async Task<SpeechModelView> SpeechModelViewOfAsync(HttpContext context, CancellationToken cancel)
@@ -1919,7 +1921,7 @@ internal static partial class ControlPlane
     /// <param name="ModelPath">The model file, or <see langword="null"/> when none is chosen.</param>
     /// <param name="Failure">Why the last load failed — a reason and its values, no sentence — or <see langword="null"/>.</param>
     /// <param name="Download">The model being got onto this computer, or the last attempt that ended without it; <see langword="null"/> when neither.</param>
-    internal sealed record LocalModelView(string? ModelPath, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure, ModelDownloads.DownloadView? Download);
+    internal sealed record LocalModelView(string? ModelPath, string? Name, bool Loaded, bool Fixed, bool Loading, LocalModelFailure? Failure, ModelDownloads.DownloadView? Download);
 
     /// <summary>
     /// A proposal for the application's current source, from the model on this computer. Nothing is

@@ -21,8 +21,9 @@ namespace Bohm.Runtime.Host.Llm;
 /// when the source does not judge it.
 /// </param>
 /// <param name="Recommended">The one the library would choose for this computer.</param>
+/// <param name="File">The model file a download of it puts on this computer, when known — how a chosen file is known to be this model.</param>
 public sealed record ModelCatalogEntry(string Id, string Name, string? Description, string? Parameters, string? License, string? LicenseTier, long? SizeBytes,
-    string? Fit = null, bool Recommended = false);
+    string? Fit = null, bool Recommended = false, string? File = null);
 
 /// <summary>How far a download has come.</summary>
 /// <param name="Bytes">Bytes received so far.</param>
@@ -105,7 +106,8 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
                 FormatParameters(m.Info.ParameterCount),
                 m.Info.LicenseName,
                 m.Info.License.ToString(),
-                m.Info.EstimatedSizeBytes), m.Info));
+                m.Info.EstimatedSizeBytes,
+                File: string.IsNullOrEmpty(m.Info.DefaultFile) ? null : Path.GetFileName(m.Info.DefaultFile)), m.Info));
 
     /// <summary>«4B» for four billion parameters, «600M» below a billion; <see langword="null"/> when the catalog says none.</summary>
     internal static string? FormatParameters(long count) =>
@@ -197,6 +199,10 @@ internal sealed class ModelDownloads
                 await _source.IsDownloadedAsync(e.Id, cancellationToken).ConfigureAwait(false), e.Fit, e.Recommended));
         return views;
     }
+
+    /// <summary>The catalog's name for the model whose file is named <paramref name="file"/>, or <see langword="null"/> when the catalog does not know that file.</summary>
+    public string? NameOfFile(string file) =>
+        _source.Catalog().FirstOrDefault(e => string.Equals(e.File, file, StringComparison.OrdinalIgnoreCase))?.Name;
 
     /// <summary>What getting <paramref name="model"/> would take — asks the host once for its size.</summary>
     public async Task<Description> DescribeAsync(string model, CancellationToken cancellationToken)

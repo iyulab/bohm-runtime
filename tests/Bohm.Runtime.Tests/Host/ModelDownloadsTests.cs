@@ -41,6 +41,7 @@ public sealed class ModelDownloadsTests : IDisposable
         foreach (var c in selection.Candidates)
             Assert.Equal(c.Fits ? "gpu" : c.FitsInSystemRam ? "memory" : "no", catalog.Single(e => string.Equals(e.Id, c.Model.AliasName, StringComparison.OrdinalIgnoreCase)).Fit);
         Assert.True(catalog.Count(e => e.Recommended) <= 1);
+        Assert.All(catalog, e => Assert.EndsWith(".gguf", e.File, StringComparison.OrdinalIgnoreCase)); // how a chosen file is known
     }
 
     [Fact]
@@ -59,6 +60,26 @@ public sealed class ModelDownloadsTests : IDisposable
         Assert.Equal([("gpu", true), (null, false)], fits);
         Assert.Equal(0, source.Asked);
         Assert.Empty(Sent(await EgressAsync(host)));
+    }
+
+    [Fact]
+    public async Task A_chosen_model_reads_by_the_catalogs_name_when_the_catalog_knows_its_file()
+    {
+        var known = Path.Combine(_cache, "small.gguf");
+        var other = Path.Combine(_cache, "someone-else.gguf");
+        File.WriteAllText(known, "x");
+        File.WriteAllText(other, "not really a model");
+        await using var host = await StartAsync(new StandIn(_cache));
+        using var client = host.ControlClient();
+
+        (await client.PutAsync("/__control/llm/local-model", new StringContent(known))).Dispose();
+        var named = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+        Assert.Equal("Small", named.GetProperty("name").GetString());
+
+        // A file the catalog does not know and that gives no name of its own: none — the screen shows the file name.
+        (await client.PutAsync("/__control/llm/local-model", new StringContent(other))).Dispose();
+        var unnamed = JsonDocument.Parse(await client.GetStringAsync("/__control/llm/local-model")).RootElement;
+        Assert.Equal(JsonValueKind.Null, unnamed.GetProperty("name").ValueKind);
     }
 
     [Fact]
@@ -225,7 +246,7 @@ public sealed class ModelDownloadsTests : IDisposable
 
         public IReadOnlyList<ModelCatalogEntry> Catalog() =>
         [
-            new("small", "Small", "A small model.", "1B", "MIT", "MIT", 1_000, Fit: "gpu", Recommended: true),
+            new("small", "Small", "A small model.", "1B", "MIT", "MIT", 1_000, Fit: "gpu", Recommended: true, File: "small.gguf"),
             new("large", "Large", "A larger model.", "9B", "Gemma", "Conditional", 9_000),
         ];
 

@@ -65,6 +65,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     private ModelFitChatClient? _client;
     private Task? _loading;
     private volatile bool _starting;
+    private (string Path, string? Name)? _named;
 
     /// <summary>Whether the model was fixed by whoever started the runtime, so the person cannot change it.</summary>
     public bool Fixed => options.LocalModel is not null;
@@ -87,6 +88,20 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     /// request is owed a word on why.
     /// </summary>
     public bool Loading => _starting || _loading is { IsCompleted: false };
+
+    /// <summary>
+    /// The name to show for the model in use — the catalog's name when <paramref name="fromCatalog"/> knows its file, else
+    /// the name the file gives itself — or <see langword="null"/> when neither says (the screen then shows the file name).
+    /// Read once per chosen file.
+    /// </summary>
+    public async Task<string?> NameAsync(Func<string, string?> fromCatalog)
+    {
+        if (Current is not { } current) return null;
+        if (_named is { } named && named.Path == current.ModelPath) return named.Name;
+        var name = fromCatalog(Path.GetFileName(current.ModelPath)) ?? await MetadataNameAsync(current.ModelPath).ConfigureAwait(false);
+        _named = (current.ModelPath, name);
+        return name;
+    }
 
     /// <summary>Why the last attempt to load the model failed, or <see langword="null"/> — cleared by a new choice or a load that succeeds.</summary>
     public LocalModelFailure? LastFailure { get; private set; }
@@ -248,6 +263,19 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             return (await GgufMetadataReader.ReadAsync(path, cancellationToken: CancellationToken.None).ConfigureAwait(false))?.ContextLength;
         }
         catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The name the model file gives itself, or <see langword="null"/> when it gives none or cannot be read.</summary>
+    private static async Task<string?> MetadataNameAsync(string path)
+    {
+        try
+        {
+            return (await GgufMetadataReader.ReadAsync(path, cancellationToken: CancellationToken.None).ConfigureAwait(false))?.Name is { Length: > 0 } name ? name.Trim() : null;
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or FormatException or EndOfStreamException)
         {
             return null;
         }
