@@ -36,6 +36,18 @@ public sealed partial class AnswerMarkdownTests
     }
 
     [Theory]
+    [InlineData("그의 아들 **나비드 아크람(Naveed Akram)**은 기소됐습니다.", "<strong>나비드 아크람(Naveed Akram)</strong>은")]
+    [InlineData("**「東京」**へ行きました。", "<strong>「東京」</strong>へ")]
+    [InlineData("**Lunch (today)**, then work.", "<strong>Lunch (today)</strong>,")]
+    public void Emphasis_closes_before_a_particle_that_follows_punctuation(string markdown, string expected)
+    {
+        var html = AnswerMarkdown.ToHtml(markdown);
+
+        Assert.Contains(expected, html);
+        Assert.DoesNotContain("**", html);
+    }
+
+    [Theory]
     [InlineData("<script>alert(1)</script>")]
     [InlineData("<img src=x onerror=alert(1)>")]
     [InlineData("Hi <b onclick=\"alert(1)\">there</b>")]

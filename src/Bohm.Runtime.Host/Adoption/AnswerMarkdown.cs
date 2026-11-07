@@ -19,6 +19,9 @@ internal static class AnswerMarkdown
         .DisableHtml()
         .UsePipeTables()
         .UseEmphasisExtras()
+        // Korean, Japanese and Chinese put a particle straight after the closing ** («**이름(Name)**은»), which plain
+        // CommonMark does not take as closing when punctuation comes before it — the asterisks then show as they are.
+        .UseCjkFriendlyEmphasis()
         .UseSoftlineBreakAsHardlineBreak()
         .Build();
 
