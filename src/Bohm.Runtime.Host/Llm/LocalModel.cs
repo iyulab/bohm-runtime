@@ -64,6 +64,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     private ITextGenerator? _generator;
     private ModelFitChatClient? _client;
     private Task? _loading;
+    private volatile bool _starting;
 
     /// <summary>Whether the model was fixed by whoever started the runtime, so the person cannot change it.</summary>
     public bool Fixed => options.LocalModel is not null;
@@ -80,8 +81,12 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
     /// <summary>The model's limits as known now: the context length it is run with, or one learned from a refusal.</summary>
     public ModelLimits Limits => _client?.Limits ?? new ModelLimits(Current?.ContextLength);
 
-    /// <summary>Whether a load started ahead of use (<see cref="StartLoading"/>) is still under way.</summary>
-    public bool Loading => _loading is { IsCompleted: false };
+    /// <summary>
+    /// Whether the model is being loaded now — ahead of use (<see cref="StartLoading"/>) or by the first
+    /// request that needs it. A cold load of a large model has taken minutes, and whoever waits on that
+    /// request is owed a word on why.
+    /// </summary>
+    public bool Loading => _starting || _loading is { IsCompleted: false };
 
     /// <summary>Why the last attempt to load the model failed, or <see langword="null"/> — cleared by a new choice or a load that succeeds.</summary>
     public LocalModelFailure? LastFailure { get; private set; }
@@ -190,6 +195,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             {
                 // The loaded model serves every request after this one: a request that gives up while it
                 // loads does not throw away a load the next request would only have to start again.
+                _starting = true;
                 _generator = await LocalGenerator.LoadFromPathAsync(settings.ModelPath, generatorOptions, progress: null, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception e) when (e is not OperationCanceledException)
@@ -197,6 +203,10 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
                 throw Failed(new LocalModelUnavailableException(
                     new LocalModelFailure(LocalModelFailure.StartFailed, Detail: e.Message),
                     $"The model on this computer could not be started: {e.Message}", e));
+            }
+            finally
+            {
+                _starting = false;
             }
 
             LastFailure = null;

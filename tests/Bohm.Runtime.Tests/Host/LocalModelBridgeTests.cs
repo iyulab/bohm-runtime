@@ -374,6 +374,32 @@ public sealed class LocalModelBridgeTests : IAsyncLifetime
         Assert.True(local.Limits.ContextWindow > 4096, $"context window {local.Limits.ContextWindow}");
     }
 
+    [Fact]
+    public async Task A_load_started_by_the_first_request_says_it_is_loading_until_it_is_loaded()
+    {
+        var model = Environment.GetEnvironmentVariable("BOHM_TEST_GGUF");
+        var server = Environment.GetEnvironmentVariable("BOHM_TEST_LLAMA_SERVER");
+        Assert.SkipWhen(string.IsNullOrEmpty(model) || string.IsNullOrEmpty(server), "BOHM_TEST_GGUF and BOHM_TEST_LLAMA_SERVER are not set.");
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-local-loading-").FullName;
+        await using var local = new LocalModel(new RuntimeHostOptions
+        {
+            DataRoot = dataRoot,
+            ControlSecret = "secret",
+            LocalModel = new LocalModelOptions { ModelPath = model!, ServerPath = server },
+        });
+
+        // Not loaded ahead of use: the request itself starts the load, and whoever waits on it can tell.
+        var first = local.GetAsync(TestContext.Current.CancellationToken);
+        var until = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!local.Loading && !first.IsCompleted && DateTime.UtcNow < until) await Task.Delay(10, TestContext.Current.CancellationToken);
+        Assert.True(local.Loading, "a load this short could not be observed — use a larger model");
+
+        await first;
+
+        Assert.True(local.Loaded);
+        Assert.False(local.Loading);
+    }
+
     private static async Task<JsonElement> EventuallyAsync(Func<Task<JsonElement?>> probe, TimeSpan? limit = null)
     {
         var until = DateTime.UtcNow + (limit ?? TimeSpan.FromSeconds(30));
