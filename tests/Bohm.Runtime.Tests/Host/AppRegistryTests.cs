@@ -304,7 +304,9 @@ public sealed class AppRegistryTests : IAsyncLifetime
         var data = Directory.CreateTempSubdirectory("bohm-beat-").FullName;
         try
         {
-            var timing = new RegistryLockTiming(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(600), TimeSpan.FromSeconds(10));
+            // Beat and stale time far enough apart that a loaded machine (the whole suite running beside other work) does not
+            // starve the holder's beat past the stale time — the same ratio as the defaults, shorter.
+            var timing = new RegistryLockTiming(TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(1500), TimeSpan.FromSeconds(10));
             // A clock ten minutes ahead: file times never decide whether a marked lock is alive.
             var catalog = new AdoptionCatalog(data, new Storage.ManualClock(DateTimeOffset.UtcNow.AddMinutes(10))) { LockTiming = timing };
             var app = await catalog.AdoptAsync(Encoding.UTF8.GetBytes("<p>beat</p>"), cancellationToken: TestContext.Current.CancellationToken);
@@ -316,7 +318,7 @@ public sealed class AppRegistryTests : IAsyncLifetime
             var holder = await RegistryLock.TakeAsync(lockPath, timing, TimeProvider.System, TestContext.Current.CancellationToken);
             var publishing = catalog.PublishToRegistryAsync(registry, app.Id, "Team apps", new Dictionary<string, string>(), TimeSpan.FromDays(7),
                 TestContext.Current.CancellationToken);
-            await Task.Delay(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            await Task.Delay(timing.Stale * 2, TestContext.Current.CancellationToken);
             Assert.False(publishing.IsCompleted, publishing.Exception?.ToString());
             await holder.DisposeAsync();
             Assert.NotNull(await publishing);
