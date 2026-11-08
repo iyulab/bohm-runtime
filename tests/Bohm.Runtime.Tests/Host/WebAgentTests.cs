@@ -851,7 +851,31 @@ public sealed class WebAgentTests : IDisposable
     /// site's robots.txt asks agents to stay out, and checks the answer tells it as the browser's choice to protect the
     /// person — not as something it cannot do — without opening the page another way.
     /// </summary>
+    /// <remarks>
+    /// A real model now and then answers without trying to open anything (it says no tab is open, or asks which board) — then
+    /// there is no refusal to relay and the run says nothing about the subject. Such a run is asked again, up to three times;
+    /// only three in a row that never try the site fail, since that would mean the agent no longer opens a site it is asked about.
+    /// What is held is unchanged: the refusal, once met, is told as the browser's choice and not tried again another way.
+    /// </remarks>
     private static async Task AssertRelaysTheRefusalAsync(RunningHost host)
+    {
+        var skipped = new List<string>();
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var (turn, opened, text) = await AskForTheRefusedPageAsync(host);
+            if (opened.Count == 0 && turn.GetProperty("status").GetString() == "done")
+            {
+                skipped.Add(text);
+                TestContext.Current.SendDiagnosticMessage($"attempt {attempt}: the model did not try the site — answer={text}");
+                continue;
+            }
+            AssertTheRefusalIsRelayed(turn, opened, text);
+            return;
+        }
+        Assert.Fail($"three runs in a row never tried the site, so no refusal was met: {string.Join(" | ", skipped)}");
+    }
+
+    private static async Task<(JsonElement Turn, List<string> Opened, string Text)> AskForTheRefusedPageAsync(RunningHost host)
     {
         const string Address = "https://board.example/private/notice";
         using var client = host.ControlClient();
@@ -882,6 +906,11 @@ public sealed class WebAgentTests : IDisposable
 
         var text = turn.GetProperty("text").GetString() ?? "";
         TestContext.Current.SendDiagnosticMessage($"model={turn.GetProperty("model")} opened={string.Join(" , ", opened)} answer={text}");
+        return (turn, opened, text);
+    }
+
+    private static void AssertTheRefusalIsRelayed(JsonElement turn, List<string> opened, string text)
+    {
         Assert.Equal("done", turn.GetProperty("status").GetString());
         Assert.NotEmpty(opened);
         // The shell's own line always says it was declined to protect the person (deterministic); the model's answer must
