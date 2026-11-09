@@ -73,6 +73,26 @@ public sealed partial class AnswerMarkdownTests
         Assert.DoesNotContain("<script", html);
     }
 
+    [Theory]
+    [InlineData("기간은 5~10년, 6~32년, 11~61년입니다.", "5~10년, 6~32년, 11~61년")]
+    [InlineData("예산은 £3.5bn~£5.7bn 사이였다.", "£3.5bn~£5.7bn")]
+    [InlineData("2^10 = 1024, x^2^ 처럼", "2^10 = 1024, x^2^")]
+    [InlineData("++추가++ 와 ==표시== 는 글 그대로", "++추가++ 와 ==표시==")]
+    public void Ranges_and_math_keep_their_marks(string markdown, string kept)
+    {
+        // A range written with tildes («6~32년») is not subscript, and a caret is not superscript: the answer's numbers must read as written.
+        var html = AnswerMarkdown.ToHtml(markdown);
+        Assert.Contains(kept, System.Net.WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", "")));
+        Assert.DoesNotContain("<sub>", html);
+        Assert.DoesNotContain("<sup>", html);
+    }
+
+    [Fact]
+    public void Double_tildes_still_strike_through()
+    {
+        Assert.Contains("<del>", AnswerMarkdown.ToHtml("~~옛 값~~ 새 값"));
+    }
+
     [Fact]
     public void A_link_keeps_its_words_and_shows_its_address_as_text()
     {

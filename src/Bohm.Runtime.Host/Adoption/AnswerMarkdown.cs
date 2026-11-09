@@ -18,7 +18,9 @@ internal static class AnswerMarkdown
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .DisableHtml()
         .UsePipeTables()
-        .UseEmphasisExtras()
+        // Only ~~strike~~: the other extras read a range «6~32년» as subscript (the tildes vanished and «6–32 years» read «632년»),
+        // a caret as superscript, and ++ / == as marks — an answer's numbers and math must read as written.
+        .UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough)
         // Korean, Japanese and Chinese put a particle straight after the closing ** («**이름(Name)**은»), which plain
         // CommonMark does not take as closing when punctuation comes before it — the asterisks then show as they are.
         .UseCjkFriendlyEmphasis()
