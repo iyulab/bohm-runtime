@@ -158,10 +158,10 @@ public static class AppMeaning
 
     private static readonly JsonSerializerOptions Writer = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    /// <summary>A new file holding <paramref name="request"/> and <paramref name="collections"/> — either may be absent; <see langword="null"/> when both are.</summary>
-    public static byte[]? Write(FirstRequest? request, IReadOnlyList<RememberedKind>? collections = null)
+    /// <summary>A new file holding <paramref name="request"/>, <paramref name="collections"/> and <paramref name="checks"/> — any may be absent; <see langword="null"/> when all are.</summary>
+    public static byte[]? Write(FirstRequest? request, IReadOnlyList<RememberedKind>? collections = null, IReadOnlyList<AppCheck>? checks = null)
     {
-        if (request is null && collections is not { Count: > 0 }) return null;
+        if (request is null && collections is not { Count: > 0 } && checks is not { Count: > 0 }) return null;
         var node = new JsonObject { ["format"] = Format };
         if (request is not null)
             node["request"] = new JsonObject
@@ -171,6 +171,7 @@ public static class AppMeaning
                 ["via"] = request.Via,
             };
         if (collections is { Count: > 0 }) node["collections"] = CollectionsNode(collections);
+        if (checks is { Count: > 0 }) node["checks"] = ChecksNode(checks);
         return JsonSerializer.SerializeToUtf8Bytes(node, Writer);
     }
 
