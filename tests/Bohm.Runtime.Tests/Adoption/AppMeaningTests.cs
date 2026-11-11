@@ -225,4 +225,43 @@ public sealed class AppMeaningTests : IDisposable
             Directory.Delete(folder, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Conditions_are_kept_cleaned_beside_the_rest_and_a_copy_that_travels_leaves_them_behind()
+    {
+        var folder = Directory.CreateTempSubdirectory("bohm-meaning-checks-").FullName;
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(folder, AppMeaning.FileName),
+                """{"format":"bohm.app/1","request":{"text":"mine","at":"2026-11-06T01:02:03+00:00","via":"made"},"collections":[{"name":"loans","label":"Loans","fields":{"d":"Lent on"}}]}""");
+            await AppMeaning.SetChecksAsync(folder,
+            [
+                new AppCheck(" A loan keeps the date it was lent ", "request", "d"),
+                new AppCheck("A loan keeps the date it was lent", "person"),      // said twice: kept once
+                new AppCheck("", "request"),                                       // nothing said
+                new AppCheck("Returned loans stay listed", "guessed"),             // not a known source
+                new AppCheck("Names are shown as written", "asked"),
+            ]);
+
+            var checks = await AppMeaning.ReadChecksAsync(folder);
+            Assert.Equal([new AppCheck("A loan keeps the date it was lent", "request", "d"), new AppCheck("Names are shown as written", "asked")], checks);
+            Assert.Equal("Lent on", (await AppMeaning.ReadCollectionsAsync(folder)).Single().Fields.Single().Value);   // the rest stays
+            Assert.Equal("mine", (await AppMeaning.ReadRequestAsync(folder))?.Text);
+
+            // The conditions are said in the person's words — a copy that leaves this computer carries neither them nor the request.
+            await AppMeaning.KeepWhatTravelsAsync(folder);
+            var left = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(folder, AppMeaning.FileName)))!.AsObject();
+            Assert.False(left.ContainsKey("checks"));
+            Assert.False(left.ContainsKey("request"));
+            Assert.True(left.ContainsKey("collections"));
+
+            // No conditions at all: the member goes.
+            await AppMeaning.SetChecksAsync(folder, []);
+            Assert.Empty(await AppMeaning.ReadChecksAsync(folder));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
 }
