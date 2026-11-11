@@ -23,6 +23,11 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     // One folder per runtime process for the stores of proposed new applications' previews; gone with the process.
     // Opening, handing over and dropping the previews' stores, one at a time — rare, and never long.
     private readonly SemaphoreSlim _writtenGate = new(1, 1);
+
+    // What a person wrote in a proposed new application's preview, by token — kept past the preview's lifetime until it is
+    // taken in or the preview is let go. The page stops being served when left alone, but a person who wrote rows and then
+    // left the machine asleep must not lose them silently when they come back and keep the application. Under _writtenGate.
+    private readonly Dictionary<string, Content> _kept = [];
     private readonly string _scratchRoot = Path.Combine(Path.GetTempPath(), $"bohm-preview-data-{Environment.ProcessId}-{Guid.NewGuid():N}");
 
     public const string HostPrefix = "pv-";
@@ -129,7 +134,12 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
 
     public bool Remove(string? appId, string token)
     {
-        if (Find(appId, token) is not { } preview) return false;
+        if (Find(appId, token) is not { } preview)
+        {
+            // Gone by time: what was written is still kept — letting the preview go lets that go too.
+            if (appId is null) _ = DropKeptAsync(token);
+            return false;
+        }
         _ = DropWrittenAsync(preview.Held.Content, token);
         return _origins.Remove(HostPrefix + token);
     }
@@ -148,7 +158,9 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
             if (content.Written is { } open) return open;
             SweepGone();
             Directory.CreateDirectory(_scratchRoot);
-            return content.Written = await KeyValueStore.OpenAsync(Path.Combine(_scratchRoot, token)).ConfigureAwait(false);
+            content.Written = await KeyValueStore.OpenAsync(Path.Combine(_scratchRoot, token)).ConfigureAwait(false);
+            _kept[token] = content;
+            return content.Written;
         }
         finally
         {
@@ -166,11 +178,12 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     /// </summary>
     public async Task<IReadOnlyDictionary<string, string>> TakeWrittenAsync(string token)
     {
-        if (Find(null, token) is not { } preview) return new Dictionary<string, string>();
-        var content = preview.Held.Content;
         await _writtenGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            // The preview may be gone by time (a machine left asleep) — what was written is kept by token until taken.
+            var content = Find(null, token)?.Held.Content ?? _kept.GetValueOrDefault(token);
+            if (content is null) return new Dictionary<string, string>();
             var items = content.Written?.GetItems() ?? new Dictionary<string, string>();
             await DropWrittenLockedAsync(content, token).ConfigureAwait(false);
             return items;
@@ -194,8 +207,22 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
         }
     }
 
+    private async Task DropKeptAsync(string token)
+    {
+        await _writtenGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_kept.GetValueOrDefault(token) is { } content) await DropWrittenLockedAsync(content, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writtenGate.Release();
+        }
+    }
+
     private async Task DropWrittenLockedAsync(Content content, string token)
     {
+        _kept.Remove(token);
         if (content.Written is { } store)
         {
             content.Written = null;
@@ -209,7 +236,7 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     {
         if (!Directory.Exists(_scratchRoot)) return;
         foreach (var folder in Directory.EnumerateDirectories(_scratchRoot))
-            if (Find(Path.GetFileName(folder)) is null) TryDelete(folder);
+            if (Find(Path.GetFileName(folder)) is null && !_kept.ContainsKey(Path.GetFileName(folder))) TryDelete(folder);
     }
 
     private static void TryDelete(string folder)
@@ -231,7 +258,7 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     {
         if (Directory.Exists(_scratchRoot))
             foreach (var folder in Directory.EnumerateDirectories(_scratchRoot))
-                if (Find(Path.GetFileName(folder)) is { Held.Content.Written: { } store }) await store.DisposeAsync().ConfigureAwait(false);
+                if ((Find(Path.GetFileName(folder))?.Held.Content ?? _kept.GetValueOrDefault(Path.GetFileName(folder))) is { Written: { } store }) await store.DisposeAsync().ConfigureAwait(false);
         TryDelete(_scratchRoot);
         _writtenGate.Dispose();
     }
