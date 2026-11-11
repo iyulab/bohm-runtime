@@ -890,7 +890,9 @@ public sealed class WebAgentTests : IDisposable
             HttpAssert.Status(HttpStatusCode.OK, response);
             turn = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement.Clone();
             if (turn.GetProperty("status").GetString() == "done") break;
-            var toolCalls = turn.GetProperty("toolCalls").EnumerateArray().ToList();
+            // A turn that ended another way (the server failed or timed out) says so, instead of a missing key further down.
+            if (!turn.TryGetProperty("toolCalls", out var turnCalls)) Assert.Fail($"The turn ended without tool calls: {turn.GetRawText()}");
+            var toolCalls = turnCalls.EnumerateArray().ToList();
             messages.Add(new { role = "assistant", toolCalls = toolCalls.Select(c => new { id = c.GetProperty("id").GetString(), name = c.GetProperty("name").GetString(), arguments = c.GetProperty("arguments") }) });
             foreach (var call in toolCalls)
             {
@@ -965,7 +967,9 @@ public sealed class WebAgentTests : IDisposable
             pieces += lines.Count - 1;
             turn = lines[^1];
             if (turn.GetProperty("status").GetString() == "done") break;
-            var toolCalls = turn.GetProperty("toolCalls").EnumerateArray().ToList();
+            // A turn that ended another way (the server failed or timed out) says so, instead of a missing key further down.
+            if (!turn.TryGetProperty("toolCalls", out var turnCalls)) Assert.Fail($"The turn ended without tool calls: {turn.GetRawText()}");
+            var toolCalls = turnCalls.EnumerateArray().ToList();
             messages.Add(new { role = "assistant", toolCalls = toolCalls.Select(c => new { id = c.GetProperty("id").GetString(), name = c.GetProperty("name").GetString(), arguments = c.GetProperty("arguments") }) });
             foreach (var call in toolCalls)
             {
