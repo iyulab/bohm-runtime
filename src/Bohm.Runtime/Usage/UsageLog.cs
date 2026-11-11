@@ -47,6 +47,7 @@ public sealed class UsageLog
     private readonly Dictionary<DateOnly, int> _lossSuspected = [];
     private readonly Dictionary<DateOnly, int> _repaired = [];
     private readonly Dictionary<DateOnly, Dictionary<string, int>> _repairKinds = [];
+    private readonly Dictionary<DateOnly, int> _repairLost = [];
     private readonly List<RevisionEvent> _revisions = [];
     private readonly SortedDictionary<int, KeyReport> _keys = [];
 
@@ -81,6 +82,8 @@ public sealed class UsageLog
                             log._repaired[date] = log._repaired.GetValueOrDefault(date) + 1;
                             if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && ValidKind(kind.GetString()) is { } named)
                                 log.CountRepairKind(date, named);
+                            if (root.TryGetProperty("lost", out var lost) && lost.ValueKind == JsonValueKind.Number && lost.TryGetInt32(out var lostCount) && lostCount >= 0)
+                                log._repairLost[date] = log._repairLost.GetValueOrDefault(date) + lostCount;
                             break;
                         case "revised": log._revisions.Add(new RevisionEvent(date, Reverted: false)); break;
                         case "reverted": log._revisions.Add(new RevisionEvent(date, Reverted: true)); break;
@@ -141,19 +144,23 @@ public sealed class UsageLog
     /// whole (typically the last line of a folder copied while a write was in progress) and was set
     /// aside so the rest could load. What was repaired stays in the runtime log; the record keeps the count
     /// and, when the caller knows it, the <paramref name="kind"/> (a lower-case, hyphenated word such as
-    /// <c>corrupt-journal</c> — never a key or a value).
+    /// <c>corrupt-journal</c> — never a key or a value) and <paramref name="lost"/>, how many saved operations the
+    /// repair could not bring back (a count, never what they were).
     /// </summary>
-    public void RecordRepaired(string? kind = null)
+    public void RecordRepaired(string? kind = null, int? lost = null)
     {
         var today = Today;
         var named = ValidKind(kind);
+        var lostCount = lost is >= 0 ? lost : null;
         lock (_lock)
         {
             _repaired[today] = _repaired.GetValueOrDefault(today) + 1;
             if (named is not null) CountRepairKind(today, named);
-            Append(named is null
-                ? $$"""{"date":"{{today:yyyy-MM-dd}}","event":"repaired"}"""
-                : $$"""{"date":"{{today:yyyy-MM-dd}}","event":"repaired","kind":"{{named}}"}""");
+            if (lostCount is { } n) _repairLost[today] = _repairLost.GetValueOrDefault(today) + n;
+            var line = new StringBuilder("{\"date\":\"").Append(today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append("\",\"event\":\"repaired\"");
+            if (named is not null) line.Append(",\"kind\":\"").Append(named).Append('"');
+            if (lostCount is { } count) line.Append(",\"lost\":").Append(count.ToString(CultureInfo.InvariantCulture));
+            Append(line.Append('}').ToString());
         }
     }
 
@@ -263,6 +270,15 @@ public sealed class UsageLog
     public IReadOnlyDictionary<string, int> RepairKindsOn(DateOnly date)
     {
         lock (_lock) return _repairKinds.TryGetValue(date, out var kinds) ? new Dictionary<string, int>(kinds) : [];
+    }
+
+    /// <summary>
+    /// How many saved operations <paramref name="date"/>'s repairs could not bring back, summed over the repairs that
+    /// counted them; <see langword="null"/> when none did (older lines, repairs that do not know).
+    /// </summary>
+    public int? RepairLostOn(DateOnly date)
+    {
+        lock (_lock) return _repairLost.TryGetValue(date, out var lost) ? lost : null;
     }
 
     /// <summary>Each time the person took in a new revision or went back to the previous one, in order.</summary>

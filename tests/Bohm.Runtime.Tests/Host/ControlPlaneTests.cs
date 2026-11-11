@@ -81,6 +81,8 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         Assert.Equal(["a", "b"], kept.Order());
         Assert.Single(Directory.GetFiles(storageDirectory, "journal.ndjson.unreadable-*"));
         Assert.Equal(1, await RepairKindCountAsync(id, "corrupt-journal"));
+        // And how many saved operations it could not bring back: the unreadable line (seq 3) and the one after it (seq 4).
+        Assert.Equal(2, await RepairLostAsync(id));
     }
 
     [Fact]
@@ -100,6 +102,12 @@ public sealed class ControlPlaneTests : IAsyncLifetime
 
         Assert.Single(Directory.GetFiles(storageDirectory, "local.json.unreadable-*"));
         Assert.Equal(1, await RepairKindCountAsync(id, "used-previous-snapshot"));
+    }
+
+    private async Task<int> RepairLostAsync(string id)
+    {
+        var days = JsonDocument.Parse(await _host.ControlClient().GetStringAsync($"/__control/apps/{id}/usage")).RootElement.GetProperty("days");
+        return days.EnumerateArray().Sum(d => d.GetProperty("repairLost").ValueKind == JsonValueKind.Number ? d.GetProperty("repairLost").GetInt32() : 0);
     }
 
     private async Task<int> RepairKindCountAsync(string id, string kind)

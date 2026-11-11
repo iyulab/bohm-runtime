@@ -237,8 +237,8 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         // record can see that something on disk was set aside — not only someone reading the log.
         foreach (var repair in storage.Recovery)
         {
-            LogRepair(logger, appId, repair.Kind, repair.Detail);
-            usage.RecordRepaired(System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(repair.Kind.ToString()));
+            LogRepair(logger, appId, repair.Kind, repair.LostOperations, repair.Detail);
+            usage.RecordRepaired(System.Text.Json.JsonNamingPolicy.KebabCaseLower.ConvertName(repair.Kind.ToString()), repair.LostOperations);
         }
         return new OpenApp(storage, usage, catalog.OpenAssets(appId), catalog.OpenSources(appId), catalog.OpenPages(appId));
     }
@@ -266,8 +266,8 @@ internal sealed partial class OpenApps(AdoptionCatalog catalog, ILogger<OpenApps
         }
     }
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Storage of {AppId} repaired on load: {Kind} — {Detail}")]
-    private static partial void LogRepair(ILogger logger, string appId, StoreRecoveryKind kind, string detail);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Storage of {AppId} repaired on load: {Kind}, operations not brought back: {LostOperations} — {Detail}")]
+    private static partial void LogRepair(ILogger logger, string appId, StoreRecoveryKind kind, int? lostOperations, string detail);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Closing an application's storage failed.")]
     private static partial void LogCloseFailed(ILogger logger, Exception exception);

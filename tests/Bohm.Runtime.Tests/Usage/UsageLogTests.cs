@@ -88,6 +88,21 @@ public sealed class UsageLogTests : IDisposable
     }
 
     [Fact]
+    public void A_repair_can_count_what_it_lost_and_older_lines_say_nothing_about_it()
+    {
+        var log = Open("""{"date":"2026-09-12","event":"repaired","kind":"corrupt-journal"}""", """{"date":"2026-09-13","event":"repaired","kind":"corrupt-journal","lost":5}""");
+        log.RecordRepaired("corrupt-journal", 24);
+        log.RecordRepaired("truncated-journal-tail", 0);
+        log.RecordRepaired("used-previous-snapshot", -1);   // not a count: the repair is still counted, the loss is not
+
+        var reopened = UsageLog.Open(Path.Combine(_dir, "usage.ndjson"));
+        Assert.Null(reopened.RepairLostOn(new DateOnly(2026, 9, 12)));
+        Assert.Equal(5, reopened.RepairLostOn(new DateOnly(2026, 9, 13)));
+        Assert.Equal(24, reopened.RepairLostOn(reopened.Today));
+        Assert.Equal(3, reopened.Days.Single(d => d.Date == reopened.Today).Repaired);
+    }
+
+    [Fact]
     public void Suspected_losses_are_counted_per_day_and_read_back()
     {
         var log = Open("""{"date":"2026-09-10","signal":"opened"}""", """{"date":"2026-09-12","event":"loss-suspected"}""");
