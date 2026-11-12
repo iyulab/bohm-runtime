@@ -20,7 +20,9 @@ internal sealed record RegistryLockTiming(TimeSpan Beat, TimeSpan Stale, TimeSpa
 /// <remarks>
 /// A lock with no mark was written by an earlier version, which relied on Windows refusing to delete a file its holder
 /// has open. It is treated the old way: on Windows, one that has not been written for two minutes is deleted if Windows
-/// allows it; elsewhere, where an open file can be deleted, it is waited for and never taken over.
+/// allows it; elsewhere, where an open file can be deleted, it is waited for and never taken over. A lock counts as
+/// unmarked only when it stays without a mark for the stale time and never showed one during the wait — a read that
+/// meets a holder of this version in the middle of a write does not make its lock an earlier version's.
 /// </remarks>
 internal sealed class RegistryLock : IAsyncDisposable
 {
@@ -53,6 +55,11 @@ internal sealed class RegistryLock : IAsyncDisposable
         var waited = Stopwatch.StartNew();
         string? seen = null;
         var seenFor = Stopwatch.StartNew();
+        // A lock that carried a mark during this wait was made by this version: reading it without one is a read that met
+        // it being rewritten, not a lock left by an earlier version. And one with no mark is only an earlier version's once
+        // it has stayed without one for the stale time — a new holder writes its mark the moment it creates the file.
+        var marked = false;
+        Stopwatch? unmarkedFor = null;
         while (true)
         {
             try
@@ -72,10 +79,12 @@ internal sealed class RegistryLock : IAsyncDisposable
                 var mark = ReadMark(path);
                 if (mark is null)
                 {
-                    TakeOverUnmarked(path, clock);
+                    if (!marked && (unmarkedFor ??= Stopwatch.StartNew()).Elapsed > timing.Stale) TakeOverUnmarked(path, clock);
                 }
                 else if (mark != seen)
                 {
+                    marked = true;
+                    unmarkedFor = null;
                     seen = mark;
                     seenFor.Restart();
                 }
@@ -157,10 +166,15 @@ internal sealed class RegistryLock : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// Rewrites the mark in one write over the old one, never emptying the file first: a reader between an emptying and
+    /// a write would read no mark at all. The mark only grows (its beat counts up), so nothing of the old one is left past
+    /// the new one's end; the length is set after, for the same reason.
+    /// </summary>
     private void Write()
     {
-        _stream.SetLength(0);
-        using (var json = new Utf8JsonWriter(_stream))
+        var mark = new System.Buffers.ArrayBufferWriter<byte>(128);
+        using (var json = new Utf8JsonWriter(mark))
         {
             json.WriteStartObject();
             json.WriteString("format", Format);
@@ -169,6 +183,9 @@ internal sealed class RegistryLock : IAsyncDisposable
             json.WriteEndObject();
         }
 
+        _stream.Position = 0;
+        _stream.Write(mark.WrittenSpan);
+        _stream.SetLength(mark.WrittenCount);
         _stream.Flush(flushToDisk: true);
     }
 

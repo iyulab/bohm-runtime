@@ -339,6 +339,44 @@ public sealed class AppRegistryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_marked_lock_read_while_it_is_being_rewritten_is_waited_for_and_not_taken_for_an_earlier_versions()
+    {
+        // A holder that empties its file before each mark — the moment a reader may meet — with a clock far ahead of the file
+        // times: a waiter must not read the empty moment as an earlier version's lock and delete it.
+        var timing = new RegistryLockTiming(TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(1500), TimeSpan.FromSeconds(10));
+        var registry = Path.Combine(_registry, "flicker");
+        Directory.CreateDirectory(registry);
+        var lockPath = Path.Combine(registry, "index.lock");
+        var ahead = new Storage.ManualClock(DateTimeOffset.UtcNow.AddMinutes(10));
+        using var stop = new CancellationTokenSource();
+        var holder = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read | FileShare.Delete, 1);
+        var beating = Task.Run(async () =>
+        {
+            for (var beat = 0; !stop.IsCancellationRequested; beat++)
+            {
+                holder.SetLength(0);
+                await Task.Delay(5).ConfigureAwait(false);
+                holder.Position = 0;
+                holder.Write(Encoding.UTF8.GetBytes($$"""{"format":"bohm.registry.lock/1","owner":"elsewhere/2/alive","beat":{{beat}}}"""));
+                holder.Flush(flushToDisk: true);
+                await Task.Delay(20).ConfigureAwait(false);
+            }
+        });
+
+        var taking = RegistryLock.TakeAsync(lockPath, timing, ahead, TestContext.Current.CancellationToken);
+        await Task.Delay(timing.Stale * 2, TestContext.Current.CancellationToken);
+        Assert.False(taking.IsCompleted, taking.Exception?.ToString());
+        Assert.True(File.Exists(lockPath));
+
+        await stop.CancelAsync();
+        await beating;
+        await holder.DisposeAsync();
+        File.Delete(lockPath);
+        await using var taken = await taking;
+        Assert.True(File.Exists(lockPath));
+    }
+
+    [Fact]
     public async Task A_holder_whose_lock_was_taken_over_leaves_the_new_holders_lock_in_place()
     {
         var timing = new RegistryLockTiming(TimeSpan.FromMinutes(5), TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(10));
