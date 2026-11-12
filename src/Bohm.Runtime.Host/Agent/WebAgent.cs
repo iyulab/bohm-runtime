@@ -364,6 +364,16 @@ internal static class WebAgent
             (produced, _) = await StreamAsync([.. sent, .. produced, new ChatMessage(ChatRole.User, CopiedAnswer.Note)]).ConfigureAwait(false);
             use = Llm.ModelUse.Add(first, use);
         }
+        // An answer in another script than the question (asked in Korean, answered in English) is asked for once more the
+        // same way (see OtherLanguageAnswer) — one asking again per turn, so not after a copied answer.
+        else if (!last && !Calls(produced) && OtherLanguageAnswer.Differs(written.ToString(), conversation))
+        {
+            written.Clear();
+            if (onRestart is not null) await onRestart(cancellationToken).ConfigureAwait(false);
+            var first = use;
+            (produced, _) = await StreamAsync([.. sent, .. produced, new ChatMessage(ChatRole.User, OtherLanguageAnswer.Note)]).ConfigureAwait(false);
+            use = Llm.ModelUse.Add(first, use);
+        }
 
         async Task<(IList<ChatMessage> Produced, IReadOnlyList<ChatMessage> Guarded)> StreamAsync(IReadOnlyList<ChatMessage> raw)
         {
