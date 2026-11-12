@@ -97,6 +97,8 @@ internal static partial class AppScripts
             problems.Add($"An event handler attribute calls {name}, but {name} is declared inside another function (or a module), where an attribute cannot see it, so it throws when pressed. Attach the handler with addEventListener in the same script, or assign it to window.");
         foreach (var id in ids.Where(i => !idsBefore.Contains(i)))
             problems.Add($"The page looks up the element with id \"{id}\" but no element has that id. Add the element, or use the id it has.");
+        var earlyBefore = ReadBeforeSet(before).Select(r => (r.Call, r.Name)).ToHashSet();
+        problems.AddRange(Problems(ReadBeforeSet(after).Where(r => !earlyBefore.Contains((r.Call, r.Name)))));
         var sharedBefore = SharedIds(before);
         foreach (var (id, tags) in SharedIds(after).Where(s => !sharedBefore.ContainsKey(s.Key)))
             problems.Add($"{tags.Count} elements have id \"{id}\" ({string.Join(", ", tags.Select(t => $"<{t}>"))}). An id names one element: looking it up returns only the first, so code meant for the {(tags.Count > 1 ? $"<{tags[1]}>" : "other")} reads the <{tags[0]}> instead and gets nothing (a filter that reads its value then hides every record). Give each element its own id and use that one where it is looked up.");

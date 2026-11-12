@@ -127,6 +127,60 @@ public sealed class AppScriptsTests
         Assert.Equal(["p", "p"], AppScripts.SharedIds(before)["a"]);
     }
 
+    // Measured on a generated page: the list was loaded before the line that set what the loader reads through, a try/catch
+    // swallowed the TypeError, and every reopen started empty — the next save then wrote over the records kept.
+    [Fact]
+    public void A_function_run_while_the_page_starts_that_reads_a_variable_set_further_down_is_named()
+    {
+        const string html = """
+            <ul id="list"></ul>
+            <script>
+            (function () {
+              var orders = load();
+              function load() {
+                try { var raw = store().getItem("orders"); return raw ? JSON.parse(raw) : []; }
+                catch (e) { console.error(e); return []; }
+              }
+              function store() { if (typeof win.localStorage === "object") return win.localStorage; return memory; }
+              var win = window;
+              var memory = {};
+            })();
+            </script>
+            """;
+
+        var found = AppScripts.ReadBeforeSet(html);
+
+        // memory is read only as a value, never through it: undefined there is not a failure.
+        var read = Assert.Single(found);
+        Assert.Equal(("load", "win", 4, 10, false), (read.Call, read.Name, read.Line, read.SetAt, read.Throws));
+        Assert.StartsWith("Line 4 runs load() while the page starts, and load() reads win (set at line 10)", Assert.Single(AppScripts.Problems(found)), StringComparison.Ordinal);
+        Assert.Empty(AppScripts.ReadBeforeSet(html.Replace("var win = window;\n", "", StringComparison.Ordinal).Replace("var orders = load();", "var win = window;\n  var orders = load();", StringComparison.Ordinal)));
+    }
+
+    // What runs later is not the start: a handler, a timer, a catch for a failure; nor a let read through typeof, nor a
+    // var read only as a value (clearTimeout of a timer not set yet).
+    [Theory]
+    [InlineData("document.body.addEventListener('click', () => show()); function show() { el.textContent = 'x'; } const el = document.body;")]
+    [InlineData("setTimeout(show, 0); function show() { el.textContent = 'x'; } const el = document.body;")]
+    [InlineData("save(); function save() { try { localStorage.setItem('k', '1'); } catch (e) { toast.show(); } } const toast = { show() {} };")]
+    [InlineData("check(); function check() { return typeof later === 'undefined'; } let later = 1;")]
+    [InlineData("reset(); function reset() { clearTimeout(timer); } var timer = null;")]
+    public void What_does_not_run_as_the_page_starts_is_not_named(string code) =>
+        Assert.Empty(AppScripts.ReadBeforeSet("<script>" + code + "</script>"));
+
+    // A let or const read before its line throws; a change that leaves this so is told, one the page already had is not the change's.
+    [Fact]
+    public void A_change_that_makes_the_start_read_a_constant_before_its_line_is_told()
+    {
+        const string before = "<script>const $ = (id) => document.getElementById(id);\nfunction paint() { $('out').textContent = 'hi'; }\npaint();</script><p id=\"out\"></p>";
+        var after = before.Replace("paint();", "", StringComparison.Ordinal).Replace("<script>", "<script>paint();\n", StringComparison.Ordinal);
+
+        var problem = Assert.Single(AppScripts.Unfinished(before, after));
+
+        Assert.Contains("runs paint() while the page starts, and paint() reads $ (set at line 2, throws until then)", problem, StringComparison.Ordinal);
+        Assert.Empty(AppScripts.Unfinished(after, after));
+    }
+
     [Fact]
     public void A_function_the_change_hands_over_by_name_that_nothing_defines_is_named()
     {
