@@ -101,6 +101,32 @@ public sealed class AppScriptsTests
     }
 
     // Handed to a handler rather than called: the page fails the same way when the person presses it.
+    // A change that adds a filter under an id the form already used: the lookup finds the form's <div>, whose value is
+    // undefined, and the filter hides every stored record without an error — the id is named with both elements.
+    [Fact]
+    public void An_id_the_change_gives_a_second_element_is_named_with_both_elements()
+    {
+        const string before = "<div class=\"field\" id=\"f-pay\"><select id=\"in-pay\"></select></div>\n<select id=\"f-status\"></select>\n<script>const el = (id) => document.getElementById(id); const st = el('f-status');</script>";
+        var after = before.Replace("<select id=\"f-status\"></select>", "<select id=\"f-status\"></select><select class=\"select\" id=\"f-pay\"></select>", StringComparison.Ordinal);
+
+        var problem = Assert.Single(AppScripts.Unfinished(before, after));
+
+        Assert.StartsWith("2 elements have id \"f-pay\" (<div>, <select>).", problem, StringComparison.Ordinal);
+        Assert.Contains("reads the <div> instead", problem, StringComparison.Ordinal);
+    }
+
+    // Shared ids the page already had are not the change's; ids inside scripts, templates and comments are not the
+    // document's, and data-id is another attribute.
+    [Fact]
+    public void Ids_the_document_does_not_hold_twice_are_not_named()
+    {
+        const string before = "<p id=\"a\"></p><p id=a></p>\n<script>const x = '<li id=\"row\"></li><li id=\"row\"></li>';</script>";
+        var after = before + "\n<template><b id=\"t\"></b></template><template><b id=\"t\"></b></template>\n<!-- <i id=\"c\"></i><i id=\"c\"></i> -->\n<li data-id=\"1\"></li><li data-id=\"1\"></li><p id=\"a\"></p>";
+
+        Assert.Empty(AppScripts.Unfinished(before, after));
+        Assert.Equal(["p", "p"], AppScripts.SharedIds(before)["a"]);
+    }
+
     [Fact]
     public void A_function_the_change_hands_over_by_name_that_nothing_defines_is_named()
     {
