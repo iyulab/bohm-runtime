@@ -326,6 +326,9 @@ internal static class WebAgent
         // which allows no call, such markup is dropped from the answer instead.
         var client = model.AsBuilder()
             .UseFunctionInvocation(configure: invoking => invoking.MaximumIterationsPerRequest = MaxRounds)
+            // A tool whose name a provider refuses (an MCP tool called «message.send») goes out under an alias, and its call comes back by its name —
+            // otherwise the provider refuses the whole request and no turn can use that connector.
+            .UseToolNameAlias()
             .ConfigureOptions(options =>
             {
                 // The caller's asked-for level wins over the default of «off»; a level is only asked of a model known to think.

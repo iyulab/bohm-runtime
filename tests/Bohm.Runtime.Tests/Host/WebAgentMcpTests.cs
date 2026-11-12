@@ -77,6 +77,27 @@ public sealed class WebAgentMcpTests : IDisposable
     }
 
     [Fact]
+    public async Task A_tool_whose_name_a_provider_refuses_is_offered_under_an_alias_and_its_call_comes_back_by_its_real_name()
+    {
+        // OpenAI, its compatible servers and Anthropic refuse the whole request for a function name outside [a-zA-Z0-9_-]{1,64} —
+        // an MCP server whose tool is called «message.send» would make every turn that offers it fail.
+        var dotted = new McpTool("chat", "message.send", Remote: false,
+            AIFunctionFactory.Create((string text) => text, McpTool.NameOf("chat", "message.send"), "Sends a message."));
+        _model.Script.Enqueue(new FunctionCallContent("m1", WebAgentAliasOf("mcp__chat__message.send"), new Dictionary<string, object?> { ["text"] = "hi" }));
+
+        var turn = await WebAgent.RunTurnAsync(_model, "test", onThisComputer: false, ModelLimits.Unknown,
+            WebAgent.ParseConversation(JsonDocument.Parse("""{"messages":[{"role":"user","text":"Send hi."}]}""").RootElement),
+            DateTimeOffset.UnixEpoch, null, TestContext.Current.CancellationToken, mcp: [dotted]);
+
+        var offered = Assert.Single(_model.Calls).Options!.Tools!.Select(t => t.Name).ToList();
+        Assert.All(offered, name => Assert.Matches("^[a-zA-Z0-9_-]{1,64}$", name));
+        var call = Assert.Single(turn.ToolCalls);
+        Assert.Equal("mcp__chat__message.send", call.Name);
+    }
+
+    private static string WebAgentAliasOf(string name) => IronHive.Agent.Invocation.ToolNameAliasChatClient.AliasFor(name);
+
+    [Fact]
     public void An_mcp_result_is_its_text_parts_and_an_error_result_is_a_failure()
     {
         Assert.Equal(("한 줄\n둘째 줄", false), Bohm.Runtime.Host.Control.ControlPlane.McpResultText(JsonDocument.Parse("""{"content":[{"type":"text","text":"한 줄"},{"type":"image","data":"x"},{"type":"text","text":"둘째 줄"}]}""").RootElement));
