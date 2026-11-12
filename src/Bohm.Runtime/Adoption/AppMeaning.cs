@@ -64,6 +64,42 @@ public sealed record RememberedKind(string Name, string Label, IReadOnlyList<Key
     }
 }
 
+/// <summary>
+/// One condition the application must keep through every change — said in the person's words, held by a judge that checks
+/// the application against it each time it is changed.
+/// </summary>
+/// <param name="Says">The condition, one line in the person's words («a loan keeps the date it was lent»).</param>
+/// <param name="From">Where it came from: <c>request</c> (the first request said it), <c>asked</c> (the model asked about a boundary
+/// and the person said yes) or <c>person</c> (the person added it).</param>
+/// <param name="Field">The field it is about, when it is about one (a field key of a remembered kind).</param>
+public sealed record AppCheck(string Says, string From, string? Field = null)
+{
+    /// <summary>Where a condition comes from.</summary>
+    public static readonly IReadOnlySet<string> Sources = new HashSet<string>(["request", "asked", "person"], StringComparer.Ordinal);
+
+    /// <summary>The most conditions kept, and the longest one in characters.</summary>
+    public const int MaxChecks = 32, MaxText = 300;
+
+    /// <summary>
+    /// The conditions given, cleaned for keeping: trimmed, each said once, nothing empty, over <see cref="MaxText"/> or from
+    /// an unknown source, a field only when it is a short name, at most <see cref="MaxChecks"/>.
+    /// </summary>
+    public static IReadOnlyList<AppCheck> Clean(IEnumerable<AppCheck>? given)
+    {
+        var kept = new List<AppCheck>();
+        var said = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in given ?? [])
+        {
+            if (kept.Count == MaxChecks) break;
+            if (c?.Says?.Trim() is not { Length: > 0 and <= MaxText } says || c.From is null || !Sources.Contains(c.From) || !said.Add(says)) continue;
+            var field = c.Field?.Trim() is { Length: > 0 and <= RememberedKind.MaxText } f ? f : null;
+            kept.Add(new AppCheck(says, c.From, field));
+        }
+
+        return kept;
+    }
+}
+
 /// <summary>The person's names (<see cref="RememberedKind"/>) laid on the tables an application's records make.</summary>
 public static class PersonNames
 {
@@ -122,10 +158,10 @@ public static class AppMeaning
 
     private static readonly JsonSerializerOptions Writer = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    /// <summary>A new file holding <paramref name="request"/> and <paramref name="collections"/> — either may be absent; <see langword="null"/> when both are.</summary>
-    public static byte[]? Write(FirstRequest? request, IReadOnlyList<RememberedKind>? collections = null)
+    /// <summary>A new file holding <paramref name="request"/>, <paramref name="collections"/> and <paramref name="checks"/> — any may be absent; <see langword="null"/> when all are.</summary>
+    public static byte[]? Write(FirstRequest? request, IReadOnlyList<RememberedKind>? collections = null, IReadOnlyList<AppCheck>? checks = null)
     {
-        if (request is null && collections is not { Count: > 0 }) return null;
+        if (request is null && collections is not { Count: > 0 } && checks is not { Count: > 0 }) return null;
         var node = new JsonObject { ["format"] = Format };
         if (request is not null)
             node["request"] = new JsonObject
@@ -135,6 +171,7 @@ public static class AppMeaning
                 ["via"] = request.Via,
             };
         if (collections is { Count: > 0 }) node["collections"] = CollectionsNode(collections);
+        if (checks is { Count: > 0 }) node["checks"] = ChecksNode(checks);
         return JsonSerializer.SerializeToUtf8Bytes(node, Writer);
     }
 
@@ -175,6 +212,74 @@ public static class AppMeaning
         var given = array.OfType<JsonObject>().Select(c => new RememberedKind(Str(c["name"]) ?? "", Str(c["label"]) ?? "",
             c["fields"] is JsonObject f ? [.. f.Select(m => new KeyValuePair<string, string>(m.Key, Str(m.Value) ?? ""))] : []));
         return RememberedKind.Clean(given);
+    }
+
+    private static JsonArray ChecksNode(IReadOnlyList<AppCheck> checks)
+    {
+        var array = new JsonArray();
+        foreach (var c in checks)
+        {
+            var node = new JsonObject { ["says"] = c.Says, ["from"] = c.From };
+            if (c.Field is not null) node["field"] = c.Field;
+            array.Add(node);
+        }
+
+        return array;
+    }
+
+    /// <summary>The conditions in the file at <paramref name="folder"/> — empty when there are none or it cannot be read.</summary>
+    public static async Task<IReadOnlyList<AppCheck>> ReadChecksAsync(string folder, CancellationToken cancellationToken = default)
+    {
+        var path = Path.Combine(folder, FileName);
+        if (!File.Exists(path)) return [];
+        try
+        {
+            return ParseChecks(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception e) when (e is JsonException or IOException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>The conditions in <paramref name="file"/>'s bytes, cleaned (<see cref="AppCheck.Clean"/>) — empty when not of this format.</summary>
+    public static IReadOnlyList<AppCheck> ParseChecks(ReadOnlySpan<byte> file)
+    {
+        if (JsonNode.Parse(file) is not JsonObject root || root["format"]?.GetValueKind() != JsonValueKind.String
+            || !IsThisFormat(root["format"]!.GetValue<string>()) || root["checks"] is not JsonArray array) return [];
+        static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+        return AppCheck.Clean(array.OfType<JsonObject>().Select(c => new AppCheck(Str(c["says"]) ?? "", Str(c["from"]) ?? "", Str(c["field"]))));
+    }
+
+    /// <summary>
+    /// Sets the conditions the file in <paramref name="folder"/> holds to <paramref name="checks"/> (cleaned), keeping everything
+    /// else it holds. A file left with nothing but its format is removed; none is made for no conditions.
+    /// </summary>
+    public static Task SetChecksAsync(string folder, IReadOnlyList<AppCheck> checks, CancellationToken cancellationToken = default) =>
+        SetMemberAsync(folder, "checks", AppCheck.Clean(checks) is { Count: > 0 } kept ? ChecksNode(kept) : null, cancellationToken);
+
+    private static async Task SetMemberAsync(string folder, string member, JsonNode? value, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(folder, FileName);
+        JsonObject root;
+        try
+        {
+            root = File.Exists(path) && JsonNode.Parse(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false)) is JsonObject read ? read : new JsonObject { ["format"] = Format };
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject { ["format"] = Format };
+        }
+
+        if (value is not null) root[member] = value;
+        else root.Remove(member);
+        if (root.All(m => m.Key == "format"))
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return;
+        }
+
+        await DurableFile.WriteAtomicallyAsync(path, JsonSerializer.SerializeToUtf8Bytes(root, Writer), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -221,29 +326,8 @@ public static class AppMeaning
     /// everything else it holds (the request, members of a later format). A file left with nothing but its format is removed;
     /// none is made for no collections.
     /// </summary>
-    public static async Task SetCollectionsAsync(string folder, IReadOnlyList<RememberedKind> collections, CancellationToken cancellationToken = default)
-    {
-        var path = Path.Combine(folder, FileName);
-        JsonObject root;
-        try
-        {
-            root = File.Exists(path) && JsonNode.Parse(await DurableFile.ReadAsync(path, cancellationToken).ConfigureAwait(false)) is JsonObject read ? read : new JsonObject { ["format"] = Format };
-        }
-        catch (JsonException)
-        {
-            root = new JsonObject { ["format"] = Format };
-        }
-
-        if (collections.Count > 0) root["collections"] = CollectionsNode(collections);
-        else root.Remove("collections");
-        if (root.All(member => member.Key == "format"))
-        {
-            if (File.Exists(path)) File.Delete(path);
-            return;
-        }
-
-        await DurableFile.WriteAtomicallyAsync(path, JsonSerializer.SerializeToUtf8Bytes(root, Writer), cancellationToken).ConfigureAwait(false);
-    }
+    public static Task SetCollectionsAsync(string folder, IReadOnlyList<RememberedKind> collections, CancellationToken cancellationToken = default) =>
+        SetMemberAsync(folder, "collections", collections.Count > 0 ? CollectionsNode(collections) : null, cancellationToken);
 
     /// <summary>
     /// Takes the person's words out of the file in <paramref name="folder"/> — for a copy that leaves this computer
@@ -271,7 +355,9 @@ public static class AppMeaning
             return;
         }
 
-        if (!root.Remove("request")) return;
+        // The conditions are said in the person's words too (they come from the request, the person's yes, or the person).
+        var removed = root.Remove("request") | root.Remove("checks");
+        if (!removed) return;
         if (root.All(member => member.Key == "format"))
         {
             File.Delete(path);

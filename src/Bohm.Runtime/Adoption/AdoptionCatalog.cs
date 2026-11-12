@@ -87,7 +87,8 @@ public sealed partial class AdoptionCatalog
     /// <param name="via">How it was asked for — one of <see cref="FirstRequest.Ways"/>; without one the words are not kept.</param>
     /// <param name="collections">What it remembers, named for the person (<see cref="RememberedKind"/>) — kept beside it with the request.</param>
     public async Task<AdoptedApp> AdoptAsync(ReadOnlyMemory<byte> html, string? originalPath = null, bool unsaved = false, string? title = null,
-        string? generatedBy = null, string? request = null, string? via = null, IReadOnlyList<RememberedKind>? collections = null, CancellationToken cancellationToken = default)
+        string? generatedBy = null, string? request = null, string? via = null, IReadOnlyList<RememberedKind>? collections = null,
+        IReadOnlyList<AppCheck>? checks = null, CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
@@ -108,7 +109,7 @@ public sealed partial class AdoptionCatalog
                 stream.Flush(flushToDisk: true);
             }
 
-            if (AppMeaning.Write(AppMeaning.Request(request, via, now), RememberedKind.Clean(collections)) is { } meaning)
+            if (AppMeaning.Write(AppMeaning.Request(request, via, now), RememberedKind.Clean(collections), AppCheck.Clean(checks)) is { } meaning)
                 await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, AppMeaning.FileName), meaning, cancellationToken).ConfigureAwait(false);
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, AppDirectory(app.Id));
@@ -134,6 +135,10 @@ public sealed partial class AdoptionCatalog
     /// <summary>What application <paramref name="id"/> remembers, named for the person (<see cref="AppMeaning"/>) — empty for an unknown id or none kept.</summary>
     public Task<IReadOnlyList<RememberedKind>> GetCollectionsAsync(string id, CancellationToken cancellationToken = default) =>
         IsValidId(id) ? AppMeaning.ReadCollectionsAsync(AppDirectory(id), cancellationToken) : Task.FromResult<IReadOnlyList<RememberedKind>>([]);
+
+    /// <summary>The conditions application <paramref name="id"/> keeps through every change (<see cref="AppMeaning"/>) — empty for an unknown id or none kept.</summary>
+    public Task<IReadOnlyList<AppCheck>> GetChecksAsync(string id, CancellationToken cancellationToken = default) =>
+        IsValidId(id) ? AppMeaning.ReadChecksAsync(AppDirectory(id), cancellationToken) : Task.FromResult<IReadOnlyList<AppCheck>>([]);
 
     /// <summary>What application <paramref name="id"/> was first asked for with (<see cref="AppMeaning"/>) — <see langword="null"/> for an unknown id or none kept.</summary>
     public Task<FirstRequest?> GetFirstRequestAsync(string id, CancellationToken cancellationToken = default) =>
