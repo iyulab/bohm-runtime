@@ -459,6 +459,26 @@ public sealed partial class AppSources : IDisposable
     }
 
     /// <summary>
+    /// Forgets every source's permission, schedule and last reading time, keeping the rules — for an application
+    /// taken in from a package or a folder: the person who allowed a site to be read allowed it on the computer the
+    /// application came from, not here, so the person here allows it again. Nothing is written when nothing was allowed.
+    /// </summary>
+    public async Task ForgetPermissionsAsync(CancellationToken cancellationToken = default)
+    {
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var sources = await ReadRulesAsync(cancellationToken).ConfigureAwait(false);
+            if (sources.All(s => s.Grant is null && s.Watch is null && s.LastReadAt is null)) return;
+            await WriteRulesAsync([.. sources.Select(s => s with { Grant = null, LastReadAt = null, Watch = null })], cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>
     /// Whether <paramref name="page"/> is <paramref name="site"/> or a page under it: same scheme, host and
     /// port, and a path that continues the site's at a <c>/</c>, <c>?</c> or <c>#</c> — so a host or path that
     /// merely begins with the same letters is outside.

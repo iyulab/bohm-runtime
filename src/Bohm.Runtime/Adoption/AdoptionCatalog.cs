@@ -336,6 +336,7 @@ public sealed partial class AdoptionCatalog
         try
         {
             await CopyFolderAsync(folder, staging, cancellationToken).ConfigureAwait(false);
+            await ForgetSourcePermissionsAsync(staging, cancellationToken).ConfigureAwait(false);
             Directory.Move(staging, AppDirectory(app.Id));
         }
         catch
@@ -391,6 +392,16 @@ public sealed partial class AdoptionCatalog
         await using var destination = new FileStream(to, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
         destination.Flush(flushToDisk: true);
+    }
+
+    /// <summary>
+    /// The sources of an application being taken in keep their rules and lose their permissions — what a person
+    /// allowed on another computer is asked for again here (<see cref="AppSources.ForgetPermissionsAsync"/>).
+    /// </summary>
+    private async Task ForgetSourcePermissionsAsync(string folder, CancellationToken cancellationToken)
+    {
+        using var sources = AppSources.Open(folder, _clock);
+        await sources.ForgetPermissionsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task CopyFolderAsync(string from, string to, CancellationToken cancellationToken)

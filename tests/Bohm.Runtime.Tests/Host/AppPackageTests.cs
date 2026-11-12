@@ -205,6 +205,45 @@ public sealed class AppPackageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_package_with_data_brings_its_sources_rules_but_not_what_the_person_there_allowed()
+    {
+        // Allowed and read every minute here — the package with data carries that file — yet on the computer that takes it
+        // in, the person there has allowed nothing: the rule comes, the permission, schedule and last reading do not.
+        var id = await _host.AdoptAsync("<!doctype html><title>Prices</title>");
+        var folder = Path.Combine(_host.DataRoot, "adopted", id);
+        using (var sources = AppSources.Open(folder))
+        {
+            await sources.DeclareAsync("prices", new SourceRule("https://supplier.example/prices", "table", ["item", "price"]), granted: true, TestContext.Current.CancellationToken);
+            await sources.RecordAsync("prices", "https://supplier.example/prices", ["item", "price"], [["a", "1"]], TestContext.Current.CancellationToken);
+            Assert.Equal(ScheduleOutcome.Scheduled, (await sources.ScheduleAsync("prices", TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken)).Outcome);
+        }
+
+        var package = Path.Combine(_out, "Prices.bohm");
+        using (var packed = await PackAsync(id, package, "all")) HttpAssert.Status(HttpStatusCode.OK, packed);
+
+        await using var other = await RunningHost.StartAsync();
+        using (var imported = await ImportAsync(other, package)) HttpAssert.Status(HttpStatusCode.Created, imported);
+        using var separately = await _host.ControlClient().PostAsync("/__control/apps/import?as=separate", new StringContent(package, Encoding.UTF8));
+        HttpAssert.Status(HttpStatusCode.Created, separately);
+        var copy = JsonDocument.Parse(await separately.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+
+        foreach (var taken in new[] { Path.Combine(other.DataRoot, "adopted", id), Path.Combine(_host.DataRoot, "adopted", copy) })
+        {
+            using var sources = AppSources.Open(taken);
+            var source = Assert.Single(await sources.ListAsync(TestContext.Current.CancellationToken));
+            Assert.Equal("https://supplier.example/prices", source.Rule.Site);
+            Assert.Null(source.Grant);
+            Assert.Null(source.Watch);
+            Assert.Null(source.LastReadAt);
+            Assert.Empty(await sources.DueAsync(TestContext.Current.CancellationToken));
+        }
+
+        // The application here keeps what its person allowed.
+        using (var here = AppSources.Open(folder))
+            Assert.NotNull(Assert.Single(await here.ListAsync(TestContext.Current.CancellationToken)).Grant);
+    }
+
+    [Fact]
     public async Task An_app_already_here_is_not_replaced_and_the_answer_says_whether_its_code_is_here()
     {
         var id = await _host.AdoptAsync("<p>one</p>");
