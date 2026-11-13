@@ -55,7 +55,7 @@ public sealed partial class AdoptionCatalog
                 written.Add(new TableExportRecord(key, file, collection.Records, [.. collection.Declaration.Fields.Select(f => f.Name)]));
             }
 
-            Directory.Move(partial, target);
+            Bohm.Runtime.FolderMove.Move(partial, target);
         }
         catch
         {

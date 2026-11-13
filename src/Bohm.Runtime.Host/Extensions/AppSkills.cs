@@ -112,7 +112,7 @@ internal sealed class AppSkills(RuntimeHostOptions options, IEnumerable<IAuthori
             Directory.CreateDirectory(UserRoot);
             var target = Path.Combine(UserRoot, name);
             if (Directory.Exists(target)) throw new SkillExistsException(name);
-            Directory.Move(folder, target);
+            Bohm.Runtime.FolderMove.Move(folder, target);
             return List().First(s => s.Problem is null && string.Equals(s.Name, name, StringComparison.Ordinal));
         }
         finally

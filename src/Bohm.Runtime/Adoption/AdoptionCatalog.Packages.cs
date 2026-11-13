@@ -338,7 +338,7 @@ public sealed partial class AdoptionCatalog
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
             File.Delete(Path.Combine(staging, PublishedFile));
             await ForgetSourcePermissionsAsync(staging, cancellationToken).ConfigureAwait(false);
-            Directory.Move(staging, AppDirectory(id));
+            Bohm.Runtime.FolderMove.Move(staging, AppDirectory(id));
             return app;
         }
         finally

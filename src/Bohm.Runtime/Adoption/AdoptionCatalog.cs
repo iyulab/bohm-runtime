@@ -112,7 +112,7 @@ public sealed partial class AdoptionCatalog
             if (AppMeaning.Write(AppMeaning.Request(request, via, now), RememberedKind.Clean(collections), AppCheck.Clean(checks)) is { } meaning)
                 await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, AppMeaning.FileName), meaning, cancellationToken).ConfigureAwait(false);
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RecordFile), WriteRecord(app), cancellationToken).ConfigureAwait(false);
-            Directory.Move(staging, AppDirectory(app.Id));
+            Bohm.Runtime.FolderMove.Move(staging, AppDirectory(app.Id));
         }
         catch
         {
@@ -244,14 +244,14 @@ public sealed partial class AdoptionCatalog
         await DurableFile.WriteAtomicallyAsync(Path.Combine(kept, RemovedFile), WriteRemoved(removed), cancellationToken).ConfigureAwait(false);
 
         var leaving = Path.Combine(_root, RemovingPrefix + id);
-        Directory.Move(AppDirectory(id), leaving);
+        Bohm.Runtime.FolderMove.Move(AppDirectory(id), leaving);
         try
         {
             await discard(leaving, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            if (Directory.Exists(leaving)) Directory.Move(leaving, AppDirectory(id));
+            if (Directory.Exists(leaving)) Bohm.Runtime.FolderMove.Move(leaving, AppDirectory(id));
             Directory.Delete(kept, recursive: true);
             throw;
         }
@@ -293,7 +293,7 @@ public sealed partial class AdoptionCatalog
         {
             if (withData) await CopyFolderAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
             else await CopyWithoutDataAsync(AppDirectory(id), partial, cancellationToken).ConfigureAwait(false);
-            Directory.Move(partial, target);
+            Bohm.Runtime.FolderMove.Move(partial, target);
         }
         catch
         {
@@ -337,7 +337,7 @@ public sealed partial class AdoptionCatalog
         {
             await CopyFolderAsync(folder, staging, cancellationToken).ConfigureAwait(false);
             await ForgetSourcePermissionsAsync(staging, cancellationToken).ConfigureAwait(false);
-            Directory.Move(staging, AppDirectory(app.Id));
+            Bohm.Runtime.FolderMove.Move(staging, AppDirectory(app.Id));
         }
         catch
         {
@@ -701,7 +701,7 @@ public sealed partial class AdoptionCatalog
             await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, RevisionFile), WriteRevision(number, app.Revision, now, source, request, restoredFrom), cancellationToken).ConfigureAwait(false);
             await storage.SaveSnapshotAsync(Path.Combine(staging, DataBeforeFile), cancellationToken).ConfigureAwait(false);
             await AppMeaning.SetCollectionsAsync(staging, remembers, cancellationToken).ConfigureAwait(false);
-            Directory.Move(staging, RevisionFolder(id, number));
+            Bohm.Runtime.FolderMove.Move(staging, RevisionFolder(id, number));
         }
         catch
         {

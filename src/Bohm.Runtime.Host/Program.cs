@@ -200,7 +200,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
         ? (folder, _) =>
         {
             Directory.CreateDirectory(discardDir);
-            Directory.Move(folder, Path.Combine(discardDir, Bohm.Runtime.Host.Control.ControlPlane.DiscardedName(folder)));
+            Bohm.Runtime.FolderMove.Move(folder, Path.Combine(discardDir, Bohm.Runtime.Host.Control.ControlPlane.DiscardedName(folder)));
             return Task.CompletedTask;
         }
         : null,

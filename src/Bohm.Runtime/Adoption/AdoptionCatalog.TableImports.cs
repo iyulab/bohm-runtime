@@ -78,7 +78,7 @@ public sealed partial class AdoptionCatalog
         await storage.ApplyAsync([KeyValueOperation.Set(declaration.Collection, value)], cancellationToken).ConfigureAwait(false);
         await storage.SaveSnapshotAsync(Path.Combine(staging, DataAfterFile), cancellationToken).ConfigureAwait(false);
         await DurableFile.WriteAtomicallyAsync(Path.Combine(staging, ImportFile), WriteImport(record), cancellationToken).ConfigureAwait(false);
-        Directory.Move(staging, ImportFolder(id, number));
+        Bohm.Runtime.FolderMove.Move(staging, ImportFolder(id, number));
         await RememberAsync(id, declaration, plan.Columns, cancellationToken).ConfigureAwait(false);
         return record;
     }

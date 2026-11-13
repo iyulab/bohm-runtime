@@ -1875,7 +1875,7 @@ internal static partial class ControlPlane
 
             var discarded = Path.Combine(options.DataRoot, "discarded");
             Directory.CreateDirectory(discarded);
-            Directory.Move(folder, Path.Combine(discarded, DiscardedName(folder)));
+            Bohm.Runtime.FolderMove.Move(folder, Path.Combine(discarded, DiscardedName(folder)));
             return Task.CompletedTask;
         });
 
