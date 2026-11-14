@@ -438,6 +438,11 @@ internal static class WebAgent
             .Select(call => new HostToolCall(FreeId(call.CallId, taken), call.Name, JsonSerializer.SerializeToElement(call.Arguments ?? new Dictionary<string, object?>(), AgentJson.Default.IDictionaryStringObject)))
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        // Nothing at all — no text, no call, not cut at the length limit — is not an answer. A server that fails while
+        // streaming (llama.cpp writes its error as a line no client reads, after the response has begun) ends a stream this
+        // way; shown as «done» it reads as a model with nothing to say instead of one that failed.
+        if (text is null && pending.Count == 0 && !cutShort && !produced.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Any())
+            throw new EmptyAnswerException();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName, Usage: use)
             : new("done", text ?? "", [], modelName, cutShort ? Llm.ProposalFailedException.OutputLimit : null, use);
     }
@@ -701,3 +706,13 @@ internal static class WebAgent
 [System.Text.Json.Serialization.JsonSerializable(typeof(double))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(bool))]
 internal sealed partial class AgentJson : System.Text.Json.Serialization.JsonSerializerContext;
+
+/// <summary>The model ended its answer without writing anything or asking for a tool — a failure, not an empty answer.</summary>
+internal sealed class EmptyAnswerException : Exception
+{
+    public EmptyAnswerException() : base("The model returned no answer.") { }
+
+    public EmptyAnswerException(string message) : base(message) { }
+
+    public EmptyAnswerException(string message, Exception inner) : base(message, inner) { }
+}

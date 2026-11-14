@@ -685,6 +685,39 @@ public sealed class WebAgentTests : IDisposable
     }
 
     [Fact]
+    public async Task A_model_on_this_computer_that_answers_nothing_ends_the_turn_as_failed_not_as_an_empty_answer()
+    {
+        // llama.cpp writes a failure while streaming (a «Compute error» when the computer runs short of memory) as a line no
+        // client reads, after the response has begun: the stream just ends. Shown as done, the person saw «(No answer.)» and nothing to do.
+        _model.Reply = "";
+        await using var host = await StartWithLocalModelAsync();
+
+        using var response = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        var failed = Assert.Single(await LinesAsync(response));
+        Assert.Equal("failed", failed.GetProperty("status").GetString());
+        Assert.Equal("answer-failed", failed.GetProperty("model").GetProperty("reason").GetString());
+        Assert.Equal(JsonValueKind.Null, failed.GetProperty("model").GetProperty("detail").ValueKind);
+    }
+
+    [Fact]
+    public async Task A_model_on_this_computer_whose_server_fails_says_so_with_the_servers_words()
+    {
+        _model.Failure = new HttpRequestException("Inference backend returned 500 (InternalServerError): Compute error.");
+        await using var host = await StartWithLocalModelAsync();
+
+        using var lines = await TurnLinesAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        var failed = Assert.Single(await LinesAsync(lines));
+        Assert.Equal("answer-failed", failed.GetProperty("model").GetProperty("reason").GetString());
+        Assert.Contains("Compute error.", failed.GetProperty("model").GetProperty("detail").GetString(), StringComparison.Ordinal);
+
+        using var whole = await TurnAsync(host, """{"messages":[{"role":"user","text":"Hi"}]}""");
+        HttpAssert.Status(HttpStatusCode.ServiceUnavailable, whole);
+        Assert.Equal("answer-failed", JsonDocument.Parse(await whole.Content.ReadAsStringAsync()).RootElement.GetProperty("model").GetProperty("reason").GetString());
+    }
+
+    [Fact]
     public async Task Asked_for_lines_what_is_missing_is_still_said_by_the_status()
     {
         await using var host = await RunningHost.StartAsync();

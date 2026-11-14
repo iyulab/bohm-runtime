@@ -349,6 +349,20 @@ internal sealed record LocalModelFailure(string Reason, string? File = null, str
 
     /// <summary>The model library could not start the model.</summary>
     public const string StartFailed = "start-failed";
+
+    /// <summary>
+    /// The model was asked and gave no answer — its server failed while working (llama.cpp's «Compute error», most often
+    /// when the computer runs short of memory) or the answer came back empty. <see cref="LocalModelFailure.Detail"/> is the
+    /// server's own message when there was one.
+    /// </summary>
+    public const string AnswerFailed = "answer-failed";
+
+    /// <summary>
+    /// The failure to report for <paramref name="e"/>, raised while the model on this computer was answering: its own
+    /// reason when it has one (not chosen, missing, not started), otherwise that it was asked and did not answer.
+    /// </summary>
+    public static LocalModelFailure Answering(Exception e) =>
+        (e as LocalModelUnavailableException)?.Failure ?? new LocalModelFailure(AnswerFailed, Detail: e is Agent.EmptyAnswerException ? null : e.Message);
 }
 
 /// <summary>The configured local model could not be loaded.</summary>
