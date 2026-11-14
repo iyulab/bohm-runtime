@@ -107,6 +107,15 @@ public sealed record RuntimeHostOptions
     public bool McpAllowed { get; init; } = true;
 
     /// <summary>
+    /// Whether the person may use AI providers other than the servers an administrator listed (<see cref="CompanyModels"/>) and the
+    /// model on this computer — the built-in services and any provider or server the person adds. <see langword="false"/> is an
+    /// administrator's policy passed on by whoever starts the runtime: those providers are not listed, chosen, added or asked (their
+    /// models included), and an application's call to one is answered by a listed server or the model on this computer, or refused.
+    /// <see langword="true"/> by default.
+    /// </summary>
+    public bool RemoteProvidersAllowed { get; init; } = true;
+
+    /// <summary>
     /// The llama-server executable that runs a model the person chooses (see <c>/__control/llm/local-model</c>).
     /// Nothing is looked up or downloaded; <see langword="null"/>: a chosen model cannot be loaded (its
     /// state says why). Not used when <see cref="LocalModel"/> fixes the model.

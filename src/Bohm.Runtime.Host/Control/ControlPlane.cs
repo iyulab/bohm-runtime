@@ -1086,6 +1086,12 @@ internal static partial class ControlPlane
             case ("PUT", ["llm", "providers"]):
             {
                 var providers = context.RequestServices.GetRequiredService<ProviderCatalog>();
+                if (!context.RequestServices.GetRequiredService<RuntimeHostOptions>().RemoteProvidersAllowed)
+                {
+                    await RefuseRemoteProvidersAsync(context).ConfigureAwait(false);
+                    break;
+                }
+
                 if (!ProviderDeclaration.TryParse(System.Text.Encoding.UTF8.GetString(await ReadBodyAsync(request, cancel).ConfigureAwait(false)),
                         ProviderOrigin.Person, out var declared, out var declaredProblem, strictLimits: true))
                 {
@@ -1114,7 +1120,16 @@ internal static partial class ControlPlane
                 if (providers.ById(declared.Id) is { } previous && previous.BaseUrl.Authority != declared.BaseUrl.Authority)
                     context.RequestServices.GetRequiredService<ICredentialVault>().Delete(previous.VaultName);
 
-                await providers.AddAsync(declared, cancel).ConfigureAwait(false);
+                try
+                {
+                    await providers.AddAsync(declared, cancel).ConfigureAwait(false);
+                }
+                catch (RemoteProvidersTurnedOffException)
+                {
+                    await RefuseRemoteProvidersAsync(context).ConfigureAwait(false);
+                    break;
+                }
+
                 await WriteAsync(response, ProviderViewOf(providers.ById(declared.Id)!, context.RequestServices), cancel).ConfigureAwait(false);
                 break;
             }
@@ -1140,6 +1155,14 @@ internal static partial class ControlPlane
                 catch (JsonException)
                 {
                     response.StatusCode = StatusCodes.Status400BadRequest;
+                    break;
+                }
+
+                // Only a listed server may be asked when an administrator allowed no other provider — the address and key would leave this computer.
+                if (!context.RequestServices.GetRequiredService<RuntimeHostOptions>().RemoteProvidersAllowed
+                    && !context.RequestServices.GetRequiredService<ProviderCatalog>().IsListedServer(listAt!))
+                {
+                    await RefuseRemoteProvidersAsync(context).ConfigureAwait(false);
                     break;
                 }
 
@@ -2269,6 +2292,11 @@ internal static partial class ControlPlane
     internal sealed record ProposalFailure(LocalModelFailure? Model, string? Detail, Llm.ProviderRefusal? Provider, string? Stopped = null,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Llm.ProposalRounds? Rounds = null,
         [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Unreached = null);
+
+    /// <summary>The refusal when an administrator allowed only the servers they listed (<see cref="RuntimeHostOptions.RemoteProvidersAllowed"/>).</summary>
+    private static Task RefuseRemoteProvidersAsync(HttpContext context) =>
+        ControlProblems.RefuseAsync(context, StatusCodes.Status403Forbidden, "remote-providers-off",
+            "AI providers other than the servers an administrator listed are turned off on this computer.");
 
     /// <summary>Every provider to choose from — the built-in ones and the ones added.</summary>
     private static List<ProviderView> ProviderViewsOf(IServiceProvider services) =>

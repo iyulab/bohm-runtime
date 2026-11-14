@@ -33,8 +33,10 @@ internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
     /// Adds <paramref name="provider"/> (as one the person added), or replaces the one added under its id.
     /// A provider of the same id that an administrator listed stands over it.
     /// </summary>
+    /// <exception cref="RemoteProvidersTurnedOffException">An administrator allowed only the servers they listed.</exception>
     public async Task AddAsync(ProviderDeclaration provider, CancellationToken cancellationToken)
     {
+        if (!options.RemoteProvidersAllowed) throw new RemoteProvidersTurnedOffException();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -68,8 +70,19 @@ internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
         }
     }
 
+    /// <summary>
+    /// The sources joined — only the listed servers when an administrator allowed no other provider (<see cref="RuntimeHostOptions.RemoteProvidersAllowed"/>):
+    /// the built-in services and the person's own then drop out of every list, choice and call that reads this one, and a choice
+    /// remembered for one of them falls back as one taken away does.
+    /// </summary>
     private IReadOnlyList<ProviderDeclaration> Merged() =>
-        ProviderStore.Merge(ProviderDeclaration.BuiltIn.Select(Redirected), _added, options.CompanyModels?.ToDeclarations() ?? []);
+        options.RemoteProvidersAllowed
+            ? ProviderStore.Merge(ProviderDeclaration.BuiltIn.Select(Redirected), _added, options.CompanyModels?.ToDeclarations() ?? [])
+            : ProviderStore.Merge(options.CompanyModels?.ToDeclarations() ?? []);
+
+    /// <summary>Whether <paramref name="address"/> is a listed server's — the one place a list of models may be asked for when other providers are not allowed.</summary>
+    public bool IsListedServer(Uri address) =>
+        options.CompanyModels?.ToDeclarations().Any(p => p.BaseUrl == address) is true;
 
     /// <summary>
     /// A built-in provider at the gateway its traffic is sent to, when one is set: the gateway's address
@@ -82,3 +95,6 @@ internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
 
     public void Dispose() => _gate.Dispose();
 }
+
+/// <summary>An administrator allowed only the servers they listed (<see cref="RuntimeHostOptions.RemoteProvidersAllowed"/>).</summary>
+internal sealed class RemoteProvidersTurnedOffException() : Exception("AI providers other than the listed servers are turned off by policy.");

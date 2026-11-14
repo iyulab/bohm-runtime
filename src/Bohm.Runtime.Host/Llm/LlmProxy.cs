@@ -86,7 +86,10 @@ internal static class LlmProxy
             return;
         }
 
-        var key = context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName);
+        // An administrator allowed only the servers they listed: the provider's key is not used — a listed server or the model on this
+        // computer answers as it does for a provider with no key, and anything else is refused rather than sent (no key to connect either).
+        var remoteAllowed = context.RequestServices.GetRequiredService<RuntimeHostOptions>().RemoteProvidersAllowed;
+        var key = remoteAllowed ? context.RequestServices.GetRequiredService<ICredentialVault>().Read(provider.VaultName) : null;
         var local = context.RequestServices.GetRequiredService<LocalModel>();
         if (string.IsNullOrEmpty(key) && IsTranscription(provider, request.Method, providerPath)
             && await TranscribeKeylessAsync(context, app, provider, company, local.Configured).ConfigureAwait(false))
@@ -108,6 +111,13 @@ internal static class LlmProxy
                 await WriteErrorAsync(response, provider, HttpStatusCode.NotImplemented, "local_model_unsupported", why).ConfigureAwait(false);
                 return;
             }
+        }
+
+        if (!remoteAllowed)
+        {
+            await WriteErrorAsync(response, provider, HttpStatusCode.Forbidden, "remote_providers_off",
+                $"{provider.DisplayName} is turned off on this computer by its administrator. Ask them for the organization's AI server.").ConfigureAwait(false);
+            return;
         }
 
         if (string.IsNullOrEmpty(key))
@@ -432,6 +442,7 @@ internal static class LlmProxy
                     HttpStatusCode.Unauthorized => "UNAUTHENTICATED",
                     HttpStatusCode.BadRequest => "INVALID_ARGUMENT",
                     HttpStatusCode.NotImplemented => "UNIMPLEMENTED",
+                    HttpStatusCode.Forbidden => "PERMISSION_DENIED",
                     _ => "UNAVAILABLE",
                 } },
             },

@@ -6,7 +6,7 @@ using Bohm.Runtime.Host;
 using TauriKit.Sidecar.Loopback;
 
 // Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>]
-//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud]
+//        [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud] [--no-remote-providers]
 // The control API is enabled by passing a per-launch secret (32 characters or more) in the BOHM_RUNTIME_SECRET
 // environment variable (an environment variable, not an argument, so it does not show up in
 // process listings). Once listening, the host writes one line to standard output —
@@ -30,6 +30,8 @@ using TauriKit.Sidecar.Loopback;
 // --no-mcp turns MCP servers off for this run (an administrator's policy): none is listed, connected or
 // offered to the AI, and the person cannot add one. --no-cloud turns the Bohm account off for this run (an administrator's
 // policy): BOHM_CLOUD is not read, the account cannot be chosen, and nothing is sent to the cloud.
+// --no-remote-providers allows no AI provider but the listed servers (an administrator's policy): the built-in services and
+// the person's own providers are not listed, added or asked, and an application's call to one is not sent with its key.
 // BOHM_LLM_ENDPOINTS sends a provider's traffic to a gateway that speaks the same API instead of the provider
 // itself: `host=address` pairs separated by `;` (https, or http on this computer) — see LlmEndpointsVariable.
 // Pairs that cannot be used are left out and named on standard error.
@@ -46,7 +48,7 @@ using TauriKit.Sidecar.Loopback;
 // BOHM_VAULT_PREFIX (verification only) keeps the keys under that prefix in the Windows Credential
 // Manager or the macOS keychain instead of the person's (<name>.Bohm), so an automated check never reads, overwrites or deletes the person's keys
 // — and what a stopped check leaves behind is in its own space, not theirs.
-const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud]";
+const string usage = "Usage: Bohm.Runtime.Host --data-root <directory> [--port <n>] [--parent-pid <pid>] [--llama-server <path>] [--company-models <json> | --company-model-endpoint <url> --company-model <name>] [--no-mcp] [--no-cloud] [--no-remote-providers]";
 // What --help prints: the comment above, short — what someone running the runtime by hand needs to get to a first request.
 const string help = usage + """
 
@@ -62,6 +64,8 @@ const string help = usage + """
                                  The older way to name one such server and model.
       --no-mcp                   Turn MCP servers off for this run.
       --no-cloud                 Turn the Bohm account off for this run: nothing is sent to its cloud.
+      --no-remote-providers      Allow no AI provider but the servers in --company-models (and the model on this
+                                 computer): the built-in services and providers the person adds are turned off.
 
     Environment:
       BOHM_RUNTIME_SECRET        A per-launch secret, 32 characters or more, that turns the control API (/__control/)
@@ -185,6 +189,7 @@ var started = await RuntimeHost.StartAsync(new RuntimeHostOptions
     SpeechRuntimeDirectory = speechRuntime,
     CompanyModels = companyModels,
     McpAllowed = !args.Contains("--no-mcp"),
+    RemoteProvidersAllowed = !args.Contains("--no-remote-providers"),
     LlmEndpoints = llmEndpoints.Count > 0 ? llmEndpoints : null,
     ReviewModel = reviewModel,
     CloudEndpoint = cloudEndpoint,
