@@ -439,8 +439,9 @@ internal static class WebAgent
             .ToList();
         text = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         // Nothing at all — no text, no call, not cut at the length limit — is not an answer. A server that fails while
-        // streaming (llama.cpp writes its error as a line no client reads, after the response has begun) ends a stream this
-        // way; shown as «done» it reads as a model with nothing to say instead of one that failed.
+        // streaming (llama.cpp sends its error as a data event carrying an error object, after the response has begun, and a
+        // client that reads only choices skips it) ends a stream this way; shown as «done» it reads as a model with nothing
+        // to say instead of one that failed.
         if (text is null && pending.Count == 0 && !cutShort && !produced.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Any())
             throw new EmptyAnswerException();
         return pending.Count > 0 ? new("requires_action", text, pending, modelName, Usage: use)

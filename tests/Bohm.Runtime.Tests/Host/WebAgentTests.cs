@@ -687,8 +687,9 @@ public sealed class WebAgentTests : IDisposable
     [Fact]
     public async Task A_model_on_this_computer_that_answers_nothing_ends_the_turn_as_failed_not_as_an_empty_answer()
     {
-        // llama.cpp writes a failure while streaming (a «Compute error» when the computer runs short of memory) as a line no
-        // client reads, after the response has begun: the stream just ends. Shown as done, the person saw «(No answer.)» and nothing to do.
+        // llama.cpp sends a failure while streaming (a «Compute error» when the computer runs short of memory) as a data event
+        // carrying an error object, after the response has begun; a client that reads only choices skips it and the stream just
+        // ends. Shown as done, the person saw «(No answer.)» and nothing to do.
         _model.Reply = "";
         await using var host = await StartWithLocalModelAsync();
 
