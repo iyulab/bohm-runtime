@@ -22,6 +22,9 @@ public sealed class AppRelayFetchesTests
     [InlineData("""{"model":"m","tools":[{"type":"mcp","server_label":"x","server_url":"https://evil.example/mcp"}],"input":"hi"}""")]
     [InlineData("""{"contents":[],"tools":[{"google_search":{}}]}""")]
     [InlineData("""{"contents":[],"tools":[{"urlContext":{}}]}""")]
+    [InlineData("""{"model":"m","mcp_servers":[{"type":"url","url":"https://evil.example/mcp","name":"x"}],"messages":[]}""")]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"https://evil.example/d.pdf"}}]}]}""")]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://evil.example/i.png"}}]}]}]}""")]
     public void A_request_the_provider_would_fetch_for_is_found(string json) => Assert.NotNull(Find(json));
 
     [Theory]
@@ -30,6 +33,10 @@ public sealed class AppRelayFetchesTests
     [InlineData("""{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"url":{"type":"string"}}}}}]}""")]
     [InlineData("""{"contents":[{"parts":[{"inline_data":{"mime_type":"image/png","data":"AAAA"}}]}]}""")]
     [InlineData("""not json at all""")]
+    [InlineData("""{"model":"m","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"open_page","input":{"url":"https://example.com/a"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"done"}]}]}""")]
+    [InlineData("""{"contents":[{"role":"model","parts":[{"functionCall":{"name":"open_page","args":{"url":"https://example.com/a","image_url":"https://example.com/i.png"}}}]},{"role":"user","parts":[{"functionResponse":{"name":"open_page","response":{"url":"https://example.com/a"}}}]}]}""")]
+    [InlineData("""{"model":"m","messages":[],"tools":[{"name":"f","input_schema":{"type":"object","properties":{"image_url":{"type":"string","default":"https://example.com/"}}}}]}""")]
+    [InlineData("""{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi","url":"https://example.com/"}]}]}""")]
     public void Inline_data_text_and_function_tools_pass(string json) => Assert.Null(Find(json));
 
     [Fact]
@@ -46,9 +53,9 @@ public sealed class AppRelayFetchesTests
         var app = await host.AdoptAsync("<!doctype html><title>AI</title>");
         using var load = await host.ClientForApp(app).GetAsync("/");
         var setCookie = Assert.Single(load.Headers.GetValues("Set-Cookie"));
-        async Task<HttpResponseMessage> Send(string body)
+        async Task<HttpResponseMessage> Send(string body, string mediaType = "application/json")
         {
-            var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            var request = new HttpRequestMessage(HttpMethod.Post, "/__bohm/llm/api.openai.com/v1/chat/completions") { Content = new StringContent(body, Encoding.UTF8, mediaType) };
             request.Headers.Authorization = new("Bearer", $"bohm-key-{app}");
             request.Headers.Add("Cookie", setCookie[..setCookie.IndexOf(';', StringComparison.Ordinal)]);
             request.Headers.Add("Origin", $"http://{app}.localhost:{host.Port}");
@@ -60,6 +67,10 @@ public sealed class AppRelayFetchesTests
             HttpAssert.Status(HttpStatusCode.Forbidden, refused);
             Assert.Equal("bohm_fetch_not_allowed", JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("error").GetProperty("type").GetString());
         }
+
+        // The same body labelled as plain text is still read: the label does not decide whether it is looked at.
+        using (var relabelled = await Send("""{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://evil.example/x?d=1"}}]}]}""", "text/plain"))
+            HttpAssert.Status(HttpStatusCode.Forbidden, relabelled);
 
         Assert.Empty(provider.Received);
 

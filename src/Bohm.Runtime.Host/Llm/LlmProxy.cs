@@ -141,9 +141,10 @@ internal static class LlmProxy
         var query = QueryHelpers.ParseQuery(request.QueryString.Value);
         if (provider.Style == KeyStyle.Google && query.ContainsKey("key")) query["key"] = key;
 
-        // A JSON body is read whole to look for what the provider would fetch for it (AppRelayFetches) — within the server's own limit on a request body.
+        // A body is read whole to look for what the provider would fetch for it (AppRelayFetches) — within the server's own limit on a
+        // request body. Whatever its Content-Type says: a provider may read a JSON body sent as text/plain, so the label is not trusted.
         HttpContent? body = null;
-        if (request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) is true)
+        if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
         {
             using var buffer = new MemoryStream();
             await request.Body.CopyToAsync(buffer, context.RequestAborted).ConfigureAwait(false);
@@ -155,7 +156,7 @@ internal static class LlmProxy
             }
 
             body = new ByteArrayContent(buffer.ToArray());
-            body.Headers.TryAddWithoutValidation("Content-Type", request.ContentType);
+            if (request.ContentType is { } contentType) body.Headers.TryAddWithoutValidation("Content-Type", contentType);
         }
 
         await RelayAsync(context, provider, upstreamBase, providerPath, query, key, body).ConfigureAwait(false);
