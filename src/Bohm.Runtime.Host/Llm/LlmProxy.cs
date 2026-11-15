@@ -86,6 +86,14 @@ internal static class LlmProxy
             return;
         }
 
+        // Only using AI goes out with the person's key — not their files, batches, fine-tuning or anything deleted (AppRelayPaths).
+        if (!AppRelayPaths.Allows(provider, request.Method, providerPath))
+        {
+            await WriteErrorAsync(response, provider, HttpStatusCode.Forbidden, "path_not_allowed",
+                $"Bohm relays only AI requests (chat, embeddings, speech, images, models) to {provider.DisplayName}; this one acts on the account and is not sent.").ConfigureAwait(false);
+            return;
+        }
+
         // An administrator allowed only the servers they listed: the provider's key is not used — a listed server or the model on this
         // computer answers as it does for a provider with no key, and anything else is refused rather than sent (no key to connect either).
         var remoteAllowed = context.RequestServices.GetRequiredService<RuntimeHostOptions>().RemoteProvidersAllowed;

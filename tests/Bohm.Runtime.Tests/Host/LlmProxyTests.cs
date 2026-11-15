@@ -155,10 +155,10 @@ public sealed class LlmProxyTests : IAsyncLifetime
 
         using var response = await SendAsync(HttpMethod.Post, path, "{}", bearer: Placeholder);
 
-        // Refused (400, or 404 when the server normalises the path before it reaches the proxy), or
-        // delivered to the provider itself. An attempt to reach any other host would surface as 502
-        // (the attacker host does not resolve here), which must never happen.
-        Assert.True(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.NotFound or HttpStatusCode.OK, $"got {(int)response.StatusCode}");
+        // Refused (400, 403 when the path is not one an application may relay, or 404 when the server normalises the path
+        // before it reaches the proxy), or delivered to the provider itself. An attempt to reach any other host would surface
+        // as 502 (the attacker host does not resolve here), which must never happen.
+        Assert.True(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden or HttpStatusCode.NotFound or HttpStatusCode.OK, $"got {(int)response.StatusCode}");
     }
 
     [Fact]
