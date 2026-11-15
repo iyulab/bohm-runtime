@@ -140,7 +140,25 @@ internal static class LlmProxy
         var upstreamBase = options.LlmEndpoints?.GetValueOrDefault(provider.Host) ?? new Uri($"https://{provider.Host}/");
         var query = QueryHelpers.ParseQuery(request.QueryString.Value);
         if (provider.Style == KeyStyle.Google && query.ContainsKey("key")) query["key"] = key;
-        await RelayAsync(context, provider, upstreamBase, providerPath, query, key).ConfigureAwait(false);
+
+        // A JSON body is read whole to look for what the provider would fetch for it (AppRelayFetches) — within the server's own limit on a request body.
+        HttpContent? body = null;
+        if (request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) is true)
+        {
+            using var buffer = new MemoryStream();
+            await request.Body.CopyToAsync(buffer, context.RequestAborted).ConfigureAwait(false);
+            if (AppRelayFetches.Find(buffer.GetBuffer().AsSpan(0, (int)buffer.Length)) is { } fetch)
+            {
+                await WriteErrorAsync(response, provider, HttpStatusCode.Forbidden, "fetch_not_allowed",
+                    $"This request asks {provider.DisplayName} to fetch something itself ({fetch}); Bohm does not send it. Give images and files inline (base64).").ConfigureAwait(false);
+                return;
+            }
+
+            body = new ByteArrayContent(buffer.ToArray());
+            body.Headers.TryAddWithoutValidation("Content-Type", request.ContentType);
+        }
+
+        await RelayAsync(context, provider, upstreamBase, providerPath, query, key, body).ConfigureAwait(false);
     }
 
     /// <summary>
