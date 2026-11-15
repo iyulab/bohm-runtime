@@ -78,7 +78,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/llm</c></term><description>AI providers — the built-in ones and the ones added — each with its <c>origin</c> (<c>built-in</c> · <c>added</c> · <c>policy</c>), the <c>api</c> format it speaks, whether it takes a key (<c>keyRequired</c>), whether it can be used now (<c>connected</c>: its key is connected, or it takes none — never the key) and its listed <c>models</c>; and what, without a key, answers a built-in provider's chat requests: <c>company</c> (the organization's model server), <c>local</c> (the model on this computer) or nothing.</description></item>
 /// <item><term><c>PUT /__control/llm/providers</c></term><description>Adds the provider the body declares (<c>{ id, name?, baseUrl, api, auth?, models? }</c>; formats <c>openai-chat</c> · <c>openai-responses</c> · <c>anthropic-messages</c> · <c>google-gemini</c>; a model may carry its own <c>api</c> and <c>path</c>), or replaces the one added under its id. 400 <c>invalid-provider</c> with the property that cannot be used (a key in the declaration is refused); 409 <c>built-in-provider</c> for a built-in provider's id.</description></item>
 /// <item><term><c>DELETE /__control/llm/providers/{provider}</c></term><description>Removes a provider that was added, with its key; answers the list. 404 for any other.</description></item>
-/// <item><term><c>POST /__control/llm/providers/{provider}/check</c></term><description>Asks the provider one short question in its declared format (<c>{ "model": "…" }</c>, or the first listed): <c>{ result, status, unreached }</c> — <c>ok</c>, <c>key-refused</c> (401 · 403), <c>not-found</c> (404 — often an address whose path is not where the format is served), <c>bad-request</c> (400 · 422), <c>refused</c>, <c>unreachable</c> (<c>host-not-found</c> · <c>connection-refused</c> · <c>no-answer</c>) or <c>no-key</c> (nothing was sent). Counted as sent to the provider's host.</description></item>
+/// <item><term><c>POST /__control/llm/providers/{provider}/check</c></term><description>Asks the provider one short question in its declared format (<c>{ "model": "…" }</c>, or the first listed; <c>"key": "…"</c> tries that key instead of the connected one and keeps nothing — a key is checked before it replaces one that works): <c>{ result, status, unreached }</c> — <c>ok</c>, <c>key-refused</c> (401 · 403), <c>not-found</c> (404 — often an address whose path is not where the format is served), <c>bad-request</c> (400 · 422), <c>refused</c>, <c>unreachable</c> (<c>host-not-found</c> · <c>connection-refused</c> · <c>no-answer</c>) or <c>no-key</c> (nothing was sent). Counted as sent to the provider's host.</description></item>
 /// <item><term><c>PUT /__control/llm/{provider}/key</c></term><description>Connects the key in the body, stored in the vault. 409 for a provider declared as taking none.</description></item>
 /// <item><term><c>DELETE /__control/llm/{provider}/key</c></term><description>Disconnects it.</description></item>
 /// <item><term><c>GET /__control/llm/local-model</c></term><description>The model on this computer that answers when no key is connected: its file, its name to show (<c>name</c> — the catalog's, else the one the file gives itself, else null), whether it is loaded or loading, why the last load failed, and whether it was fixed at start.</description></item>
@@ -1206,6 +1206,7 @@ internal static partial class ControlPlane
                 }
 
                 string? askedModel = null;
+                string? triedKey = null;
                 try
                 {
                     var body = await ReadBodyAsync(request, cancel).ConfigureAwait(false);
@@ -1214,6 +1215,10 @@ internal static partial class ControlPlane
                         using var asked = JsonDocument.Parse(body);
                         if (asked.RootElement.ValueKind == JsonValueKind.Object && asked.RootElement.TryGetProperty("model", out var named) && named.ValueKind == JsonValueKind.String)
                             askedModel = named.GetString()?.Trim();
+                        // A key to try before it is connected: the check asks with it and keeps nothing, so a refused key does not replace the one that works.
+                        if (asked.RootElement.ValueKind == JsonValueKind.Object && asked.RootElement.TryGetProperty("key", out var tried) && tried.ValueKind == JsonValueKind.String
+                            && tried.GetString()?.Trim() is { Length: > 0 } given)
+                            triedKey = given;
                     }
                 }
                 catch (JsonException)
@@ -1231,7 +1236,14 @@ internal static partial class ControlPlane
                     break;
                 }
 
-                var checkKey = !checking.Auth.TakesKey ? null : context.RequestServices.GetRequiredService<ICredentialVault>().Read(checking.VaultName);
+                if (triedKey is not null && !checking.Auth.TakesKey)
+                {
+                    await ControlProblems.RefuseAsync(context, StatusCodes.Status409Conflict, "takes-no-key",
+                        "This provider is declared as taking no key.").ConfigureAwait(false);
+                    break;
+                }
+
+                var checkKey = !checking.Auth.TakesKey ? null : triedKey ?? context.RequestServices.GetRequiredService<ICredentialVault>().Read(checking.VaultName);
                 if (checking.Auth.KeyRequired && string.IsNullOrEmpty(checkKey))
                 {
                     await WriteAsync(response, new ProviderCheck("no-key"), cancel).ConfigureAwait(false);

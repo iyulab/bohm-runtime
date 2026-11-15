@@ -189,6 +189,34 @@ public sealed class ProviderControlTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_key_tried_before_it_is_connected_is_asked_with_and_the_connected_one_stays()
+    {
+        await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("gateway"));
+        var vault = _host.Services.GetRequiredService<ICredentialVault>();
+        vault.Write("llm/gateway", Key);
+        _provider.Refusal = (403, """{"error":{"message":"no"}}""");
+
+        var (_, result) = await SendAsync(HttpMethod.Post, "/__control/llm/providers/gateway/check", """{ "model": "model-a", "key": " sk-new-wrong-0123456789 " }""");
+
+        Assert.Equal("key-refused", result.GetProperty("result").GetString());
+        Assert.Equal("Bearer sk-new-wrong-0123456789", Assert.Single(_provider.Received).Headers["Authorization"]);   // asked with the key tried
+        Assert.Equal(Key, vault.Read("llm/gateway"));   // the connected key is not replaced
+    }
+
+    [Fact]
+    public async Task A_key_tried_on_a_provider_that_takes_none_is_refused_and_nothing_is_sent()
+    {
+        await SendAsync(HttpMethod.Put, "/__control/llm/providers",
+            $$"""{ "id": "open", "baseUrl": "{{_provider.Address}}", "api": "openai-chat", "auth": { "style": "none" }, "models": [{ "id": "m" }] }""");
+
+        var (status, problem) = await SendAsync(HttpMethod.Post, "/__control/llm/providers/open/check", """{ "key": "sk-0123456789" }""");
+
+        Assert.Equal(HttpStatusCode.Conflict, status);
+        Assert.Equal("takes-no-key", problem.GetProperty("reason").GetString());
+        Assert.Empty(_provider.Received);
+    }
+
+    [Fact]
     public async Task The_check_of_a_provider_whose_key_is_not_connected_says_so_and_sends_nothing()
     {
         await SendAsync(HttpMethod.Put, "/__control/llm/providers", Declaration("gateway"));
