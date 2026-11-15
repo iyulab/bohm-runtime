@@ -146,13 +146,15 @@ internal sealed class LMSupplyModelSource(string? serverPath) : IModelSource
     /// <summary>
     /// The library's failures in the interface's terms: no such model — including a repository the Hub refuses, which it
     /// answers the same whether it does not exist or is private or gated — as <see cref="KeyNotFoundException"/>, and a
-    /// download the network broke as <see cref="HttpRequestException"/>. <see langword="null"/>: leave it as it is.
+    /// download the network broke as <see cref="HttpRequestException"/>, and a volume without room as <see cref="IOException"/>.
+/// <see langword="null"/>: leave it as it is.
     /// </summary>
     internal static Exception? Translated(Exception e) => e switch
     {
         ModelNotFoundException => new KeyNotFoundException(e.Message, e),
         UnauthorizedAccessException { InnerException: HttpRequestException } => new KeyNotFoundException(e.Message, e),
         ModelDownloadException { InnerException: HttpRequestException inner } => new HttpRequestException(e.Message, e, inner.StatusCode),
+        InsufficientDiskSpaceException => new IOException(e.Message, e),
         _ => null,
     };
 }

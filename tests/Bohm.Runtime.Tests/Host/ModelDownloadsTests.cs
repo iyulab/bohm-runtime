@@ -28,6 +28,10 @@ public sealed class ModelDownloadsTests : IDisposable
         Assert.Equal(HttpStatusCode.BadGateway, network.StatusCode);
         Assert.IsType<KeyNotFoundException>(LMSupplyModelSource.Translated(new LMSupply.Exceptions.ModelNotFoundException("no such model", "m")));
         Assert.Null(LMSupplyModelSource.Translated(new LMSupply.Exceptions.ModelDownloadException("disk full", "m", new IOException("full"))));
+        // LMSupply 0.143 says a volume without room as its own exception (a ModelDownloadException) instead of a bare IOException —
+        // still read as the disk, which the download view shows as «not enough room».
+        var room = Assert.IsType<IOException>(LMSupplyModelSource.Translated(new LMSupply.Exceptions.InsufficientDiskSpaceException("no room", "m", "/models", 10, 1, null)));
+        Assert.Equal("no room", room.Message);
     }
 
     [Fact]
