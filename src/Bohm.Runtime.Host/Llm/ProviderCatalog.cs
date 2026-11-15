@@ -34,9 +34,16 @@ internal sealed class ProviderCatalog(RuntimeHostOptions options) : IDisposable
     /// A provider of the same id that an administrator listed stands over it.
     /// </summary>
     /// <exception cref="RemoteProvidersTurnedOffException">An administrator allowed only the servers they listed.</exception>
-    public async Task AddAsync(ProviderDeclaration provider, CancellationToken cancellationToken)
+    public Task AddAsync(ProviderDeclaration provider, CancellationToken cancellationToken) =>
+        options.RemoteProvidersAllowed ? KeepAsync(provider, cancellationToken) : throw new RemoteProvidersTurnedOffException();
+
+    /// <summary>
+    /// Keeps <paramref name="provider"/> among the ones the person added whatever the policy — for carrying over what the person already
+    /// had (an older launch's server): it stays in their file, out of every list while the policy allows only the listed servers, and
+    /// back when it no longer does. Not for adding something new (<see cref="AddAsync"/>).
+    /// </summary>
+    public async Task KeepAsync(ProviderDeclaration provider, CancellationToken cancellationToken)
     {
-        if (!options.RemoteProvidersAllowed) throw new RemoteProvidersTurnedOffException();
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {

@@ -264,7 +264,8 @@ internal sealed partial class AnswerModel : IDisposable
         }
         else
         {
-            _catalog.AddAsync(PersonDeclaration(legacy), CancellationToken.None).GetAwaiter().GetResult();
+            // Kept whatever the policy: what the person had is carried over, not added — out of the lists while only listed servers are allowed.
+            _catalog.KeepAsync(PersonDeclaration(legacy), CancellationToken.None).GetAwaiter().GetResult();
             WriteSelection(PersonServerId, legacy.Model);
             var moved = ProviderDeclaration.VaultNameOf(PersonServerId);
             if (_vault.Read(VaultName) is { Length: > 0 } key)

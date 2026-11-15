@@ -98,4 +98,21 @@ public sealed class RemoteProvidersPolicyTests
         var status = JsonDocument.Parse(await host.ControlClient().GetStringAsync($"/__control/apps/{app}/status")).RootElement;
         Assert.Empty(status.GetProperty("needsKey").EnumerateArray());
     }
+
+    [Fact]
+    public async Task An_older_launchs_own_server_is_carried_over_without_failing_and_kept_out_of_the_lists()
+    {
+        var dataRoot = Directory.CreateTempSubdirectory("bohm-rpp-legacy-").FullName;
+        File.WriteAllText(Path.Combine(dataRoot, "company-model.json"),
+            """{"format":"bohm.company-model/0","endpoint":"http://models.example:8000/v1/","model":"qwen"}""");
+
+        await using var host = await RunningHost.StartAsync(dataRoot, configure: o => o with { RemoteProvidersAllowed = false });
+
+        var providers = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm")).RootElement;
+        Assert.Equal(0, providers.GetArrayLength());
+        var answer = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/answer-model")).RootElement;
+        Assert.Equal(JsonValueKind.Null, answer.GetProperty("endpoint").ValueKind);   // the person's own server does not answer under the policy
+        Assert.Contains("\"my-server\"", await File.ReadAllTextAsync(Path.Combine(dataRoot, "providers.json")), StringComparison.Ordinal);   // kept for when it is lifted
+        Assert.False(File.Exists(Path.Combine(dataRoot, "company-model.json")));
+    }
 }
