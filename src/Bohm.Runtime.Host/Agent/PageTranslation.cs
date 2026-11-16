@@ -27,6 +27,22 @@ internal static partial class PageTranslation
     public sealed class Failed(string message) : Exception(message);
 
     /// <summary>
+    /// The request's options. Room for the whole answer: a translation runs about as long as its text in tokens, and Korean
+    /// longer — without this a model's default bound (a model on this computer answers a few hundred tokens a round) cuts
+    /// the answer partway. A fixed sampling temperature only for the model on this computer, whose server we run: a remote
+    /// provider may refuse any sampling value but its own (current Anthropic models answer a set temperature with a 400),
+    /// and a gateway in between may pass that refusal on without its reason.
+    /// </summary>
+    internal static ChatOptions Options(IReadOnlyList<string> texts, bool onThisComputer, bool thinks)
+    {
+        var room = Math.Clamp(texts.Sum(text => text.Length) * 2 + 64 * texts.Count, 1024, 16384);
+        var options = new ChatOptions { ResponseFormat = ChatResponseFormat.Json, MaxOutputTokens = room };
+        if (onThisComputer) options.Temperature = 0;
+        if (thinks) options.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.None };
+        return options;
+    }
+
+    /// <summary>
     /// <paramref name="texts"/> in <paramref name="language"/> (a BCP 47 tag, <c>ko</c> or <c>en</c>), in the same order —
     /// <see langword="null"/> for a piece the model did not answer.
     /// </summary>
@@ -35,11 +51,7 @@ internal static partial class PageTranslation
         IChatClient model, Llm.ModelLimits limits, bool onThisComputer, IReadOnlyList<string> texts, string language, CancellationToken cancellationToken)
     {
         var client = new TransientRetryChatClient(model);
-        // Room for the whole answer: a translation runs about as long as its text in tokens, and Korean longer — without this
-        // a model's default bound (a model on this computer answers a few hundred tokens a round) cuts the answer partway.
-        var room = Math.Clamp(texts.Sum(text => text.Length) * 2 + 64 * texts.Count, 1024, 16384);
-        var options = new ChatOptions { ResponseFormat = ChatResponseFormat.Json, Temperature = 0, MaxOutputTokens = room };
-        if (Llm.ModelLimits.Of(model, limits).ThinksOn(onThisComputer)) options.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.None };
+        var options = Options(texts, onThisComputer, Llm.ModelLimits.Of(model, limits).ThinksOn(onThisComputer));
         var instruction = new ChatMessage(ChatRole.System, Instruction(LanguageName(language)));
         var translated = new string?[texts.Count];
         var last = "";

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Bohm.Runtime.Host.Agent;
 using Bohm.Runtime.Host.Llm;
+using Microsoft.Extensions.AI;
 
 namespace Bohm.Runtime.Tests.Host;
 
@@ -146,5 +147,18 @@ public sealed class PageTranslationTests
         var client = host.ControlClient();
         client.Timeout = TimeSpan.FromMinutes(5);
         return client.PostAsync("/__control/agent/translate", new StringContent(body, Encoding.UTF8, "application/json"));
+    }
+
+    [Fact]
+    public void Only_the_model_on_this_computer_is_asked_for_a_fixed_temperature()
+    {
+        // A remote provider may refuse any sampling value but its own — a gateway answered `temperature: 0` with a bare 400.
+        var remote = PageTranslation.Options(["Hello", "World"], onThisComputer: false, thinks: false);
+        Assert.Null(remote.Temperature);
+        Assert.Null(remote.Reasoning);
+        Assert.Equal(1024, remote.MaxOutputTokens);
+        var local = PageTranslation.Options(["Hello"], onThisComputer: true, thinks: true);
+        Assert.Equal(0f, local.Temperature);
+        Assert.Equal(ReasoningEffort.None, local.Reasoning?.Effort);
     }
 }
