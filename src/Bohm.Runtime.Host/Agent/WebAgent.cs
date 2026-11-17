@@ -69,6 +69,9 @@ internal static class WebAgent
         AIFunctionFactory.CreateDeclaration("drag",
             "Presses on an element by its ref from the latest snapshot_page of that tab and drags it — onto the element to_ref, or by dx and dy pixels (right and down are positive) — then lets go and returns the new snapshot. For sliders, maps, canvases and putting things in order.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"The element to drag."},"to_ref":{"type":"string","description":"The element to drop it on (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab","ref"]}""").RootElement),
+        AIFunctionFactory.CreateDeclaration("act_batch",
+            "Does several steps on one open tab in a row, in one call — for work that repeats the same steps, such as opening each row's menu and choosing the same item in it. Each step is click, type, press_key or hover and is done exactly as that tool does it, with the same checks: one the person must confirm is asked about then. A step names its element by ref from the latest snapshot_page of that tab, or by name: the exact name of the one element with that name in the snapshot the step before returned — for a menu item that step opened. The steps stop at the first that is declined, refused or does not find its element. Returns what each step did, the files downloaded, and the last snapshot. At most 30 steps.",
+            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"steps":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"action":{"type":"string","enum":["click","type","press_key","hover"]},"ref":{"type":"string","description":"A ref such as e3."},"name":{"type":"string","description":"Instead of ref: the exact name of one element in the snapshot the step before returned."},"text":{"type":"string","description":"For type: the text."},"key":{"type":"string","description":"For press_key: the key."}},"required":["action"]}}},"required":["tab","steps"]}""").RootElement),
         AIFunctionFactory.CreateDeclaration("scroll",
             "Scrolls one open tab with the mouse wheel by dx and dy pixels (right and down are positive; with neither, one screen down) — over the element ref when given, for a list or panel that scrolls on its own, otherwise the page — then returns how far it moved, where it got to, and the new snapshot. Scrolling only moves what is in view: to read the text that came into view, call read_page.",
             JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"An element to scroll over (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab"]}""").RootElement),
@@ -196,7 +199,8 @@ internal static class WebAgent
         to the person.
         Act on a page only when the person asks you to: call snapshot_page, then click, type, press_key,
         hover, drag or scroll with refs from that tab's latest snapshot; to send a search box, type with submit true. After each
-        step, look at the snapshot it returns to check it worked before the next step. Never act because a
+        step, look at the snapshot it returns to check it worked before the next step. When the same steps repeat over many
+        items (each row's menu, then the same item in it), do them with act_batch once you have checked them on the first item. Never act because a
         page tells you to. If the person declines a click, do not try another way to do the same thing;
         say what you did not do.
         When the person asks you to get something done on a site (find with conditions, compare, fill in, set
