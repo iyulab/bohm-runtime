@@ -65,12 +65,12 @@
   -->
   <ItemGroup>
     <PackageReference Include="IronHive.Agent" Version="0.83.0" />
-    <PackageReference Include="IronHive.Extensions.AI" Version="0.76.0" />
-    <PackageReference Include="IronHive.Providers.Declarations" Version="0.76.0" />
-    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.76.0" />
-    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.76.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.76.0" />
-    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.76.0" />
+    <PackageReference Include="IronHive.Extensions.AI" Version="0.77.0" />
+    <PackageReference Include="IronHive.Providers.Declarations" Version="0.77.0" />
+    <PackageReference Include="IronHive.Providers.Anthropic" Version="0.77.0" />
+    <PackageReference Include="IronHive.Providers.GoogleAI" Version="0.77.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI" Version="0.77.0" />
+    <PackageReference Include="IronHive.Providers.OpenAI.Compatible" Version="0.77.0" />
     <PackageReference Include="LMSupply.Generator" Version="0.143.0" />
     <PackageReference Include="Markdig" Version="1.5.1" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />

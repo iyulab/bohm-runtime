@@ -184,6 +184,31 @@ public sealed class WebAgentTests : IDisposable
         Assert.Contains("Call no tool", messages[^1].Text, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task On_the_last_round_an_OpenAI_compatible_server_is_sent_the_tools_with_the_choice_of_none()
+    {
+        // A conversation that already holds tool calls, sent with tool_choice "none" but without the tools themselves,
+        // is refused by gateways in front of some models (HTTP 400) — the last round must carry both.
+        await using var server = await FakeProvider.StartAsync();
+        await using var host = await RunningHost.StartAsync(configure: o => o with
+        {
+            CompanyModels = CompanyModelList.Of(new CompanyModelOptions(new Uri(server.Address, "v1/"), "org-model")),
+        });
+
+        using var response = await TurnAsync(host, """
+            {"last":true,"messages":[
+              {"role":"user","text":"How do I register my car for parking?"},
+              {"role":"assistant","toolCalls":[{"id":"c1","name":"read_page","arguments":{"tab":"web-1"}}]},
+              {"role":"tool","toolCallId":"c1","text":"Title: Search\nNo results for parking."}
+            ]}
+            """);
+
+        HttpAssert.Status(HttpStatusCode.OK, response);
+        using var sent = JsonDocument.Parse(Assert.Single(server.Asked).Body);
+        Assert.Equal("none", sent.RootElement.GetProperty("tool_choice").GetString());
+        Assert.NotEmpty(sent.RootElement.GetProperty("tools").EnumerateArray());
+    }
+
     [Theory]
     [InlineData("Let me check one more time.<tool_call>\n<function=")]
     [InlineData("Let me check one more time.<tool_call>\n<function=click>\n<")]
