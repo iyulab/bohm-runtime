@@ -171,7 +171,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
 
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var declared = provider.Find(chosen.Model);
-        var kept = Kept(chosen, provider.BaseUrl + "\n" + key, () => Counted(provider, declared, chosen.Model, key));
+        var kept = Kept(chosen, Identity(provider, key), () => Counted(provider, declared, chosen.Model, key));
         await AskWindowAsync(kept, provider, declared, chosen.Model, key, cancellationToken).ConfigureAwait(false);
         return new(kept, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
     }
@@ -206,6 +206,17 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
                 if (ReferenceEquals(_windowAskedFor, client)) _windowAskedFor = null;   // asked again next time
             throw;
         }
+    }
+
+    /// <summary>
+    /// What a kept client was made from: the provider as declared now (address, format, how the key goes, what is said of each model) and
+    /// the key. A provider declared again under the same id — another answer bound, a model said not to think — is a new client, not the old one.
+    /// </summary>
+    private static string Identity(ProviderDeclaration provider, string? key)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer)) provider.WriteTo(writer);
+        return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan) + "\n" + key;
     }
 
     /// <summary>The key connected for <paramref name="provider"/>, or <see langword="null"/> when it takes none or none is connected.</summary>
@@ -249,7 +260,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         if (options.ReviewModel is not { } review || catalog.ById(review.Provider) is not { } provider) return null;
         var key = KeyOf(provider);
         if (provider.Auth.KeyRequired && key is null) return null;
-        var identity = provider.BaseUrl + "\n" + key;
+        var identity = Identity(provider, key);
         lock (_clientLock)
         {
             if (_reviewer is { } kept && kept.Key == identity) return (kept.Client, $"{provider.Id}/{review.Model}");

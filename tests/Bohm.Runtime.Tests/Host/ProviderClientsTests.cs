@@ -317,6 +317,26 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_provider_declared_again_is_asked_as_now_declared_not_as_before()
+    {
+        await ChooseAsync("ollama", "llama");
+        var agent = _host.Services.GetRequiredService<AgentModel>();
+        var before = await agent.GetAsync(CancellationToken.None);
+        Assert.Equal(new ModelLimits(8192, 1024), ModelLimits.Of(before!.Client, before.Limits));
+
+        // The person changes what they said of the model — its answer bound, and that it does not think — under the same id and address.
+        Assert.True(ProviderDeclaration.TryParse($$"""
+            { "id": "ollama", "name": "Ollama", "baseUrl": "{{_provider.Address}}", "api": "openai-chat", "auth": { "style": "none" },
+              "models": [ { "id": "llama", "contextWindow": 8192, "maxTokens": 512, "reasoning": false, "input": ["text", "image"] } ] }
+            """, ProviderOrigin.Person, out var changed, out var problem), problem);
+        await _host.Services.GetRequiredService<ProviderCatalog>().AddAsync(changed!, CancellationToken.None);
+
+        var after = await agent.GetAsync(CancellationToken.None);
+        Assert.NotSame(before.Client, after!.Client);
+        Assert.Equal(new ModelLimits(8192, 512, false), ModelLimits.Of(after.Client, after.Limits));
+    }
+
+    [Fact]
     public async Task A_choice_whose_provider_has_been_taken_away_is_no_longer_a_choice()
     {
         await ChooseAsync("ollama", "llama");
