@@ -145,6 +145,20 @@ public sealed class ModelLimitsTests
         Assert.True(fitted.Limits.ThinksOn(onThisComputer: false)); // so the next task asks it to think briefly
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Thinking_whose_text_is_withheld_still_marks_a_model_that_thinks(bool streamed)
+    {
+        // A server may keep the thinking itself back and send only its signature — the model still spent its answer on it.
+        var fitted = new ModelFitChatClient(new Thinks(withheld: true), ModelLimits.Unknown);
+
+        if (streamed) await fitted.GetStreamingResponseAsync(Question, null, TestContext.Current.CancellationToken).ToListAsync(TestContext.Current.CancellationToken);
+        else await fitted.GetResponseAsync(Question, null, TestContext.Current.CancellationToken);
+
+        Assert.True(fitted.Limits.Reasoning);
+    }
+
     [Fact]
     public async Task A_model_said_not_to_think_stays_so_whatever_its_answers_carry()
     {
@@ -165,17 +179,19 @@ public sealed class ModelLimitsTests
         Assert.Null(fitted.Limits.Reasoning);
     }
 
-    /// <summary>A model that thinks before every answer, as a server sends it (the thinking as its own content).</summary>
-    private sealed class Thinks : IChatClient
+    /// <summary>A model that thinks before every answer, as a server sends it (the thinking as its own content — or, <paramref name="withheld"/>, only its signature).</summary>
+    private sealed class Thinks(bool withheld = false) : IChatClient
     {
+        private TextReasoningContent Thinking() => withheld ? new TextReasoningContent("") { ProtectedData = "c2lnbmF0dXJl" } : new TextReasoningContent("The person wants OK.");
+
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [new TextReasoningContent("The person wants OK."), new TextContent("OK")])));
+            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [Thinking(), new TextContent("OK")])));
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.Yield();
-            yield return new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent("The person wants OK.")]);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [Thinking()]);
             yield return new ChatResponseUpdate(ChatRole.Assistant, "OK");
         }
 

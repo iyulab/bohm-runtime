@@ -118,7 +118,8 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
     /// </summary>
     private void Saw(IList<AIContent> contents)
     {
-        if (_seenThinking || !contents.Any(c => c is TextReasoningContent { Text.Length: > 0 })) return;
+        // A server may withhold the thinking and send only its signature (an empty text with protected data) — it was thought all the same.
+        if (_seenThinking || !contents.Any(c => c is TextReasoningContent r && (r.Text.Length > 0 || !string.IsNullOrEmpty(r.ProtectedData)))) return;
         _seenThinking = true;
         if (limits.Reasoning is null) thinkingLearned?.Invoke();
     }
