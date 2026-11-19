@@ -47,55 +47,55 @@ internal static class WebAgent
     [
         AIFunctionFactory.CreateDeclaration("list_tabs",
             "Lists the tabs open in the person's browser that you may read: each tab's id, title and address.",
-            JsonDocument.Parse("""{"type":"object","properties":{}}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{}}""")),
         AIFunctionFactory.CreateDeclaration("read_page",
             "Reads one open tab: its title, address, the text the person selected, and the page's main text from its top, whatever is in view. A long page comes in parts: the end of a part says where to go on with from.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id, from list_tabs or from the question."},"from":{"type":"integer","description":"Where to go on reading a long page, as the end of the last part says (optional)."}},"required":["tab"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id, from list_tabs or from the question."},"from":{"type":"integer","description":"Where to go on reading a long page, as the end of the last part says (optional)."}},"required":["tab"]}""")),
         AIFunctionFactory.CreateDeclaration("snapshot_page",
             "Lists what can be clicked or filled in one open tab, each with a ref (e1, e2, ...). An element keeps its ref while it stays on the page; the ref of an element no longer listed does not work.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}""")),
         AIFunctionFactory.CreateDeclaration("click",
             "Clicks an element by its ref from the latest snapshot_page of that tab, then returns the new snapshot. With button right it right-clicks (a context menu); with hold_ms it keeps the button down that long before letting go (press and hold). Before a click that submits, pays, posts, sends or deletes, the shell itself asks the person to confirm, so when they asked for it, call click instead of asking them again in your answer.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"A ref such as e3."},"button":{"type":"string","enum":["left","right"],"description":"left (the default) or right."},"hold_ms":{"type":"integer","description":"Milliseconds to hold the button down (optional, at most 10000)."}},"required":["tab","ref"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"A ref such as e3."},"button":{"type":"string","enum":["left","right"],"description":"left (the default) or right."},"hold_ms":{"type":"integer","description":"Milliseconds to hold the button down (optional, at most 10000)."}},"required":["tab","ref"]}""")),
         AIFunctionFactory.CreateDeclaration("type",
             "Sets a field by its ref from the latest snapshot_page of that tab, then returns the new snapshot: replaces a text field's text, picks a list box's option by its name, sets a date or time field, or moves a slider to a number within its [min max]. With submit true it then presses Enter in the field, as press_key does — for a search box.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press Enter after typing."}},"required":["tab","ref","text"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"submit":{"type":"boolean","description":"Press Enter after typing."}},"required":["tab","ref","text"]}""")),
         AIFunctionFactory.CreateDeclaration("press_key",
             "Presses a key in one open tab — on the element ref from its latest snapshot_page when given, otherwise where the focus is — waits for any page it opens to load, then returns the new snapshot. Keys: Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, PageUp, PageDown, Home, End, F1 to F12 — alone or held with Control, Shift, Alt or Meta, joined with + (Control+Shift+Y, Shift+Tab); a single letter or digit only with one of those (to type text, use type). Before an Enter that submits, the shell itself asks the person when it must.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"key":{"type":"string"},"ref":{"type":"string","description":"A ref such as e3 (optional)."}},"required":["tab","key"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"key":{"type":"string"},"ref":{"type":"string","description":"A ref such as e3 (optional)."}},"required":["tab","key"]}""")),
         AIFunctionFactory.CreateDeclaration("hover",
             "Moves the mouse over an element by its ref from the latest snapshot_page of that tab, as a person points at it — for a menu that opens on hover or a tip — then returns the new snapshot.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string"}},"required":["tab","ref"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string"}},"required":["tab","ref"]}""")),
         AIFunctionFactory.CreateDeclaration("drag",
             "Presses on an element by its ref from the latest snapshot_page of that tab and drags it — onto the element to_ref, or by dx and dy pixels (right and down are positive) — then lets go and returns the new snapshot. For sliders, maps, canvases and putting things in order.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"The element to drag."},"to_ref":{"type":"string","description":"The element to drop it on (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab","ref"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"The element to drag."},"to_ref":{"type":"string","description":"The element to drop it on (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab","ref"]}""")),
         AIFunctionFactory.CreateDeclaration("act_batch",
             "Does several steps on one open tab in a row, in one call — for work that repeats the same steps, such as opening each row's menu and choosing the same item in it. Each step is click, type, press_key or hover and is done exactly as that tool does it, with the same checks: one the person must confirm is asked about then. A step names its element by ref from the latest snapshot_page of that tab, or by name: the exact name of the one element with that name in the snapshot the step before returned — for a menu item that step opened. The steps stop at the first that is declined, refused or does not find its element. Returns what each step did, the files downloaded, and the last snapshot. At most 30 steps.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"steps":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"action":{"type":"string","enum":["click","type","press_key","hover"]},"ref":{"type":"string","description":"A ref such as e3."},"name":{"type":"string","description":"Instead of ref: the exact name of one element in the snapshot the step before returned."},"text":{"type":"string","description":"For type: the text."},"key":{"type":"string","description":"For press_key: the key."}},"required":["action"]}}},"required":["tab","steps"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"steps":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"action":{"type":"string","enum":["click","type","press_key","hover"]},"ref":{"type":"string","description":"A ref such as e3."},"name":{"type":"string","description":"Instead of ref: the exact name of one element in the snapshot the step before returned."},"text":{"type":"string","description":"For type: the text."},"key":{"type":"string","description":"For press_key: the key."}},"required":["action"]}}},"required":["tab","steps"]}""")),
         AIFunctionFactory.CreateDeclaration("scroll",
             "Scrolls one open tab with the mouse wheel by dx and dy pixels (right and down are positive; with neither, one screen down) — over the element ref when given, for a list or panel that scrolls on its own, otherwise the page — then returns how far it moved, where it got to, and the new snapshot. Scrolling only moves what is in view: to read the text that came into view, call read_page.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"An element to scroll over (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"ref":{"type":"string","description":"An element to scroll over (optional)."},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["tab"]}""")),
         AIFunctionFactory.CreateDeclaration("navigate",
             "Goes to an address, or searches the web for words with the person's search engine: in the given web tab, or in a new tab when no tab is given. Waits for the page to load, then returns its snapshot and the tab's id. A site whose robots.txt asks agents to stay out is not opened, and the result says so.",
-            JsonDocument.Parse("""{"type":"object","properties":{"url":{"type":"string","description":"An address such as example.com, or words to search for."},"tab":{"type":"string","description":"The tab to go in (optional — a new tab when left out)."}},"required":["url"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"url":{"type":"string","description":"An address such as example.com, or words to search for."},"tab":{"type":"string","description":"The tab to go in (optional — a new tab when left out)."}},"required":["url"]}""")),
         AIFunctionFactory.CreateDeclaration("go_back",
             "Goes back one page in a tab's history, waits for it to load, then returns its snapshot.",
-            JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string"}},"required":["tab"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"}},"required":["tab"]}""")),
         AIFunctionFactory.CreateDeclaration("change_app",
             "Suggests a change to the app the person has open in front (an app made in Bohm), as they asked for it in words. The browser makes the suggestion in that app's edit panel, where the person reviews it, can ask for more changes on top of it, and applies it — nothing changes until they apply. Call it once, only when they ask to change that app.",
-            JsonDocument.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"What to change, in the person's own words and language."}},"required":["request"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"What to change, in the person's own words and language."}},"required":["request"]}""")),
         AIFunctionFactory.CreateDeclaration("make_app",
             "Starts making a new app in Bohm from what the person asked for in words — a list, a log, a tracker, a form they fill in and keep. The browser makes it the way its own «Make the app» does: it may ask the person a question first, builds the app, checks that it works and lets the person try it before they save it. Call it once, only when they ask for a new app; it is not for a page, a document or an answer.",
-            JsonDocument.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"The app they asked for, in the person's own words and language."}},"required":["request"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"request":{"type":"string","description":"The app they asked for, in the person's own words and language."}},"required":["request"]}""")),
         AIFunctionFactory.CreateDeclaration("make_page",
             "Opens a new tab with a page you write from what you read — a document, notes or a report the person asked to have as a page. The tabs you read for this question are listed on it as its sources; the person can keep it or close it. Call it only when the person asks for a page — never on your own, never for a summary or an answer they asked for in the chat, and never to show what you did on a site: the site's own page shows that, and your answer says it.",
-            JsonDocument.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""")),
         AIFunctionFactory.CreateDeclaration("propose_skill",
             "Proposes a skill: instructions the AI reads when a request fits the description — when it makes and changes the person's apps, and in this chat. The browser shows the whole skill to the person, who adds it or not; the result says which.",
-            JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"Lowercase letters, digits and hyphens, such as monthly-report-style."},"description":{"type":"string","description":"One sentence: what the skill does and when to use it."},"instructions":{"type":"string","description":"The instructions in Markdown."}},"required":["name","description","instructions"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"Lowercase letters, digits and hyphens, such as monthly-report-style."},"description":{"type":"string","description":"One sentence: what the skill does and when to use it."},"instructions":{"type":"string","description":"The instructions in Markdown."}},"required":["name","description","instructions"]}""")),
         AIFunctionFactory.CreateDeclaration("propose_mcp_server",
             "Proposes an MCP server for the AI to use when it makes and changes the person's apps and in this chat: a program on this computer it starts, or an address it reaches. The browser shows the entry as written to the person, who adds it or not; the result says which.",
-            JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"The server's name, such as filesystem."},"server":{"type":"object","description":"The entry as the server's documentation gives it under mcpServers: command, args and env for a program; or url and headers for an address."}},"required":["name","server"]}""").RootElement),
+            JsonElement.Parse("""{"type":"object","properties":{"name":{"type":"string","description":"The server's name, such as filesystem."},"server":{"type":"object","description":"The entry as the server's documentation gives it under mcpServers: command, args and env for a program; or url and headers for an address."}},"required":["name","server"]}""")),
     ];
 
     /// <summary>Told after the person's skills are listed: what <c>load_skill</c> returns is theirs, unlike a page's text.</summary>
@@ -128,7 +128,7 @@ internal static class WebAgent
 
     /// <summary>A tool the conversation called that is not offered now (its server turned off or gone): declared so the conversation stays valid.</summary>
     private static AIFunctionDeclaration GoneDeclaration(string name) =>
-        AIFunctionFactory.CreateDeclaration(name, "No longer available.", JsonDocument.Parse(EmptyObjectSchema).RootElement);
+        AIFunctionFactory.CreateDeclaration(name, "No longer available.", JsonElement.Parse(EmptyObjectSchema));
 
     private const string EmptyObjectSchema = """{"type":"object","properties":{}}""";
 
@@ -137,7 +137,7 @@ internal static class WebAgent
 
     private static readonly AIFunctionDeclaration LookDeclaration = AIFunctionFactory.CreateDeclaration(LookToolName,
         "Shows you one open tab as it looks on screen now — a picture of the part in view — with its title and address. For what the page shows but does not write, such as a chart, a picture, a colour or a map, and to see whether what you did shows on the page. It costs more than snapshot_page: do not call it every step.",
-        JsonDocument.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}""").RootElement);
+        JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id."}},"required":["tab"]}"""));
 
     /// <summary>Told when <c>look</c> is declared: where its picture comes, that it is material, and that only the latest is kept.</summary>
     internal const string LookNote =

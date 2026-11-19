@@ -118,7 +118,7 @@ internal static class ChatBridges
 
     /// <summary>A tool the application declares: the model only proposes a call, which goes back to the application.</summary>
     public static AITool Declaration(string name, string? description, JsonElement? schema) =>
-        AIFunctionFactory.CreateDeclaration(name, description, schema?.Clone() ?? JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone());
+        AIFunctionFactory.CreateDeclaration(name, description, schema?.Clone() ?? JsonElement.Parse("""{"type":"object"}"""));
 
     /// <summary>The text of a response or update, reasoning left out — providers give that apart, if at all.</summary>
     public static string TextOf(IEnumerable<AIContent> contents) =>

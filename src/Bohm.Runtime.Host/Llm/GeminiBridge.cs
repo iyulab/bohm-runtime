@@ -176,7 +176,7 @@ internal sealed partial class GeminiBridge : IChatBridge
     {
         var node = JsonNode.Parse(schema.GetRawText())!;
         Lower(node);
-        return JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
+        return JsonElement.Parse(node.ToJsonString());
 
         static void Lower(JsonNode? node)
         {

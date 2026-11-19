@@ -103,7 +103,7 @@ internal sealed class OpenAIChatBridge : IChatBridge
                     .Select(f => (AITool)AIFunctionFactory.CreateDeclaration(
                         f.GetProperty("name").GetString()!,
                         f.TryGetProperty("description", out var d) ? d.GetString() : null,
-                        f.TryGetProperty("parameters", out var p) ? p.Clone() : JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone()))];
+                        f.TryGetProperty("parameters", out var p) ? p.Clone() : JsonElement.Parse("""{"type":"object"}""")))];
             }
 
             // Thinking only when the request asks for it: most models an application names do not

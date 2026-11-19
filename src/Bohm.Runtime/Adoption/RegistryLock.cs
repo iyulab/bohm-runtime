@@ -211,7 +211,7 @@ internal sealed class RegistryLock : IAsyncDisposable
         await _beating.ConfigureAwait(false);
         await _stream.DisposeAsync().ConfigureAwait(false);
         _stop.Dispose();
-        if (ReadMark(_path) is { } mark && JsonDocument.Parse(mark).RootElement.GetProperty("owner").GetString() == _owner)
+        if (ReadMark(_path) is { } mark && JsonElement.Parse(mark).GetProperty("owner").GetString() == _owner)
         {
             try
             {
