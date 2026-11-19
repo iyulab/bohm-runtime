@@ -32,16 +32,11 @@ internal static class AppFacts
         - Speech recognition in the page (SpeechRecognition, webkitSpeechRecognition) does not work here: it
           fails with a network error. To take speech, record it with getUserMedia and MediaRecorder; the
           person is asked before the microphone opens.
-        - The person can send the web page they are reading in the browser to an application that declares
-          a share target, with the send button at the end of the address bar (there is no share menu). Whatever
-          the person reads in the browser is a web page: an article, a mail open in their webmail, a post, a product
-          or an order page. So one that works on such text should take it this way rather than ask them to copy and
-          paste (pasting can stay as a second way). Declare it in
-          the head: <link rel="manifest" href='data:application/manifest+json,{"name":"Name","share_target":{"action":"/","params":{"title":"title","url":"url"}}}'>.
-          A sent page opens the application with bohm_page=<id> in its address: read it with
-          fetch('/__bohm/pages/' + id), which answers { url, title, text, html, lang, byline } (html is the
-          article body, already cleaned), and every page it has received with fetch('/__bohm/pages'). The
-          pages are kept for it; keep in localStorage only what it adds, keyed by the page id.
+        - An application does not ask the person to send it the web page they are reading, and declares no
+          share target. What it needs from a web page reaches it as a source the browser reads: a table it
+          keeps reading, or a page whose rows an AI reads out — read again when the person presses the
+          browser's own «read again» button beside it, signed in as the person. An application that already
+          received pages can still read them with fetch('/__bohm/pages'); none arrive any more.
         - Its errors are collected and shown to the person, who can ask for them to be fixed: an uncaught
           error, a rejected promise, and anything passed to console.error. Report a failure with
           console.error instead of swallowing it silently or keeping a log of its own.
