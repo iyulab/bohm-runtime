@@ -9,20 +9,28 @@ using Bohm.Runtime.Storage;
 namespace Bohm.Runtime.Sources;
 
 /// <summary>
-/// How to read one table from a web page, so the same table can be read again the same way:
-/// the pages it may be read from (<paramref name="Site"/> — an address, and every page under it),
-/// the table on the page (<paramref name="Selector"/>) and the header names of the columns to keep,
-/// in order.
+/// How to read a source from a web page, so it can be read again the same way: the pages it may be read from
+/// (<paramref name="Site"/> — an address, and every page under it), the columns to keep, in order, and either the table on
+/// the page (<paramref name="Selector"/>, its header names as the columns) or — for a page with no table to copy, such as a
+/// conversation or a feed — what to read out of the page's text, in the person's words (<paramref name="Read"/>), which the
+/// model reads into those columns.
 /// </summary>
-public sealed record SourceRule(string Site, string Selector, IReadOnlyList<string> Columns)
+public sealed record SourceRule(string Site, string Selector, IReadOnlyList<string> Columns, string? Read = null)
 {
-    /// <summary>Throws <see cref="ArgumentException"/> unless the rule names a web address, a table and distinct, non-blank columns.</summary>
+    /// <summary>The longest <see cref="Read"/>.</summary>
+    public const int MaxRead = 500;
+
+    /// <summary>Whether the model reads this source out of the page's text, rather than a table being copied.</summary>
+    public bool ReadByModel => !string.IsNullOrWhiteSpace(Read);
+
+    /// <summary>Throws <see cref="ArgumentException"/> unless the rule names a web address, a table or what to read out, and distinct, non-blank columns.</summary>
     public static void Validate(SourceRule rule)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (!Uri.TryCreate(rule.Site, UriKind.Absolute, out var site) || site.Scheme is not ("http" or "https"))
             throw new ArgumentException($"'{rule.Site}' is not a web address.", nameof(rule));
-        if (string.IsNullOrWhiteSpace(rule.Selector)) throw new ArgumentException("The rule names no table.", nameof(rule));
+        if (rule.Read is { Length: > MaxRead }) throw new ArgumentException("What to read out is too long.", nameof(rule));
+        if (!rule.ReadByModel && string.IsNullOrWhiteSpace(rule.Selector)) throw new ArgumentException("The rule names no table and nothing to read out.", nameof(rule));
         if (rule.Columns is not { Count: > 0 }) throw new ArgumentException("The rule keeps no columns.", nameof(rule));
         if (rule.Columns.Any(string.IsNullOrWhiteSpace)) throw new ArgumentException("A column has no name.", nameof(rule));
         if (rule.Columns.Distinct(StringComparer.Ordinal).Count() != rule.Columns.Count)

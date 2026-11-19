@@ -35,8 +35,8 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>POST /__control/apps/{id}/export?data=leave</c></term><description>Copies only what makes the application — its record, its code in every revision, the code it loads from other hosts and its sources' rules — leaving out its data, what its sources read, its usage record and the permissions to read. Whoever takes it in starts with none of them.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/tables</c></term><description>Writes the application's records out as tables a spreadsheet opens, into the new folder whose full path is the body: each collection in its data — a key holding a JSON array of objects — as one CSV, a column per field (UTF-8). Answers <c>{ path, tables: [{ collection, file, records, fields }] }</c>; with no collection, <c>tables</c> is empty and no folder is made. The application and its data are only read. 400 for a path that is not full; 409 when something with that name is already there or its parent is missing.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/package?data=none|all</c></term><description>Writes the application into a package (<c>.bohm</c>) at the full path in the body: a zip of <c>manifest.json</c> and the folder an export with the same data makes, each recorded original path shortened to its file name. <c>data</c> is required. Answers <c>{ id, path, version, contentSha256, data, includes, permissions }</c> — <c>version</c> goes up by one when the current code differs from the last package's. 400 for a path that is not full or does not end in <c>.bohm</c>, or a missing <c>data</c>; 409 when something with that name is already there or its folder is missing.</description></item>
-/// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
-/// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns }, granted }</c> — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
+/// <item><term><c>GET /__control/apps/{id}/sources</c></term><description>The web pages the application reads: <c>[{ name, rule: { site, selector, columns, read }, grant: { site, grantedAt } | null, lastReadAt }]</c>, in the order declared.</description></item>
+/// <item><term><c>PUT /__control/apps/{id}/sources/{name}</c></term><description>Declares a source from <c>{ rule: { site, selector, columns, read? }, granted }</c> — <c>read</c>, what to read out of a page with no table in the person's words, in place of a <c>selector</c> (the caller reads the rows with <c>/__control/agent/rows</c>) — <c>granted</c> when the person has just allowed the site to be read — or replaces its rule; readings already kept stay. Names are lowercase letters, digits and hyphens. 400 for a bad name or rule.</description></item>
 /// <item><term><c>POST /__control/apps/{id}/sources/{name}/readings</c></term><description>Keeps what was read, <c>{ source, columns, rows: [[cell, …]], scheduled? }</c>, and answers it as the application will read it — for a <c>scheduled</c> reading <c>{ changed, reading }</c>, where a reading that finds the rows last kept keeps nothing new (<c>changed: false</c>). Refused, with nothing kept: 403 <c>{ code: "not-granted" | "outside-grant" }</c> without permission or for a page not under the permitted site; 409 <c>{ code: "shape-mismatch", columns }</c> when the columns are not the rule's, in order, or a row lacks a cell. The application reads it at <c>/__bohm/sources/{name}</c> (see <see cref="SourcesServing"/>).</description></item>
 /// <item><term><c>DELETE /__control/apps/{id}/sources/{name}/grant</c></term><description>Takes back the permission to read the source; its rule and readings stay — and its schedule ends.</description></item>
 /// <item><term><c>PUT /__control/apps/{id}/sources/{name}/schedule</c></term><description>Sets how often the person wants the source read on its own while the browser runs — <c>{ everyMinutes }</c>, at least 1, or <c>{ everyMinutes: null }</c> to stop — and answers the source, with <c>grant.every</c> and its <c>watch</c> (<c>{ nextAt, checkedAt, failures, lastFailure, reason, halted, failingSince }</c> — <c>failingSince</c> when the failures in a row began). Due at once when its last reading is older than the schedule. 400 <c>{ code: "too-often" }</c> under a minute; 409 <c>{ code: "not-granted" }</c> without permission; 404 for an unknown source.</description></item>
@@ -95,6 +95,7 @@ namespace Bohm.Runtime.Host.Control;
 /// <item><term><c>GET /__control/agent/model</c> · <c>PUT</c> · <c>DELETE</c></term><description>The model questions about web pages go to, the same way as <c>/__control/edit/model</c>: by default the organization's model server or the model on this computer; a connected provider's model only when the person chooses one — the pages' text then goes to that provider, counted as sent.</description></item>
 /// <item><term><c>POST /__control/agent/turns</c></term><description>One turn of a question about the open web pages: the body is the whole conversation, <c>{ messages: [ { role: "user", text } | { role: "assistant", text?, toolCalls } | { role: "tool", toolCallId, text, notice? } ] }</c>, ending with the question or with the results of the calls the last turn asked for; a tool message's <c>notice</c> is the caller's own word about the call (what the browser did and why — never page text), shown to the model after the result, outside the page material. Answers <c>{ status: "done", text, model, stopped }</c> — <c>stopped</c> is <c>output-limit</c> when the answer reached the model's length limit, so it may be cut short — or <c>{ status: "requires_action", text?, toolCalls: [{ id, name, arguments }], model }</c> — calls to the browser tools (<c>list_tabs</c>, <c>read_page</c>, <c>snapshot_page</c>, <c>click</c>, <c>type</c>, <c>press_key</c>, <c>hover</c>, <c>drag</c>, <c>scroll</c>, <c>navigate</c>, <c>go_back</c>, <c>change_app</c>, <c>make_app</c>, <c>make_page</c>, <c>propose_skill</c>, <c>propose_mcp_server</c>) for the caller to make and send back; the caller runs them, and asks the person before a click or an Enter that cannot be taken back. With the person's own skills on (not with the model on this computer), <c>load_skill</c> too: the caller only marks it — what the model reads is the skill, read by the runtime each turn, whatever the caller's result says. With MCP servers connected (and allowed by policy — not with the model on this computer), their tools too, named <c>mcp__&lt;server&gt;__&lt;tool&gt;</c>: the caller asks the person, then has the runtime make the call (<c>POST /__control/agent/mcp</c>); what it returns is material. Nothing is kept between turns. Asked with <c>Accept: application/x-ndjson</c>, the answer comes as it is written: one JSON object per line — <c>{ text }</c> for each piece of the model's text, with <c>html</c> — all the text so far, formatted as the finished answer's — on the first piece and then at most every quarter second (<c>{ text: "", restart: true }</c> takes back the text so far: an answer that copied the page it read is asked for once more, and the pieces after it replace it), then that same turn object, or <c>{ status: "failed", model, detail, provider }</c> — what a 503 would carry — when the model cannot finish (<c>model</c> is the model on this computer's reason: <c>answer-failed</c> when it was running and gave no answer — its server failed while working, most often short of memory, or wrote nothing; an answer with no text and no call is never <c>done</c>): the status is sent before the model is asked. What is missing is still a 409. Asked of the model chosen at <c>/__control/agent/model</c> — or, when the body has <c>model: { provider, model, effort? }</c>, of that model for this turn alone (nothing is remembered: the chosen model stands for the next turn; <c>effort</c> is <c>none</c>, <c>low</c>, <c>medium</c> or <c>high</c> and is taken only for a model known to think — otherwise 400 <c>effort-unsupported</c>; a provider not on the list or an empty model name is 400 <c>model-unknown</c>; <c>{ provider: "local" }</c> asks the model on this computer while one is set, its model name not read — for a conversation whose default answers from a server that cannot be reached); 409 with what is missing (<c>{ needs: "localModel" | "key", provider }</c>), 503 with why when it cannot run or stops.</description></item>
 /// <item><term><c>POST /__control/agent/translate</c></term><description>A web page translated where it stands: <c>{ texts: [string], to }</c> — the page's text pieces in order and a language tag — answers <c>{ texts, model }</c>, each piece in that language in the same order (<c>null</c> for a piece the model did not answer — pieces go out numbered and are read back by number, the missing ones asked once more), from the model chosen at <c>/__control/agent/model</c>, as page material (no tools). At most 80 pieces and 6000 characters a request (413 past that — the caller sends batches); 409 and 503 as for <c>/__control/agent/turns</c>, and 503 <c>translate-failed</c> when the model answers none of them.</description></item>
+/// <item><term><c>POST /__control/agent/rows</c></term><description>Rows read out of a web page that holds no table to copy: <c>{ read, columns, text, title?, source? }</c> — what to read out in the person's words, the column names and the page's text — answers <c>{ rows, model }</c>, each row one cell per column in the order asked (at most 200 rows; an empty list when nothing fits). The page's text is material, never instructions. The same model and refusals as <c>/__control/agent/translate</c>; <c>503 rows-failed</c> when the answer held no rows.</description></item>
 /// <item><term><c>GET /__control/agent/mcp?name=</c></term><description>What the caller shows the person before a web question's call to an MCP tool named <c>name</c>: <c>{ server, tool, remote, description }</c> — <c>remote</c> when the server is at an address, <c>description</c> the first line of what the server says the tool does (null when it says nothing). 404 when no connected server has it.</description></item>
 /// <item><term><c>POST /__control/agent/mcp</c></term><description>Makes a web question's call to an MCP tool after the person allowed it, from <c>{ name, arguments }</c>: <c>{ text, failed }</c> — the text parts of what the tool returned (or the result as JSON), <c>failed</c> when the tool reported an error or threw. 404 when no connected server has that tool, 400 for a body not in that shape.</description></item>
 /// <item><term><c>POST /__control/drain</c></term><description>Waits until no storage write is in progress.</description></item>
@@ -388,6 +389,10 @@ internal static partial class ControlPlane
 
             case ("POST", ["agent", "translate"]):
                 await AgentTranslateAsync(context, cancel).ConfigureAwait(false);
+                break;
+
+            case ("POST", ["agent", "rows"]):
+                await AgentRowsAsync(context, cancel).ConfigureAwait(false);
                 break;
 
             case ("GET", ["agent", "mcp"]):
@@ -2184,6 +2189,64 @@ internal static partial class ControlPlane
         }
     }
 
+    /// <summary>What to read out of a web page with no table to copy, into which columns, and the page's text.</summary>
+    internal sealed record RowsRequest(string Read, IReadOnlyList<string> Columns, string Text, string? Title = null, string? Source = null);
+
+    /// <summary>The rows read out, one cell per column in the order asked.</summary>
+    internal sealed record RowsRead(IReadOnlyList<IReadOnlyList<string>> Rows, string Model);
+
+    private static async Task AgentRowsAsync(HttpContext context, CancellationToken cancel)
+    {
+        var response = context.Response;
+        RowsRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize(await ReadBodyAsync(context.Request, cancel).ConfigureAwait(false), ControlJson.Default.RowsRequest);
+        }
+        catch (JsonException)
+        {
+            request = null;
+        }
+
+        if (request is not { Read.Length: > 0 and <= Agent.PageRows.MaxRead, Columns.Count: > 0 and <= Agent.PageRows.MaxColumns, Text: not null }
+            || request.Columns.Any(string.IsNullOrWhiteSpace) || request.Columns.Distinct(StringComparer.Ordinal).Count() != request.Columns.Count)
+        {
+            response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var agentModel = context.RequestServices.GetRequiredService<Llm.AgentModel>();
+        Llm.ChosenEditModel? model;
+        try
+        {
+            model = await agentModel.GetAsync(cancel).ConfigureAwait(false);
+        }
+        catch (LocalModelUnavailableException e)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await ControlProblems.RefuseAsync(response, "proposal-failed", new ProposalFailure(e.Failure, null, null)).ConfigureAwait(false);
+            return;
+        }
+
+        if (model is not { } chosen)
+        {
+            response.StatusCode = StatusCodes.Status409Conflict;
+            await ControlProblems.RefuseAsync(response, "model-missing", agentModel.Missing ?? new Llm.EditModelMissing("localModel", null)).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var rows = await Agent.PageRows.ReadAsync(chosen.Client, chosen.Limits, chosen.OnThisComputer, request.Read, request.Columns, request.Title, request.Source, request.Text, cancel).ConfigureAwait(false);
+            await WriteAsync(response, new RowsRead(rows, chosen.Name), cancel).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!cancel.IsCancellationRequested)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await ControlProblems.RefuseAsync(response, "rows-failed", new TurnFailure("failed", null, e.Message, Llm.ProviderRefusal.Of(e), Llm.Unreached.Of(e))).ConfigureAwait(false);
+        }
+    }
+
     /// <summary>The pieces of a web page to translate where they stand, and into which language.</summary>
     internal sealed record TranslateRequest(IReadOnlyList<string> Texts, string To);
 
@@ -2467,5 +2530,7 @@ internal static partial class ControlPlane
 [System.Text.Json.Serialization.JsonSerializable(typeof(ModelDownloads.Description))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(List<ControlPlane.ProviderView>))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.TranslateRequest))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RowsRequest))]
+[System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.RowsRead))]
 [System.Text.Json.Serialization.JsonSerializable(typeof(ControlPlane.Translated))]
 internal sealed partial class ControlJson : System.Text.Json.Serialization.JsonSerializerContext;
