@@ -137,4 +137,22 @@ public sealed class HostAddressTests : IDisposable
         Assert.Equal("{ \"format\": \"bohm.host/0\", \"port\": 51234 }\n", File.ReadAllText(Path.Combine(_dataRoot, "host.json")));
         Assert.Equal(51234, HostAddress.Read(_dataRoot));
     }
+    [Fact]
+    public void The_memory_keeps_only_the_runtime_port_and_lists_it_as_remembered()
+    {
+        var memory = new HostAddressMemory(_dataRoot);
+        Assert.Empty(memory.Remembered);
+        Assert.False(memory.Forget(HostAddressMemory.Key));
+
+        memory.Remember(HostAddressMemory.Key, 51234);
+        Assert.Equal(51234, memory.Recall(HostAddressMemory.Key));
+        Assert.Null(memory.Recall("another"));
+        Assert.Equal(new Dictionary<string, int> { [HostAddressMemory.Key] = 51234 }, memory.Remembered);
+        Assert.Throws<ArgumentException>(() => memory.Remember("another", 51235));
+
+        Assert.False(memory.Forget("another"));
+        Assert.True(memory.Forget(HostAddressMemory.Key));
+        Assert.Null(memory.Recall(HostAddressMemory.Key));
+        Assert.Empty(memory.Remembered);
+    }
 }

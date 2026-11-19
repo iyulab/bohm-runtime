@@ -334,7 +334,7 @@ public static class RuntimeHost
             return new StartedRuntime(fixedApp, fixedApp.ListeningPort(), null);
         }
 
-        var started = await RememberedPort.StartAsync(new HostAddressMemory(options.DataRoot), "runtime", async port =>
+        var started = await RememberedPort.StartAsync(new HostAddressMemory(options.DataRoot), HostAddressMemory.Key, async port =>
         {
             var app = Build(options with { Port = port }, configure);
             try

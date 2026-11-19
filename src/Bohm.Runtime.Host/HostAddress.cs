@@ -16,7 +16,7 @@ internal static class HostAddress
     /// <summary>Format identifier written into <c>host.json</c>.</summary>
     public const string Format = "bohm.host/0";
 
-    private const string FileName = "host.json";
+    internal const string FileName = "host.json";
 
     /// <summary>The remembered port, or <see langword="null"/> when there is none or it cannot be read.</summary>
     public static int? Read(string dataRoot)
@@ -51,11 +51,29 @@ internal static class HostAddress
 
 /// <summary>
 /// <see cref="HostAddress"/> as the port memory a remembered-port start reads and writes: one port per data
-/// root, in the file earlier versions wrote, so an update keeps every application's address.
+/// root, in the file earlier versions wrote, so an update keeps every application's address. It holds one key —
+/// the runtime's own (<see cref="Key"/>); any other key has no port here.
 /// </summary>
 internal sealed class HostAddressMemory(string dataRoot) : IPortMemory
 {
-    public int? Recall(string key) => HostAddress.Read(dataRoot);
+    /// <summary>The one key this memory keeps a port for.</summary>
+    public const string Key = "runtime";
 
-    public void Remember(string key, int port) => HostAddress.Write(dataRoot, port);
+    public int? Recall(string key) => key == Key ? HostAddress.Read(dataRoot) : null;
+
+    public void Remember(string key, int port)
+    {
+        if (key != Key) throw new ArgumentException($"This memory keeps only the '{Key}' port.", nameof(key));
+        HostAddress.Write(dataRoot, port);
+    }
+
+    public IReadOnlyDictionary<string, int> Remembered =>
+        HostAddress.Read(dataRoot) is int port ? new Dictionary<string, int> { [Key] = port } : new Dictionary<string, int>();
+
+    public bool Forget(string key)
+    {
+        if (key != Key || HostAddress.Read(dataRoot) is null) return false;
+        File.Delete(Path.Combine(dataRoot, HostAddress.FileName));
+        return true;
+    }
 }
