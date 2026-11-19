@@ -70,8 +70,11 @@ public sealed class FakeProvider : IAsyncDisposable
     /// </summary>
     public string? FinishReason { get; set; } = "stop";
 
-    /// <summary>The requests received other than for the model list and the question whether the model thinks — what a task asked of a model.</summary>
-    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !(r.Method == "GET" && r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal)) && !IsThinkingQuestion(r) && !IsPictureQuestion(r))];
+    /// <summary>The requests received other than for the model list or one model's information and the question whether the model thinks — what a task asked of a model.</summary>
+    public IReadOnlyList<ReceivedRequest> Asked => [.. Received.Where(r => !IsModelInformation(r) && !IsThinkingQuestion(r) && !IsPictureQuestion(r))];
+
+    private static bool IsModelInformation(ReceivedRequest r) =>
+        r.Method == "GET" && (r.PathAndQuery.EndsWith("/models", StringComparison.Ordinal) || r.PathAndQuery.Contains("/models/", StringComparison.Ordinal));
 
     /// <summary>The questions whether the model takes pictures in (<see cref="Bohm.Runtime.Host.Llm.ImageInput.Question"/>) received — answered «Red.», as a model that sees.</summary>
     public IReadOnlyList<ReceivedRequest> PictureQuestions => [.. Received.Where(IsPictureQuestion)];

@@ -66,6 +66,7 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
 
     private int? _learnedWindow;
     private int? _reportedWindow;
+    private volatile ModelLimits _told = ModelLimits.Unknown;
     private volatile bool _seenThinking;
 
     /// <summary>
@@ -78,7 +79,10 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
         get
         {
             var known = limits;
-            if (known.ContextWindow is null && (_learnedWindow ?? _reportedWindow) is { } window) known = known with { ContextWindow = window };
+            var told = _told;
+            if (known.ContextWindow is null && (_learnedWindow ?? _reportedWindow ?? told.ContextWindow) is { } window) known = known with { ContextWindow = window };
+            if (known.MaxOutputTokens is null && told.MaxOutputTokens is { } most) known = known with { MaxOutputTokens = most };
+            if (known.Reasoning is null && told.Reasoning is { } thinks) known = known with { Reasoning = thinks };
             if (known.Reasoning is null && _seenThinking) known = known with { Reasoning = true };
             return known;
         }
@@ -91,6 +95,15 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
     public void Reported(int contextWindow)
     {
         if (contextWindow > 0) _reportedWindow = contextWindow;
+    }
+
+    /// <summary>
+    /// Keeps what the model's provider said of it (its model information): each value fills only what was not given, and a window
+    /// learned from a refusal still wins over the one said. Values that do not make sense together are not kept.
+    /// </summary>
+    public void Told(ModelLimits told)
+    {
+        if (ModelLimits.TryCreate(told.ContextWindow, told.MaxOutputTokens, told.Reasoning, out var valid)) _told = valid!;
     }
 
     public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
@@ -167,9 +180,10 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
     /// <summary>The request's options with the model's own bounds applied; the caller's are not changed.</summary>
     private ChatOptions? Fit(ChatOptions? options)
     {
-        var bound = limits.MaxOutputTokens;
+        var known = Limits;
+        var bound = known.MaxOutputTokens;
         var lower = bound is { } most && (options?.MaxOutputTokens is null || options.MaxOutputTokens > most);
-        var noThinking = limits.Reasoning == false && options?.Reasoning is not null;
+        var noThinking = known.Reasoning == false && options?.Reasoning is not null;
         if (!lower && !noThinking) return options;
 
         var fitted = options?.Clone() ?? new ChatOptions();

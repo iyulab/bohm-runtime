@@ -549,7 +549,7 @@ public sealed class WebAgentTests : IDisposable
         var answered = JsonDocument.Parse(await second.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("openai/for-pages", answered.GetProperty("model").GetString());
         Assert.Equal(FakeProvider.Reply, answered.GetProperty("text").GetString());
-        Assert.Equal("for-pages", JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("model").GetString());
+        Assert.Equal("for-pages", JsonDocument.Parse(Assert.Single(provider.Asked).Body).RootElement.GetProperty("model").GetString());
         var sent = Assert.Single(JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.GetProperty("sent").EnumerateArray());
         Assert.Equal(provider.Address.Authority, sent.GetProperty("host").GetString());
         Assert.Equal("for-edits", JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/edit/model")).RootElement.GetProperty("model").GetString());
@@ -611,7 +611,7 @@ public sealed class WebAgentTests : IDisposable
         var answer = JsonDocument.Parse(await turn.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("anthropic/for-pages", answer.GetProperty("model").GetString());
         Assert.Equal(FakeProvider.Reply, answer.GetProperty("text").GetString());
-        var request = Assert.Single(provider.Received);
+        var request = Assert.Single(provider.Asked);
         Assert.Equal("/v1/messages", request.PathAndQuery);
         Assert.Equal(["act_batch", "change_app", "click", "drag", "go_back", "hover", "list_tabs", "look", "make_app", "make_page", "navigate", "press_key", "propose_mcp_server", "propose_skill", "read_page", "scroll", "snapshot_page", "type"], JsonDocument.Parse(request.Body).RootElement.GetProperty("tools").EnumerateArray()
             .Select(t => t.GetProperty("name").GetString()).Order());
@@ -643,7 +643,7 @@ public sealed class WebAgentTests : IDisposable
             """);
 
         HttpAssert.Status(HttpStatusCode.OK, turn);
-        var contents = JsonDocument.Parse(Assert.Single(provider.Received).Body).RootElement.GetProperty("messages").EnumerateArray()
+        var contents = JsonDocument.Parse(Assert.Single(provider.Asked).Body).RootElement.GetProperty("messages").EnumerateArray()
             .Where(m => m.GetProperty("content").ValueKind == JsonValueKind.Array).SelectMany(m => m.GetProperty("content").EnumerateArray()).ToList();
         var uses = contents.Where(c => c.GetProperty("type").GetString() == "tool_use").Select(c => c.GetProperty("id").GetString()).ToList();
         var results = contents.Where(c => c.GetProperty("type").GetString() == "tool_result").Select(c => c.GetProperty("tool_use_id").GetString()).ToList();

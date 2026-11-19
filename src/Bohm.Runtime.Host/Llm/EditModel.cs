@@ -172,38 +172,55 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         // Counted as sent where it goes: the provider, or the gateway its traffic is sent to instead.
         var declared = provider.Find(chosen.Model);
         var kept = Kept(chosen, Identity(provider, key), () => Counted(provider, declared, chosen.Model, key));
-        await AskWindowAsync(kept, provider, declared, chosen.Model, key, cancellationToken).ConfigureAwait(false);
+        await AskLimitsAsync(kept, provider, declared, chosen.Model, key, cancellationToken).ConfigureAwait(false);
         return new(kept, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
     }
 
-    private IChatClient? _windowAskedFor;
+    private IChatClient? _limitsAskedFor;
 
     /// <summary>
-    /// A model of a provider the person added or an administrator listed that nobody gave a context window is asked of its server once —
-    /// per client, so per provider, model and key — the way the organization's own server is: the window the server reports (vLLM's
-    /// <c>max_model_len</c>) stands until a refusal says otherwise. Only an OpenAI-compatible list says it; a server that does not, or
-    /// does not answer in time, leaves the window unknown and the request it was asked for goes on either way.
+    /// A model whose limits nobody gave is asked of its provider once — per client, so per provider, model and key — where the provider's
+    /// API says them, never guessed from the model's name: an OpenAI-compatible server the person added or an administrator listed reports
+    /// its window in its model list (vLLM's <c>max_model_len</c>), and a provider speaking Anthropic's format — the built-in one, or one
+    /// added at a gateway — says the window and the largest answer in its model information. What is said stands until a refusal says
+    /// otherwise; a provider that does not say, or does not answer in time, leaves them unknown and the request goes on either way.
     /// </summary>
-    private async Task AskWindowAsync(IChatClient client, ProviderDeclaration provider, DeclaredModel? declared, string model, string? key, CancellationToken cancellationToken)
+    private async Task AskLimitsAsync(IChatClient client, ProviderDeclaration provider, DeclaredModel? declared, string model, string? key, CancellationToken cancellationToken)
     {
-        if (provider.Origin == ProviderOrigin.BuiltIn || client is not ModelFitChatClient fit || fit.Limits.ContextWindow is not null) return;
-        if ((declared is null ? provider.Api : provider.ApiOf(declared)) != ProviderApi.OpenAIChat) return;
+        if (client.GetService<ModelFitChatClient>() is not { } fit) return;
+        var api = declared is null ? provider.Api : provider.ApiOf(declared);
+        var asks = api switch
+        {
+            ProviderApi.OpenAIChat => provider.Origin != ProviderOrigin.BuiltIn && fit.Limits.ContextWindow is null,
+            // Anthropic's model information is read with the key as a bearer — a provider that takes it in another header is not asked.
+            ProviderApi.AnthropicMessages => provider.Auth.Style is AuthStyle.Bearer or AuthStyle.None
+                && (fit.Limits.ContextWindow is null || fit.Limits.MaxOutputTokens is null),
+            _ => false,
+        };
+        if (!asks) return;
         lock (_clientLock)
         {
-            if (ReferenceEquals(_windowAskedFor, client)) return;
-            _windowAskedFor = client;
+            if (ReferenceEquals(_limitsAskedFor, client)) return;
+            _limitsAskedFor = client;
         }
 
         try
         {
             var address = declared is null ? provider.BaseUrl : provider.RootOf(declared);
-            if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { ContextWindow: { } window })
+            if (api == ProviderApi.AnthropicMessages)
+            {
+                if (await ProviderModelInfo.AskAnthropicAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { } told)
+                    fit.Told(told);
+            }
+            else if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { ContextWindow: { } window })
+            {
                 fit.Reported(window);
+            }
         }
         catch (OperationCanceledException)
         {
             lock (_clientLock)
-                if (ReferenceEquals(_windowAskedFor, client)) _windowAskedFor = null;   // asked again next time
+                if (ReferenceEquals(_limitsAskedFor, client)) _limitsAskedFor = null;   // asked again next time
             throw;
         }
     }
@@ -224,16 +241,15 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         provider.Auth.TakesKey && vault.Read(provider.VaultName) is { Length: > 0 } key ? key : null;
 
     /// <summary>
-    /// The client for <paramref name="model"/> of <paramref name="provider"/>, counted as sent to the provider's host. A provider the
-    /// person added is also fitted to what its model takes (<see cref="ModelFitChatClient"/> — as the organization's server is): an
-    /// answer bound above the model's own is lowered, no thinking setting goes to a model that has none, a request refused as too long
-    /// is tried once more with a smaller answer, and what is learned stands for this client's life. A built-in provider's models are not
-    /// described, so its client is left as it is.
+    /// The client for <paramref name="model"/> of <paramref name="provider"/>, counted as sent to the provider's host, and fitted to what
+    /// its model takes (<see cref="ModelFitChatClient"/> — as the organization's server is): an answer bound above the model's own is
+    /// lowered, no thinking setting goes to a model that has none, a request refused as too long is tried once more with a smaller answer,
+    /// and what is learned stands for this client's life. A built-in provider's models are described by nobody here: what is known of them
+    /// is what the provider says (<see cref="AskLimitsAsync"/>) and what their answers show.
     /// </summary>
-    private IChatClient Counted(ProviderDeclaration provider, DeclaredModel? declared, string model, string? key)
+    private ModelFitChatClient Counted(ProviderDeclaration provider, DeclaredModel? declared, string model, string? key)
     {
         IChatClient client = new CountedAsSent(ProviderClients.Create(provider, declared, model, key), egress, provider.BaseUrl.Authority);
-        if (provider.Origin == ProviderOrigin.BuiltIn) return client;
 
         // A model that was learned to think stays one past this client's life: the next start knows it before a long task's first request.
         var address = declared is null ? provider.BaseUrl : provider.RootOf(declared);
