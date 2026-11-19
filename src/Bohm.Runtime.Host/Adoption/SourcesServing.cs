@@ -36,9 +36,13 @@ internal static class SourcesServing
     /// <summary>Serves a read to a preview of the application: its sources as they are, the same way.</summary>
     public static Task ServeToPreviewAsync(HttpContext context, OpenApp app) => ServeAsync(context, app.Sources.ReadingsAsync);
 
-    /// <summary>Serves a read to a preview of a proposed new application: each source's rows as just read.</summary>
-    public static Task ServeToPreviewAsync(HttpContext context, IReadOnlyDictionary<string, SourceReading> readings) =>
-        ServeAsync(context, (name, _) => Task.FromResult<IReadOnlyList<SourceReading>?>(readings.TryGetValue(name, out var reading) ? [reading] : null));
+    /// <summary>
+    /// Serves a read to a preview of a proposed new application: each source's rows as just read — and a source declared but
+    /// not read yet (<paramref name="unread"/>) as before its first reading.
+    /// </summary>
+    public static Task ServeToPreviewAsync(HttpContext context, IReadOnlyDictionary<string, SourceReading> readings, IReadOnlySet<string>? unread = null) =>
+        ServeAsync(context, (name, _) => Task.FromResult<IReadOnlyList<SourceReading>?>(
+            readings.TryGetValue(name, out var reading) ? [reading] : unread?.Contains(name) == true ? [] : null));
 
     private static async Task ServeAsync(HttpContext context, Func<string, CancellationToken, Task<IReadOnlyList<SourceReading>?>> readingsOf)
     {

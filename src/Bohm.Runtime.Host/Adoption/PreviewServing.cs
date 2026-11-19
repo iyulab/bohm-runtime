@@ -91,7 +91,7 @@ internal static class PreviewServing
 
         if (path.StartsWithSegments(SourcesServing.PathPrefix))
         {
-            await (app is null ? SourcesServing.ServeToPreviewAsync(context, preview.Readings) : SourcesServing.ServeToPreviewAsync(context, app)).ConfigureAwait(false);
+            await (app is null ? SourcesServing.ServeToPreviewAsync(context, preview.Readings, preview.Unread) : SourcesServing.ServeToPreviewAsync(context, app)).ConfigureAwait(false);
             return;
         }
 

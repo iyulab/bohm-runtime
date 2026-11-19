@@ -41,11 +41,12 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     private readonly PreviewOrigins<Content> _origins = new(new PreviewOptions { NamePrefix = HostPrefix, Lifetime = Lifetime, MaxPreviews = 8, RenewOnUse = true }, time);
 
     /// <summary>What is kept with each preview.</summary>
-    internal sealed class Content(string? appId, byte[] html, IReadOnlyDictionary<string, SourceReading>? readings, HeldPages? pages)
+    internal sealed class Content(string? appId, byte[] html, IReadOnlyDictionary<string, SourceReading>? readings, HeldPages? pages, IReadOnlySet<string>? unread = null)
     {
         public string? AppId { get; } = appId;
         public byte[] Html { get; } = html;
         public IReadOnlyDictionary<string, SourceReading> Readings { get; } = readings ?? new Dictionary<string, SourceReading>();
+        public IReadOnlySet<string> Unread { get; } = unread ?? new HashSet<string>();
         public HeldPages? Pages { get; } = pages;
 
         /// <summary>How many errors the report held when the first call to a model was declined; <see langword="null"/> before.</summary>
@@ -64,6 +65,9 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
 
         /// <summary>For a proposed new application, each source's rows as just read — what it shows until taken in.</summary>
         public IReadOnlyDictionary<string, SourceReading> Readings => held.Content.Readings;
+
+        /// <summary>For a proposed new application, the sources it declares that are not read yet — served as before their first reading.</summary>
+        public IReadOnlySet<string> Unread => held.Content.Unread;
 
         public byte[] Html => held.Content.Html;
 
@@ -122,8 +126,12 @@ internal sealed class AppPreviews(TimeProvider time) : IAsyncDisposable
     /// <summary>Holds <paramref name="html"/> as a preview of <paramref name="appId"/> and returns its token.</summary>
     public string Create(string appId, byte[] html) => Hold(new Content(appId, html, null, null));
 
-    /// <summary>Holds <paramref name="html"/> as a preview of a proposed new application whose sources read <paramref name="readings"/>, and returns its token.</summary>
-    public string CreateNew(byte[] html, IReadOnlyDictionary<string, SourceReading> readings) => Hold(new Content(null, html, readings, new HeldPages(time)));
+    /// <summary>
+    /// Holds <paramref name="html"/> as a preview of a proposed new application whose sources read <paramref name="readings"/> —
+    /// and whose sources in <paramref name="unread"/> are declared but not read yet — and returns its token.
+    /// </summary>
+    public string CreateNew(byte[] html, IReadOnlyDictionary<string, SourceReading> readings, IReadOnlySet<string>? unread = null) =>
+        Hold(new Content(null, html, readings, new HeldPages(time), unread));
 
     private string Hold(Content content) => _origins.Create(content).Scope[HostPrefix.Length..];
 
