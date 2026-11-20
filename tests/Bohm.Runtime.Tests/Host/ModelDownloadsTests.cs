@@ -87,7 +87,7 @@ public sealed class ModelDownloadsTests : IDisposable
     }
 
     [Fact]
-    public async Task Describing_a_model_asks_its_size_once_and_counts_it_as_sent_to_the_model_host()
+    public async Task Describing_a_model_asks_its_size_once_and_counts_it_as_fetched_from_the_model_host_not_sent()
     {
         var source = new StandIn(_cache);
         await using var host = await StartAsync(source);
@@ -98,7 +98,25 @@ public sealed class ModelDownloadsTests : IDisposable
         Assert.Equal(("ok", JsonValueKind.Null), (other.GetProperty("result").GetString(), other.GetProperty("license").ValueKind)); // a repository the catalog does not know: no licence to tell
         Assert.Equal("not-found", (await DescribeAsync(host, "missing")).GetProperty("result").GetString());
         Assert.Equal(3, source.Asked);
-        Assert.Equal(["huggingface.example"], Sent(await EgressAsync(host)));
+        var egress = await EgressAsync(host);
+        Assert.Empty(Sent(egress)); // a size carries none of the person's data
+        Assert.Equal([("huggingface.example", 3)], Fetched(egress));
+    }
+
+    [Fact]
+    public async Task A_model_host_that_cannot_be_reached_is_counted_nowhere()
+    {
+        await using var host = await StartAsync(new StandIn(_cache));
+
+        Assert.Equal("unreachable", (await DescribeAsync(host, "offline")).GetProperty("result").GetString());
+        using (var started = await DownloadAsync(host, "offline"))
+            HttpAssert.Status(HttpStatusCode.Accepted, started);
+        await host.Services.GetRequiredService<ModelDownloads>().Settled;
+
+        // Nothing left this computer — the ledger says so, rather than «sent» to a host that never answered.
+        var egress = await EgressAsync(host);
+        Assert.Empty(Sent(egress));
+        Assert.Empty(Fetched(egress));
     }
 
     [Fact]
@@ -118,7 +136,9 @@ public sealed class ModelDownloadsTests : IDisposable
         var state = JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/llm/local-model")).RootElement;
         Assert.Equal(Path.Combine(_cache, "large.gguf"), state.GetProperty("modelPath").GetString());
         Assert.Equal(JsonValueKind.Null, state.GetProperty("download").ValueKind);
-        Assert.Equal(["huggingface.example"], Sent(await EgressAsync(host)));
+        var egress = await EgressAsync(host);
+        Assert.Empty(Sent(egress));
+        Assert.Equal([("huggingface.example", 1)], Fetched(egress));
     }
 
     [Fact]
@@ -233,6 +253,9 @@ public sealed class ModelDownloadsTests : IDisposable
 
     private static List<string?> Sent(JsonElement egress) => egress.GetProperty("sent").EnumerateArray().Select(s => s.GetProperty("host").GetString()).ToList();
 
+    private static List<(string?, int)> Fetched(JsonElement egress) =>
+        egress.GetProperty("fetched").EnumerateArray().Select(s => (s.GetProperty("host").GetString(), s.GetProperty("count").GetInt32())).ToList();
+
     /// <summary>Two catalog models; «missing» is not on the host; downloads write a file into the cache.</summary>
     private sealed class StandIn(string cache) : IModelSource
     {
@@ -260,7 +283,12 @@ public sealed class ModelDownloadsTests : IDisposable
         public Task<long> DownloadSizeAsync(string model, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref Asked);
-            return model == "missing" ? throw new KeyNotFoundException(model) : Task.FromResult(model == "small" ? 1_000L : 9_000L);
+            return model switch
+            {
+                "missing" => throw new KeyNotFoundException(model),
+                "offline" => throw new HttpRequestException("No route to host"),
+                _ => Task.FromResult(model == "small" ? 1_000L : 9_000L),
+            };
         }
 
         public Task<string> LocalPathAsync(string model, CancellationToken cancellationToken) =>
@@ -284,6 +312,7 @@ public sealed class ModelDownloadsTests : IDisposable
             {
                 Interlocked.Increment(ref source.Fetched);
                 if (modelId == "missing") throw new KeyNotFoundException(modelId);
+                if (modelId == "offline") throw new HttpRequestException("No route to host");
                 progress?.Report(new DownloadProgress { FileName = modelId + ".gguf", BytesDownloaded = 4_500, TotalBytes = 9_000 });
                 source.Reported.TrySetResult();
                 if (source.Hold is { } hold) await hold.Task.WaitAsync(cancellationToken);

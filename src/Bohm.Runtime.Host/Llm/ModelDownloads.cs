@@ -206,19 +206,20 @@ internal sealed class ModelDownloads
     public string? NameOfFile(string file) =>
         _source.Catalog().FirstOrDefault(e => string.Equals(e.File, file, StringComparison.OrdinalIgnoreCase))?.Name;
 
-    /// <summary>What getting <paramref name="model"/> would take — asks the host once for its size.</summary>
+    /// <summary>What getting <paramref name="model"/> would take — asks the host once for its size, counted as fetched from it when it answers.</summary>
     public async Task<Description> DescribeAsync(string model, CancellationToken cancellationToken)
     {
         var entry = _source.Catalog().FirstOrDefault(e => string.Equals(e.Id, model, StringComparison.OrdinalIgnoreCase));
         var downloaded = await _source.IsDownloadedAsync(model, cancellationToken).ConfigureAwait(false);
-        _egress.Sent(_source.Host);
         try
         {
             var size = await _source.DownloadSizeAsync(model, cancellationToken).ConfigureAwait(false);
+            _egress.Fetched(_source.Host, 1);
             return new(Description.Ok, model, entry?.Name, entry?.License, entry?.LicenseTier, size, downloaded);
         }
         catch (KeyNotFoundException)
         {
+            _egress.Fetched(_source.Host, 1); // the host answered that it has no such model
             return new(Description.NotFound, model, null, null, null, null, downloaded);
         }
         catch (Exception e) when (e is HttpRequestException or IOException or OperationCanceledException or LMSupplyException && !cancellationToken.IsCancellationRequested)
@@ -272,7 +273,6 @@ internal sealed class ModelDownloads
             running = _running = new Running(kind, model, name);
         }
 
-        _egress.Sent(_source.Host);
         running.Task = Task.Run(async () =>
         {
             try
@@ -303,6 +303,11 @@ internal sealed class ModelDownloads
                     IOException or UnauthorizedAccessException => DownloadView.Disk,
                     _ => DownloadView.Other,
                 };
+            }
+            finally
+            {
+                // A model file is public and carries none of the person's data: fetched, not sent — and only when the host was reached.
+                if (running.Failure != DownloadView.Unreachable) _egress.Fetched(_source.Host, 1);
             }
         }, CancellationToken.None); // it outlives the request that started it; stopping is what ends it
         return Started.Downloading;

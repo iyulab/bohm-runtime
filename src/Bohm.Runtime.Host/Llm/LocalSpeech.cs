@@ -148,17 +148,18 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
     public bool Loaded => _model is not null;
 
     /// <summary>
-    /// How many bytes getting the model takes — asks its host once, counted as sent there; <see langword="null"/> when the
+    /// How many bytes getting the model takes — asks its host once, counted as fetched from it when it answers; <see langword="null"/> when the
     /// host could not be asked.
     /// </summary>
     /// <exception cref="NotSupportedException">This copy cannot run a speech model.</exception>
     public async Task<long?> DownloadSizeAsync(CancellationToken cancellationToken)
     {
         var source = _source ?? throw new NotSupportedException("This copy cannot run a speech model.");
-        egress.Sent(source.Host);
         try
         {
-            return await source.DownloadSizeAsync(cancellationToken).ConfigureAwait(false);
+            var size = await source.DownloadSizeAsync(cancellationToken).ConfigureAwait(false);
+            egress.Fetched(source.Host, 1);
+            return size;
         }
         catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -213,7 +214,6 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
             running = _running = new Running(source.Artifacts.Kind, source.Model);
         }
 
-        egress.Sent(source.Host);
         running.Task = Task.Run(async () =>
         {
             try
@@ -255,6 +255,11 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
                     IOException or UnauthorizedAccessException => ModelDownloads.DownloadView.Disk,
                     _ => ModelDownloads.DownloadView.Other,
                 });
+            }
+            finally
+            {
+                // A model file is public and carries none of the person's data: fetched, not sent — and only when the host was reached.
+                if (running.Failure != ModelDownloads.DownloadView.Unreachable) egress.Fetched(source.Host, 1);
             }
         }, CancellationToken.None); // it outlives the request that started it; stopping is what ends it
         return ModelDownloads.Started.Downloading;
@@ -360,6 +365,9 @@ internal sealed class LocalSpeech(RuntimeHostOptions options, Egress egress) : I
         public bool Ended => _failure is not null;
 
         public void Fail(string failure) => _failure = failure;
+
+        /// <summary>Why it ended without the model, or <see langword="null"/>.</summary>
+        public string? Failure => _failure;
 
         public ModelDownloads.DownloadView View() => new(model, null, Progress.Bytes, Progress.Total, _failure);
     }
