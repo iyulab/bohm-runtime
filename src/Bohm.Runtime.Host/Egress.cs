@@ -4,8 +4,9 @@ namespace Bohm.Runtime.Host;
 /// What left this computer since the runtime started, by host — so the person can see it, not take
 /// it on trust. Three kinds, because they mean different things: <b>sent</b> carries an application's
 /// data out (AI requests relayed to a provider, and an application's source sent with a proposal to a chosen provider); <b>fetched</b> asks for something public and brings it in (an
-/// application's libraries, cached at adoption; a site's robots.txt, read before the agent opens the site) — the request leaves, the application's data does
-/// not; <b>blocked</b> is a connection an application tried and the runtime refused — nothing left.
+/// application's libraries, cached at adoption; a site's robots.txt, read before the agent opens the site; a model file the person chose to get, and
+/// the size asked before it) — the request leaves, the application's data does not, and it is counted once the host answered, so a host that could not be
+/// reached is not counted; <b>blocked</b> is a connection an application tried and the runtime refused — nothing left.
 /// </summary>
 /// <remarks>Kept in memory only: it describes this run. Hosts only — never paths, bodies or keys.</remarks>
 internal sealed class Egress(TimeProvider clock)

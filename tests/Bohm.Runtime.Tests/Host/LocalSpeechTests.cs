@@ -96,7 +96,9 @@ public sealed class LocalSpeechTests
         Assert.True(after.GetProperty("downloaded").GetBoolean());
         Assert.True(after.GetProperty("loaded").GetBoolean());
         Assert.Equal(JsonValueKind.Null, after.GetProperty("download").ValueKind);
-        Assert.Equal(["speech.example"], Sent(await EgressAsync(host)));
+        var egress = await EgressAsync(host);
+        Assert.Empty(Sent(egress)); // a model file carries none of the person's data
+        Assert.Equal([("speech.example", 2)], Fetched(egress)); // the size, then the file
         Assert.Equal(1, source.Fetched);
 
         using (var again = await host.ControlClient().PostAsync("/__control/llm/speech-model/download", null))
@@ -196,6 +198,9 @@ public sealed class LocalSpeechTests
         JsonDocument.Parse(await host.ControlClient().GetStringAsync("/__control/egress")).RootElement.Clone();
 
     private static List<string?> Sent(JsonElement egress) => egress.GetProperty("sent").EnumerateArray().Select(s => s.GetProperty("host").GetString()).ToList();
+
+    private static List<(string?, int)> Fetched(JsonElement egress) =>
+        egress.GetProperty("fetched").EnumerateArray().Select(s => (s.GetProperty("host").GetString(), s.GetProperty("count").GetInt32())).ToList();
 
     /// <summary>A model that is here once its download ran; the download reports half, then writes nothing but the flag.</summary>
     private sealed class StandIn : ISpeechModelSource
