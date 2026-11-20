@@ -13,9 +13,11 @@ namespace Bohm.Runtime.Sources;
 /// (<paramref name="Site"/> — an address, and every page under it), the columns to keep, in order, and either the table on
 /// the page (<paramref name="Selector"/>, its header names as the columns) or — for a page with no table to copy, such as a
 /// conversation or a feed — what to read out of the page's text, in the person's words (<paramref name="Read"/>), which the
-/// model reads into those columns.
+/// model reads into those columns. A rule that <paramref name="Pick"/>s is read only from a page the person picks, one at a
+/// time — any page under <paramref name="Site"/> they have open — so it is never read again or on a schedule on its own:
+/// its site is where pages may come from, not a page to open.
 /// </summary>
-public sealed record SourceRule(string Site, string Selector, IReadOnlyList<string> Columns, string? Read = null)
+public sealed record SourceRule(string Site, string Selector, IReadOnlyList<string> Columns, string? Read = null, bool Pick = false)
 {
     /// <summary>The longest <see cref="Read"/>.</summary>
     public const int MaxRead = 500;
@@ -97,6 +99,9 @@ public enum ScheduleOutcome
 
     /// <summary>The source has no permission — a schedule is part of one.</summary>
     NotGranted,
+
+    /// <summary>The source is read only from pages the person picks (<see cref="SourceRule.Pick"/>) — there is no page to read on a schedule.</summary>
+    PickedOnly,
 
     /// <summary>Shorter than <see cref="AppSources.MinimumEvery"/>.</summary>
     TooOften,
@@ -308,6 +313,7 @@ public sealed partial class AppSources : IDisposable
             if (at < 0) return (ScheduleOutcome.Unknown, null);
             var declared = sources[at];
             if (declared.Grant is not { } grant) return (ScheduleOutcome.NotGranted, null);
+            if (every is not null && declared.Rule.Pick) return (ScheduleOutcome.PickedOnly, null);
 
             var now = _clock.GetUtcNow();
             var watch = every is { } e
@@ -323,12 +329,12 @@ public sealed partial class AppSources : IDisposable
         }
     }
 
-    /// <summary>The sources due to be read on their schedule now — permitted, scheduled, not stopped, and past their next time.</summary>
+    /// <summary>The sources due to be read on their schedule now — permitted, scheduled, not stopped, past their next time, and not read only from picked pages.</summary>
     public async Task<IReadOnlyList<AppSource>> DueAsync(CancellationToken cancellationToken = default)
     {
         var now = _clock.GetUtcNow();
         return [.. (await ListAsync(cancellationToken).ConfigureAwait(false))
-            .Where(s => s.Grant?.Every is not null && s.Watch is { Halted: false } w && w.NextAt <= now)];
+            .Where(s => !s.Rule.Pick && s.Grant?.Every is not null && s.Watch is { Halted: false } w && w.NextAt <= now)];
     }
 
     /// <summary>
