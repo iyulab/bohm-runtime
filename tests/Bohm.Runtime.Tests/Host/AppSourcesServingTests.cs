@@ -281,6 +281,30 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_source_read_from_picked_pages_takes_any_page_under_its_site_one_at_a_time_and_has_no_schedule()
+    {
+        var id = await AppWithSourceAsync("""{"rule":{"site":"https://blog.example/","selector":"","read":"the post's title and first paragraph","columns":["Title","Text"],"pick":true},"granted":true}""");
+        var client = _host.ControlClient();
+
+        using var first = await client.PostAsync($"/__control/apps/{id}/sources/prices/readings",
+            Json("""{"source":"https://blog.example/2026/a","columns":["Title","Text"],"rows":[["A","first"]]}"""));
+        using var second = await client.PostAsync($"/__control/apps/{id}/sources/prices/readings",
+            Json("""{"source":"https://blog.example/2026/b","columns":["Title","Text"],"rows":[["B","second"]]}"""));
+        using var elsewhere = await client.PostAsync($"/__control/apps/{id}/sources/prices/readings",
+            Json("""{"source":"https://other.example/a","columns":["Title","Text"],"rows":[["C","third"]]}"""));
+        using var schedule = await ScheduleAsync(id, "5");
+
+        HttpAssert.Status(HttpStatusCode.OK, first);
+        HttpAssert.Status(HttpStatusCode.OK, second);
+        HttpAssert.Status(HttpStatusCode.Forbidden, elsewhere);
+        HttpAssert.Status(HttpStatusCode.Conflict, schedule);
+        Assert.Equal("picked-only", JsonDocument.Parse(await schedule.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        Assert.Empty((await DueAsync()).EnumerateArray());
+        var listed = JsonDocument.Parse(await client.GetStringAsync($"/__control/apps/{id}/sources")).RootElement;
+        Assert.True(listed[0].GetProperty("rule").GetProperty("pick").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_scheduled_reading_says_whether_the_rows_changed_and_keeps_nothing_when_they_did_not()
     {
         var id = await AppWithSourceAsync();

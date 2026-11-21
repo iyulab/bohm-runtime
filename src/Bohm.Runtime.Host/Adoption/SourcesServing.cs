@@ -163,6 +163,9 @@ internal static class SourcesServing
                     case ScheduleOutcome.NotGranted:
                         await RefuseAsync(response, StatusCodes.Status409Conflict, "not-granted", null).ConfigureAwait(false);
                         return;
+                    case ScheduleOutcome.PickedOnly:
+                        await RefuseAsync(response, StatusCodes.Status409Conflict, "picked-only", null).ConfigureAwait(false);
+                        return;
                     default:
                         response.StatusCode = StatusCodes.Status404NotFound;
                         return;
