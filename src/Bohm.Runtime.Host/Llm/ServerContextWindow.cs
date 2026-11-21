@@ -15,7 +15,7 @@ internal static class ServerContextWindow
 {
     /// <summary>
     /// What the server at <paramref name="address"/> (the whole address is the base — no API path is added) reports for
-    /// <paramref name="model"/> — its context window and who serves it, as its model list says — or <see langword="null"/> when it does not list the model, or does not answer in
+    /// <paramref name="model"/> — its context window, as its model list says — or <see langword="null"/> when it does not list the model, or does not answer in
     /// <see cref="AnswerModel.CheckTimeout"/>. The request it was asked for goes on either way.
     /// </summary>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
@@ -28,7 +28,7 @@ internal static class ServerContextWindow
         {
             using var finder = new OpenAICompatibleModelFinder(new OpenAICompatibleConfig { BaseUrl = address.AbsoluteUri, Path = "", ApiKey = key });
             return await finder.FindModelAsync(model, timeout.Token).ConfigureAwait(false) is { } card
-                ? new ServerModel((card as LanguageModelCard)?.ContextWindow, string.IsNullOrWhiteSpace(card.OwnedBy) ? null : card.OwnedBy.Trim())
+                ? new ServerModel((card as LanguageModelCard)?.ContextWindow)
                 : null;
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
@@ -39,10 +39,5 @@ internal static class ServerContextWindow
     }
 }
 
-/// <summary>What an OpenAI-compatible server's model list says of one model: its context window, and its <c>owned_by</c> — which
-/// for a GPUStack server is <c>gpustack</c>.</summary>
-internal sealed record ServerModel(int? ContextWindow, string? OwnedBy)
-{
-    /// <summary>Whether the model is served by GPUStack, whose streamed tool calls end with an error when a parameter's schema is a type list.</summary>
-    public bool ServedByGpuStack => string.Equals(OwnedBy, "gpustack", StringComparison.OrdinalIgnoreCase);
-}
+/// <summary>What an OpenAI-compatible server's model list says of one model: its context window.</summary>
+internal sealed record ServerModel(int? ContextWindow);

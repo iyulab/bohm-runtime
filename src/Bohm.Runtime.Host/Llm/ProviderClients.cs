@@ -36,7 +36,9 @@ internal static class ProviderClients
             KeyScheme = key is not null && auth.Style == AuthStyle.Header ? string.Empty : null,
         };
 
-        return ProviderClientFactory.Create(declaration, modelId);
+        var client = ProviderClientFactory.Create(declaration, modelId);
+        // An OpenAI-compatible wire is where self-hosted servers and the gateways in front of them stand — see NoTypeListsChatClient.
+        return wire == WireFormat.OpenAIChatCompletions ? new NoTypeListsChatClient(client) : client;
     }
 
     private static WireFormat WireOf(ProviderApi api) => api switch

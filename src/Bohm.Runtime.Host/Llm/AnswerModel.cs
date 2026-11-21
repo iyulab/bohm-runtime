@@ -58,7 +58,7 @@ internal sealed partial class AnswerModel : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _clientLock = new();
     private (string Provider, string Model)? _selection;
-    private (CompanyModelOptions Server, string? Key, bool StripNull, ModelFitChatClient Client)? _client;
+    private (CompanyModelOptions Server, string? Key, ModelFitChatClient Client)? _client;
 
     // What each server's model list said when it was asked (ServerContextWindow) — whether it is GPUStack decides how tools go out.
     private readonly Dictionary<Uri, ServerModel> _listed = [];
@@ -400,14 +400,8 @@ internal sealed partial class AnswerModel : IDisposable
     }
 
     /// <summary>The whole address the person gave is the base — no API path is added to it.</summary>
-    /// <remarks>
-    /// On a GPUStack server, tool schemas go out with <c>"null"</c> taken out of their type lists: its streamed tool calls end with
-    /// <c>{"error": "unhashable type: 'list'"}</c> when the model fills a parameter typed <c>["string", "null"]</c> — what an optional
-    /// parameter is written as. TODO(upstream: https://github.com/gpustack/gpustack/issues/6598): send them as they are once it is fixed.
-    /// </remarks>
-    private static OpenAICompatibleConfig ConfigOf(CompanyModelOptions server, string? key, bool gpuStack) => gpuStack
-        ? new IronHive.Providers.OpenAI.Compatible.GpuStack.GpuStackConfig { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key }.ToOpenAICompatible()
-        : new() { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key };
+    private static OpenAICompatibleConfig ConfigOf(CompanyModelOptions server, string? key) =>
+        new() { BaseUrl = server.Endpoint.AbsoluteUri, Path = "", ApiKey = key };
 
     private ModelFitChatClient? FittedClient()
     {
@@ -415,15 +409,14 @@ internal sealed partial class AnswerModel : IDisposable
         var key = Key;
         lock (_clientLock)
         {
-            var stripNull = _listed.TryGetValue(current.Endpoint, out var listed) && listed.ServedByGpuStack;
-            if (_client is { } kept && kept.Server == current && kept.Key == key && kept.StripNull == stripNull) return kept.Client;
-            var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key, stripNull));
+            if (_client is { } kept && kept.Server == current && kept.Key == key) return kept.Client;
+            var generator = new OpenAICompatibleMessageGenerator(ConfigOf(current, key));
             var limits = current.Limits.Reasoning is null && _learned.Thinks(current.Endpoint, current.Model) ? current.Limits with { Reasoning = true } : current.Limits;
             var client = new ModelFitChatClient(
-                new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority), limits,
+                new NoTypeListsChatClient(new CountedAsSent(generator.AsChatClient(current.Model, "openai-compatible"), _egress, current.Endpoint.Authority)), limits,
                 () => _learned.Remember(current.Endpoint, current.Model));
             _client?.Client.Dispose();
-            _client = (current, key, stripNull, client);
+            _client = (current, key, client);
             return client;
         }
     }
