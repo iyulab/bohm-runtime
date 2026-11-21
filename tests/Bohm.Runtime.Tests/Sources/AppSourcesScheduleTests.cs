@@ -262,4 +262,68 @@ public sealed class AppSourcesScheduleTests : IDisposable
         Assert.All(nexts, n => AssertAbout(Start, Five, n));
         Assert.True(nexts.Distinct().Count() > 1);
     }
+
+    private static readonly SourceRule Posts = new("https://forum.example/", "", ["Title", "Text"], Read: "each post's title and text");
+
+    [Fact]
+    public async Task A_source_read_by_the_model_goes_on_a_schedule_only_with_the_persons_yes_to_sending_its_text_which_ends_with_the_schedule()
+    {
+        var sources = Open();
+        await sources.DeclareAsync("posts", Posts, granted: true, Cancel);
+
+        var (asked, _) = await sources.ScheduleAsync("posts", Five, Cancel);
+        var (set, source) = await sources.ScheduleAsync("posts", Five, aiRead: true, Cancel);
+        var (_, off) = await sources.ScheduleAsync("posts", null, aiRead: true, Cancel);
+
+        Assert.Equal(ScheduleOutcome.AiReadAsk, asked);
+        Assert.Equal(ScheduleOutcome.Scheduled, set);
+        Assert.True(source!.Grant!.AiRead);
+        Assert.False(off!.Grant!.AiRead);
+        Assert.Equal(ScheduleOutcome.AiReadAsk, (await sources.ScheduleAsync("posts", Five, Cancel)).Outcome);
+    }
+
+    [Fact]
+    public async Task A_yes_to_sending_text_means_nothing_for_a_table_source()
+    {
+        var sources = await GrantedAsync();
+
+        var (set, source) = await sources.ScheduleAsync("prices", Five, aiRead: true, Cancel);
+
+        Assert.Equal(ScheduleOutcome.Scheduled, set);
+        Assert.False(source!.Grant!.AiRead);
+    }
+
+    [Fact]
+    public async Task A_source_read_by_the_model_on_a_schedule_set_before_the_yes_existed_is_never_due_and_says_why_even_after_the_person_reads_it()
+    {
+        var sources = Open();
+        await sources.DeclareAsync("posts", Posts, granted: true, Cancel);
+        await sources.ScheduleAsync("posts", Five, aiRead: true, Cancel);
+        // An earlier version kept the schedule with no record of a yes.
+        var path = Path.Combine(_folder, AppSources.RulesFile);
+        var stored = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path, Cancel))!;
+        Assert.True(stored["sources"]![0]!["grant"]!.AsObject().Remove("aiRead"));
+        await File.WriteAllTextAsync(path, stored.ToJsonString(), Cancel);
+        _clock.Advance(TimeSpan.FromHours(1));
+
+        var before = Assert.Single(await Open().ListAsync(Cancel));
+        Assert.Empty(await Open().DueAsync(Cancel));
+        await Open().RecordAsync("posts", Posts.Site, Posts.Columns, Rows(["Hi", "first"]), Cancel);   // the person read it again
+        _clock.Advance(TimeSpan.FromHours(1));
+
+        Assert.True(before.Watch!.Halted);
+        Assert.Equal(SourceFailure.NeedsPerson, before.Watch.LastFailure);
+        Assert.Equal("ai-read-consent", before.Watch.Reason);
+        Assert.Empty(await Open().DueAsync(Cancel));
+        Assert.Equal(Five, Assert.Single(await Open().ListAsync(Cancel)).Grant!.Every);
+    }
+
+    [Fact]
+    public async Task A_source_read_only_from_picked_pages_is_refused_a_schedule_before_any_question_about_sending_text()
+    {
+        var sources = Open();
+        await sources.DeclareAsync("posts", Posts with { Pick = true }, granted: true, Cancel);
+
+        Assert.Equal(ScheduleOutcome.PickedOnly, (await sources.ScheduleAsync("posts", Five, Cancel)).Outcome);
+    }
 }
