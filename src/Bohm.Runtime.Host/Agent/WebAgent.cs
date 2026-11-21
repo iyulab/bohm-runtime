@@ -46,10 +46,10 @@ internal static class WebAgent
     public static readonly IReadOnlyList<AIFunctionDeclaration> HostTools =
     [
         AIFunctionFactory.CreateDeclaration("list_tabs",
-            "Lists the tabs open in the person's browser that you may read: each tab's id, title and address.",
+            "Lists the tabs open in the person's browser that you may read: each tab's id, title and address. To find the tab a task is about, go by these titles and addresses; do not read tabs to look for it.",
             JsonElement.Parse("""{"type":"object","properties":{}}""")),
         AIFunctionFactory.CreateDeclaration("read_page",
-            "Reads one open tab: its title, address, the text the person selected, and the page's main text from its top, whatever is in view. A long page comes in parts: the end of a part says where to go on with from.",
+            "Reads one open tab: its title, address, the text the person selected, and the page's main text from its top, whatever is in view. A long page comes in parts: the end of a part says where to go on with from. Read only the tabs the person's request is about: what you read is sent to the AI that answers.",
             JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string","description":"The tab's id, from list_tabs or from the question."},"from":{"type":"integer","description":"Where to go on reading a long page, as the end of the last part says (optional)."}},"required":["tab"]}""")),
         AIFunctionFactory.CreateDeclaration("snapshot_page",
             "Lists what can be clicked or filled in one open tab, each with a ref (e1, e2, ...). An element keeps its ref while it stays on the page; the ref of an element no longer listed does not work.",
