@@ -44,9 +44,11 @@ public sealed record SourceRule(string Site, string Selector, IReadOnlyList<stri
 /// The person's permission to read a source: which pages, when it was given, and — when they asked for it — how
 /// often the source is read again on its own while the browser runs (<paramref name="Every"/>, at least
 /// <see cref="AppSources.MinimumEvery"/>). Reading on a schedule the person set is their doing, as a press of
-/// «read again» is.
+/// «read again» is. For a source read by the model (<see cref="SourceRule.ReadByModel"/>), a reading on the schedule sends the
+/// page's text to the model that answers, so the schedule also needs the person's yes to that (<paramref name="AiRead"/>), given
+/// when they turned the schedule on; it ends with the schedule.
 /// </summary>
-public sealed record SourceGrant(string Site, DateTimeOffset GrantedAt, TimeSpan? Every = null);
+public sealed record SourceGrant(string Site, DateTimeOffset GrantedAt, TimeSpan? Every = null, bool AiRead = false);
 
 /// <summary>
 /// A source an application reads from: its rule, the permission for it (if any), when a reading was last kept,
@@ -105,6 +107,12 @@ public enum ScheduleOutcome
 
     /// <summary>Shorter than <see cref="AppSources.MinimumEvery"/>.</summary>
     TooOften,
+
+    /// <summary>
+    /// The source is read by the model, so each reading on the schedule sends the page's text to the model that answers — the
+    /// person has to say yes to that first (<see cref="SourceGrant.AiRead"/>).
+    /// </summary>
+    AiReadAsk,
 }
 
 /// <summary>What became of a reading offered to <see cref="AppSources.RecordAsync"/>.</summary>
@@ -301,7 +309,15 @@ public sealed partial class AppSources : IDisposable
     /// <see cref="MinimumEvery"/>. Turned on, it is due at once when its last reading is older than the schedule,
     /// otherwise a schedule after that reading.
     /// </summary>
-    public async Task<(ScheduleOutcome Outcome, AppSource? Source)> ScheduleAsync(string name, TimeSpan? every, CancellationToken cancellationToken = default)
+    public Task<(ScheduleOutcome Outcome, AppSource? Source)> ScheduleAsync(string name, TimeSpan? every, CancellationToken cancellationToken = default) =>
+        ScheduleAsync(name, every, aiRead: false, cancellationToken);
+
+    /// <summary>
+    /// Sets the schedule as <see cref="ScheduleAsync(string, TimeSpan?, CancellationToken)"/> does, for a source read by the model only
+    /// with <paramref name="aiRead"/> — the person's yes to sending the page's text to the model that answers on each reading
+    /// (otherwise <see cref="ScheduleOutcome.AiReadAsk"/>). The yes is kept with the schedule and ends with it.
+    /// </summary>
+    public async Task<(ScheduleOutcome Outcome, AppSource? Source)> ScheduleAsync(string name, TimeSpan? every, bool aiRead, CancellationToken cancellationToken = default)
     {
         if (every < MinimumEvery) return (ScheduleOutcome.TooOften, null);
         if (!IsValidName(name)) return (ScheduleOutcome.Unknown, null);
@@ -314,12 +330,13 @@ public sealed partial class AppSources : IDisposable
             var declared = sources[at];
             if (declared.Grant is not { } grant) return (ScheduleOutcome.NotGranted, null);
             if (every is not null && declared.Rule.Pick) return (ScheduleOutcome.PickedOnly, null);
+            if (every is not null && declared.Rule.ReadByModel && !aiRead) return (ScheduleOutcome.AiReadAsk, null);
 
             var now = _clock.GetUtcNow();
             var watch = every is { } e
                 ? new SourceWatch(declared.LastReadAt is { } last && last + e > now ? NextAfter(name, last, e) : now, RowsHash: declared.Watch?.RowsHash)
                 : null;
-            sources[at] = declared with { Grant = grant with { Every = every }, Watch = watch };
+            sources[at] = declared with { Grant = grant with { Every = every, AiRead = every is not null && declared.Rule.ReadByModel && aiRead }, Watch = watch };
             await WriteRulesAsync(sources, cancellationToken).ConfigureAwait(false);
             return (ScheduleOutcome.Scheduled, sources[at]);
         }
@@ -513,8 +530,24 @@ public sealed partial class AppSources : IDisposable
         if (!File.Exists(RulesPath)) return [];
         var stored = JsonSerializer.Deserialize(await DurableFile.ReadAsync(RulesPath, cancellationToken).ConfigureAwait(false), SourcesJson.Default.StoredRules);
         if (stored is not { Format: Format }) throw new InvalidDataException($"'{RulesPath}' is not a {Format} file.");
-        return stored.Sources;
+        return [.. stored.Sources.Select(WaitingForTheYes)];
     }
+
+    /// <summary>
+    /// A source read by the model with a schedule but no yes to sending its text (<see cref="SourceGrant.AiRead"/> — a schedule kept
+    /// before that yes existed) is stopped and waits for the person, who turns the schedule on again and is asked. A reading they ask
+    /// for does not start it: that yes was never given.
+    /// </summary>
+    private AppSource WaitingForTheYes(AppSource source) =>
+        source is { Rule.ReadByModel: true, Grant: { Every: not null, AiRead: false } }
+            ? source with
+            {
+                Watch = (source.Watch ?? new SourceWatch(_clock.GetUtcNow())) with
+                {
+                    Halted = true, LastFailure = SourceFailure.NeedsPerson, Reason = "ai-read-consent",
+                },
+            }
+            : source;
 
     private async Task WriteRulesAsync(IReadOnlyList<AppSource> sources, CancellationToken cancellationToken)
     {

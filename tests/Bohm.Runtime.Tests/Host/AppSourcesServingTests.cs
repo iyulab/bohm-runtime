@@ -281,6 +281,21 @@ public sealed class AppSourcesServingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_source_read_by_the_model_goes_on_a_schedule_only_with_the_yes_to_sending_its_text()
+    {
+        var id = await AppWithSourceAsync("""{"rule":{"site":"https://forum.example/","selector":"","read":"each post's title and text","columns":["Title","Text"]},"granted":true}""");
+        var client = _host.ControlClient();
+
+        using var asked = await ScheduleAsync(id, "5");
+        using var set = await client.PutAsync($"/__control/apps/{id}/sources/prices/schedule", Json("""{"everyMinutes":5,"aiRead":true}"""));
+
+        HttpAssert.Status(HttpStatusCode.Conflict, asked);
+        Assert.Equal("ai-read-ask", JsonDocument.Parse(await asked.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+        HttpAssert.Status(HttpStatusCode.OK, set);
+        Assert.True(JsonDocument.Parse(await set.Content.ReadAsStringAsync()).RootElement.GetProperty("grant").GetProperty("aiRead").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_source_read_from_picked_pages_takes_any_page_under_its_site_one_at_a_time_and_has_no_schedule()
     {
         var id = await AppWithSourceAsync("""{"rule":{"site":"https://blog.example/","selector":"","read":"the post's title and first paragraph","columns":["Title","Text"],"pick":true},"granted":true}""");

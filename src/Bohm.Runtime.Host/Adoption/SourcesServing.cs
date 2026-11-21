@@ -151,7 +151,7 @@ internal static class SourcesServing
                     return;
                 }
 
-                var (scheduled, scheduledSource) = await sources.ScheduleAsync(name, schedule.EveryMinutes is { } minutes ? TimeSpan.FromMinutes(minutes) : null, cancel).ConfigureAwait(false);
+                var (scheduled, scheduledSource) = await sources.ScheduleAsync(name, schedule.EveryMinutes is { } minutes ? TimeSpan.FromMinutes(minutes) : null, schedule.AiRead == true, cancel).ConfigureAwait(false);
                 switch (scheduled)
                 {
                     case ScheduleOutcome.Scheduled:
@@ -165,6 +165,9 @@ internal static class SourcesServing
                         return;
                     case ScheduleOutcome.PickedOnly:
                         await RefuseAsync(response, StatusCodes.Status409Conflict, "picked-only", null).ConfigureAwait(false);
+                        return;
+                    case ScheduleOutcome.AiReadAsk:
+                        await RefuseAsync(response, StatusCodes.Status409Conflict, "ai-read-ask", null).ConfigureAwait(false);
                         return;
                     default:
                         response.StatusCode = StatusCodes.Status404NotFound;
@@ -230,7 +233,7 @@ internal static class SourcesServing
     internal sealed record ScheduledReadingView(bool Changed, ReadingView Reading);
 
     /// <summary>How often the person wants a source read on its own, in minutes; <see langword="null"/> stops it.</summary>
-    internal sealed record ScheduleRequest(int? EveryMinutes);
+    internal sealed record ScheduleRequest(int? EveryMinutes, bool? AiRead = null);
 
     /// <summary>A scheduled reading that failed: how, why, and the wait the site asked for, if any.</summary>
     internal sealed record FailureRequest(SourceFailure? Kind, string? Reason, int? RetryAfterSeconds);
