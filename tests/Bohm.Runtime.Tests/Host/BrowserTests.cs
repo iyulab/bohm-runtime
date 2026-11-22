@@ -200,12 +200,15 @@ public sealed class BrowserTests : IAsyncLifetime
             """);
         Assert.Equal("""["refused","refused","refused","refused"]""", refused);
 
-        // Text, numbers, booleans and null still go through as web storage turns them into text.
-        await page.EvaluateAsync("() => { localStorage.setItem('n', 3); localStorage.setItem('none', null); localStorage.flag = true; }");
+        // Text, numbers, booleans, null and objects that describe themselves in text still go through as
+        // web storage turns them into text.
+        await page.EvaluateAsync("() => { localStorage.setItem('n', 3); localStorage.setItem('none', null); localStorage.setItem('when', new Date(0)); localStorage.setItem('at', new URL('https://example.com/a')); localStorage.flag = true; }");
         await ReloadUntilAsync(page, "localStorage.getItem('flag') === 'true'");
         Assert.Equal("""[{"title":"kept"}]""", await page.EvaluateAsync<string?>("localStorage.getItem('records')"));
         Assert.Equal("3", await page.EvaluateAsync<string?>("localStorage.getItem('n')"));
         Assert.Equal("null", await page.EvaluateAsync<string?>("localStorage.getItem('none')"));
+        Assert.Equal("https://example.com/a", await page.EvaluateAsync<string?>("localStorage.getItem('at')"));
+        Assert.Equal(0, await page.EvaluateAsync<long>("new Date(localStorage.getItem('when')).getTime()"));
     }
 
     [Fact]
