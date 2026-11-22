@@ -484,7 +484,9 @@ public sealed partial class AdoptionCatalog
                 var target = Path.GetFullPath(Path.Combine(folder, entry.FullName));
                 if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidPackageException(PackageProblem.Damaged, $"The entry '{entry.FullName}' points outside the package.");
-                if (write) Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                // A package made while the app was open may carry the storage's writer mark: checked like every entry, never written.
+                var keep = write && !IsStoreWriterMark(entry.FullName);
+                if (keep) Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 string written;
                 try
                 {
@@ -495,10 +497,10 @@ public sealed partial class AdoptionCatalog
                         using var copy = new MemoryStream();
                         await input.CopyToAsync(copy, cancellationToken).ConfigureAwait(false);
                         recordBytes = copy.ToArray();
-                        if (write) await File.WriteAllBytesAsync(target, recordBytes, cancellationToken).ConfigureAwait(false);
+                        if (keep) await File.WriteAllBytesAsync(target, recordBytes, cancellationToken).ConfigureAwait(false);
                         written = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(recordBytes));
                     }
-                    else written = await WriteHashedAsync(entry, write ? target : null, cancellationToken).ConfigureAwait(false);
+                    else written = await WriteHashedAsync(entry, keep ? target : null, cancellationToken).ConfigureAwait(false);
                 }
                 catch (InvalidDataException e)
                 {
