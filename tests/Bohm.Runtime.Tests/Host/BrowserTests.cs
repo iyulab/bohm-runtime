@@ -176,6 +176,39 @@ public sealed class BrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_write_that_would_store_unreadable_text_is_refused_and_the_data_kept()
+    {
+        Assert.SkipWhen(_browser is null, NoBrowser);
+        var id = await _host.AdoptAsync("<!doctype html><title>t</title>");
+        var page = await OpenAsync(id);
+        await page.EvaluateAsync("() => localStorage.setItem('records', JSON.stringify([{ title: 'kept' }]))");
+
+        // The ways a generated application loses its data in one line: a save whose value is missing,
+        // an object or array stored without JSON — by method and by property.
+        var refused = await page.EvaluateAsync<string>("""
+            () => {
+              const attempts = [
+                () => localStorage.setItem('records', undefined),
+                () => localStorage.setItem('records', [{ title: 'lost' }]),
+                () => localStorage.setItem('records', { title: 'lost' }),
+                () => { localStorage.records = undefined; },
+              ];
+              return JSON.stringify(attempts.map(attempt => {
+                try { attempt(); return 'stored'; } catch (e) { return e instanceof TypeError ? 'refused' : 'other'; }
+              }));
+            }
+            """);
+        Assert.Equal("""["refused","refused","refused","refused"]""", refused);
+
+        // Text, numbers, booleans and null still go through as web storage turns them into text.
+        await page.EvaluateAsync("() => { localStorage.setItem('n', 3); localStorage.setItem('none', null); localStorage.flag = true; }");
+        await ReloadUntilAsync(page, "localStorage.getItem('flag') === 'true'");
+        Assert.Equal("""[{"title":"kept"}]""", await page.EvaluateAsync<string?>("localStorage.getItem('records')"));
+        Assert.Equal("3", await page.EvaluateAsync<string?>("localStorage.getItem('n')"));
+        Assert.Equal("null", await page.EvaluateAsync<string?>("localStorage.getItem('none')"));
+    }
+
+    [Fact]
     public async Task A_page_elsewhere_cannot_embed_an_application()
     {
         Assert.SkipWhen(_browser is null, NoBrowser);
