@@ -176,6 +176,16 @@ if (parentPid is { } pid)
     }
 }
 
+// One runtime per data root. A second one would load the same applications and each write its own copy of their
+// data back, so whichever stopped last would drop the other's acknowledged writes. Stop before serving anything.
+Directory.CreateDirectory(dataRoot);
+using var dataRootWriter = TryHoldDataRoot(dataRoot);
+if (dataRootWriter is null)
+{
+    await Console.Error.WriteLineAsync($"Another runtime is already using the data root '{dataRoot}'; stopping.");
+    return 4;
+}
+
 // Standard output carries only the protocol line below; every log line goes to standard error.
 // Per-request lines from ASP.NET Core are kept at Warning (its usual production level): the caller
 // polls the control API every few seconds, so at Information an idle runtime grows its log for as long
@@ -226,3 +236,15 @@ Console.WriteLine(LoopbackHost.ReadyLine(RuntimeHost.ReadyPrefix, started.Port, 
     : null));
 await app.WaitForShutdownAsync();
 return 0;
+
+static LocalOrigin.Storage.DirectoryWriter? TryHoldDataRoot(string dataRoot)
+{
+    try
+    {
+        return LocalOrigin.Storage.DirectoryWriter.Take(dataRoot, "runtime.lock");
+    }
+    catch (LocalOrigin.Storage.DirectoryInUseException)
+    {
+        return null;
+    }
+}
