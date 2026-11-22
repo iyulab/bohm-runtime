@@ -394,6 +394,70 @@ public sealed class AppPackageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_app_removed_here_and_taken_back_in_from_its_package_can_change_again()
+    {
+        // Put away, removed, then its package taken back in on the same computer: the same id, the same storage folder.
+        var id = await _host.AdoptAsync("<p>one</p>");
+        var page = await _host.LoadAsync(id);
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"mine","value":"kept"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+        var package = Path.Combine(_out, "one.bohm");
+        using (var packed = await PackAsync(id, package, "all")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        using (var archived = await _host.ControlClient().PostAsync($"/__control/apps/{id}/archive", null)) HttpAssert.Status(HttpStatusCode.OK, archived);
+        using (var removed = await _host.ControlClient().DeleteAsync($"/__control/apps/{id}")) Assert.True(removed.IsSuccessStatusCode, removed.StatusCode.ToString());
+        using (var imported = await ImportAsync(_host, package)) HttpAssert.Status(HttpStatusCode.Created, imported);
+
+        using var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>two</p>", Encoding.UTF8));
+
+        HttpAssert.Status(HttpStatusCode.Created, revised);
+        Assert.Contains("kept", (await _host.LoadAsync(id)).Items, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_package_made_while_the_app_is_open_holds_its_data_but_not_the_storage_writer_mark()
+    {
+        var id = await _host.AdoptAsync("<p>open</p>");
+        var page = await _host.LoadAsync(id);
+        using (var wrote = await _host.PostStorageAsync(id, page, """{"tab":"TAB","ops":[{"seq":1,"op":"set","key":"mine","value":"kept"}]}""")) HttpAssert.Status(HttpStatusCode.OK, wrote);
+        Assert.True(File.Exists(Path.Combine(_host.DataRoot, "adopted", id, "storage", "writer.lock")), "the open storage is marked");
+        var package = Path.Combine(_out, "open.bohm");
+
+        using (var packed = await PackAsync(id, package, "all")) HttpAssert.Status(HttpStatusCode.OK, packed);
+
+        using var zip = ZipFile.OpenRead(package);
+        Assert.Contains(zip.Entries, e => e.FullName.StartsWith("storage/", StringComparison.Ordinal));
+        Assert.DoesNotContain(zip.Entries, e => e.FullName.EndsWith("writer.lock", StringComparison.Ordinal));
+        Assert.DoesNotContain("writer.lock", ReadManifest(zip).GetProperty("provenance").GetProperty("files").EnumerateObject().Select(f => f.Name).Aggregate("", (a, b) => a + " " + b), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_package_that_carries_a_storage_writer_mark_is_taken_in_without_it()
+    {
+        // As a build before this one packed an open app: the mark listed in the manifest like any file.
+        var id = await _host.AdoptAsync("<p>marked</p>");
+        var package = Path.Combine(_out, "marked.bohm");
+        using (var packed = await PackAsync(id, package, "none")) HttpAssert.Status(HttpStatusCode.OK, packed);
+        var mark = Encoding.UTF8.GetBytes("local-origin.writer/2\n" + Path.Combine(_host.DataRoot, "adopted", id, "storage", "writer.lock") + "\n" + Environment.MachineName + "\n" + Environment.ProcessId + "\n0");
+        var marked = Rewrite(package, "marked-with-mark.bohm", (name, bytes) => name == "manifest.json" ? WithListed(bytes, "storage/writer.lock", mark) : bytes, ("storage/writer.lock", mark));
+        // Taken back in at the same place: removed here first, so the mark names this running host and this very folder.
+        using (var archived = await _host.ControlClient().PostAsync($"/__control/apps/{id}/archive", null)) HttpAssert.Status(HttpStatusCode.OK, archived);
+        using (var removed = await _host.ControlClient().DeleteAsync($"/__control/apps/{id}")) Assert.True(removed.IsSuccessStatusCode, removed.StatusCode.ToString());
+
+        using var imported = await ImportAsync(_host, marked);
+
+        HttpAssert.Status(HttpStatusCode.Created, imported);
+        Assert.False(File.Exists(Path.Combine(_host.DataRoot, "adopted", id, "storage", "writer.lock")), "the mark is not written");
+        using var revised = await _host.ControlClient().PostAsync($"/__control/apps/{id}/revisions", new StringContent("<p>changed</p>", Encoding.UTF8));
+        HttpAssert.Status(HttpStatusCode.Created, revised);
+    }
+
+    private static byte[] WithListed(byte[] manifest, string name, byte[] file)
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(manifest)!;
+        node["provenance"]!["files"]![name] = "sha256:" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(file));
+        return Encoding.UTF8.GetBytes(node.ToJsonString());
+    }
+
+    [Fact]
     public async Task A_package_of_an_app_already_here_comes_in_as_its_new_revision_keeping_the_data_here()
     {
         var id = await _host.AdoptAsync("<p>one</p>");

@@ -43,6 +43,16 @@ public sealed partial class AdoptionCatalog
     private const string RecordFile = "app.json";
     private const string HtmlFile = "app.html";
     private const string StorageDirectory = "storage";
+
+    /// <summary>
+    /// The mark the storage's one writer leaves in its folder while it is open (LocalOrigin's <c>KeyValueStore</c>): the state of
+    /// the runtime that has it open, not the application's data. A copy never carries it — taken back in at the same place on the
+    /// same computer, it would name this running runtime as the folder's writer, and the data could not be opened again.
+    /// </summary>
+    private const string StoreWriterMark = "writer.lock";
+
+    /// <summary>Whether <paramref name="relative"/> (a path in an application's folder, <c>/</c> separators) is the storage's writer mark.</summary>
+    private static bool IsStoreWriterMark(string relative) => relative == StorageDirectory + "/" + StoreWriterMark;
     private const string UsageFile = "usage.ndjson";
     private const string AssetsDirectory = "assets";
     private const string StagingPrefix = ".staging-";
@@ -408,7 +418,10 @@ public sealed partial class AdoptionCatalog
     {
         Directory.CreateDirectory(to);
         foreach (var file in Directory.EnumerateFiles(from))
+        {
+            if (Path.GetFileName(file) == StoreWriterMark && Path.GetFileName(from) == StorageDirectory) continue;
             await CopyFileAsync(file, Path.Combine(to, Path.GetFileName(file)), cancellationToken).ConfigureAwait(false);
+        }
 
         foreach (var folder in Directory.EnumerateDirectories(from))
             await CopyFolderAsync(folder, Path.Combine(to, Path.GetFileName(folder)), cancellationToken).ConfigureAwait(false);
