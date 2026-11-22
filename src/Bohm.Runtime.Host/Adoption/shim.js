@@ -49,18 +49,28 @@
   function noteWritten(key) { written.add(String(key)); }
 
   // Web storage keeps text: a value is turned into a string before it is stored. For text, numbers,
-  // booleans and null ("null" reads back through JSON.parse) that string still carries the value. For
-  // undefined, an object, an array, a function or a symbol it does not ("undefined", "[object Object]"),
-  // and writing it replaces the data the key held with something no read can turn back. Such a write is an application error, not data: it is
-  // refused, the stored value stays as it was, and the error reaches the page like any other, so the
-  // person is told and the application can be fixed.
-  function checkWritable(key, value) {
+  // booleans, null ("null" reads back through JSON.parse) and objects that describe themselves in text
+  // (a Date, a URL) that string still carries the value. For undefined, a function, a symbol, an array
+  // (["x"] and [] become "x" and "", which JSON.parse cannot read) or an object that becomes
+  // "[object Object]" it does not, and writing it replaces the data the key held with something no read
+  // can turn back. Such a write is an application error, not data: it is refused, the stored value stays
+  // as it was, and the error reaches the page like any other, so the person is told and the application
+  // can be fixed.
+  function unreadable(value) {
     var type = typeof value;
-    if (value === null || type === "string" || type === "number" || type === "boolean" || type === "bigint") return;
-    var what = Array.isArray(value) ? "an array" : type === "object" ? "an object" : type;
+    if (value === undefined || type === "function" || type === "symbol") return type;
+    if (type !== "object" || value === null) return null;
+    if (Array.isArray(value)) return "an array";
+    var text;
+    try { text = String(value); } catch (e) { return "an object"; }
+    return /^\[object [^\]]*\]$/.test(text) ? "an object" : null;
+  }
+  function checkWritable(key, value) {
+    var what = unreadable(value);
+    if (what === null) return;
     throw new TypeError("localStorage: refused to store " + what + " under \"" + String(key) +
       "\" -- it would be saved as text that cannot be read back; the stored value is unchanged" +
-      (type === "object" ? " (store JSON.stringify(value) instead)" : ""));
+      (what === "an array" || what === "an object" ? " (store JSON.stringify(value) instead)" : ""));
   }
 
   var methods = {
