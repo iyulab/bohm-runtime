@@ -48,9 +48,24 @@
   function noteListed() { seeded.forEach(function (k) { readSeeded.add(k); }); }
   function noteWritten(key) { written.add(String(key)); }
 
+  // Web storage keeps text: a value is turned into a string before it is stored. For text, numbers,
+  // booleans and null ("null" reads back through JSON.parse) that string still carries the value. For
+  // undefined, an object, an array, a function or a symbol it does not ("undefined", "[object Object]"),
+  // and writing it replaces the data the key held with something no read can turn back. Such a write is an application error, not data: it is
+  // refused, the stored value stays as it was, and the error reaches the page like any other, so the
+  // person is told and the application can be fixed.
+  function checkWritable(key, value) {
+    var type = typeof value;
+    if (value === null || type === "string" || type === "number" || type === "boolean" || type === "bigint") return;
+    var what = Array.isArray(value) ? "an array" : type === "object" ? "an object" : type;
+    throw new TypeError("localStorage: refused to store " + what + " under \"" + String(key) +
+      "\" -- it would be saved as text that cannot be read back; the stored value is unchanged" +
+      (type === "object" ? " (store JSON.stringify(value) instead)" : ""));
+  }
+
   var methods = {
     getItem: function (key) { noteRead(key); return store.getItem(key); },
-    setItem: function (key, value) { noteWritten(key); return store.setItem(key, value); },
+    setItem: function (key, value) { checkWritable(key, value); noteWritten(key); return store.setItem(key, value); },
     removeItem: function (key) { noteWritten(key); return store.removeItem(key); },
     clear: function () { Object.keys(store).forEach(noteWritten); return store.clear(); },
     key: function (index) { noteListed(); return store.key(index); }
@@ -65,7 +80,7 @@
       if (value !== null && value !== undefined) noteRead(name);
       return value;
     },
-    set: function (target, name, value) { noteWritten(name); target[name] = value; return true; },
+    set: function (target, name, value) { checkWritable(name, value); noteWritten(name); target[name] = value; return true; },
     deleteProperty: function (target, name) { noteWritten(name); return delete target[name]; },
     ownKeys: function (target) { noteListed(); return Reflect.ownKeys(target); }
   });
