@@ -162,14 +162,15 @@ public sealed class AnswerModelRouteTests
     }
 
     [Theory]
-    [InlineData("gpustack", false)]
-    [InlineData("vllm", true)]
-    public async Task On_a_gpustack_server_tool_schemas_go_out_without_null_in_their_type_lists(string ownedBy, bool keepsNull)
+    [InlineData("gpustack")]
+    [InlineData("vllm")]
+    [InlineData(null)]   // a gateway or relay in front of the server, which does not say who serves the model
+    public async Task Tool_schemas_go_out_without_type_lists_whoever_serves_the_model(string? ownedBy)
     {
         await using var server = await FakeProvider.StartAsync();
         await using var host = await RunningHost.StartAsync();
         await ServeAsync(host, server);
-        server.Models = "{\"object\":\"list\",\"data\":[{\"id\":\"set-model\",\"object\":\"model\",\"owned_by\":\"" + ownedBy + "\"}]}";
+        server.Models = "{\"object\":\"list\",\"data\":[{\"id\":\"set-model\",\"object\":\"model\"" + (ownedBy is null ? "" : ",\"owned_by\":\"" + ownedBy + "\"") + "}]}";
         var company = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Bohm.Runtime.Host.Llm.AnswerModel>(host.Services);
 
         await company.LimitsAsync(CancellationToken.None, thinking: false);
@@ -177,7 +178,8 @@ public sealed class AnswerModelRouteTests
         await company.Client()!.GetResponseAsync([new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Keep a note.")], new Microsoft.Extensions.AI.ChatOptions { Tools = [tool] });
 
         var sent = server.Asked.Last(r => r.Body.Contains("\"remember\"", StringComparison.Ordinal)).Body;
-        Assert.Equal(keepsNull, sent.Contains("\"null\"", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"null\"", sent, StringComparison.Ordinal);
+        Assert.Contains("\"nullable\":true", sent, StringComparison.Ordinal);   // still said: the note may be left out
     }
 
     [Fact]
