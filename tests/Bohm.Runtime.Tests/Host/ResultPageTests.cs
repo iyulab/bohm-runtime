@@ -18,6 +18,20 @@ public sealed class ResultPageTests : IAsyncLifetime
     public async ValueTask DisposeAsync() => await _host.DisposeAsync();
 
     [Fact]
+    public async Task A_page_made_from_an_answer_carries_the_mark_of_model_written_content_in_its_head()
+    {
+        var body = """{"title":"Notes","text":"What the model answered."}""";
+        using var made = await _host.ControlClient().PostAsync("/__control/results", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        HttpAssert.Status(HttpStatusCode.Created, made);
+        var id = JsonDocument.Parse(await made.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetString()!;
+        var html = Encoding.UTF8.GetString(await _host.Catalog.ReadHtmlAsync(id));
+        Assert.Contains(Bohm.Runtime.Adoption.AiWrittenMark.Elements, html);
+        Assert.True(html.IndexOf(Bohm.Runtime.Adoption.AiWrittenMark.Elements, StringComparison.Ordinal) < html.IndexOf("<title>", StringComparison.Ordinal)); // in the head, before the content
+        Assert.True(Bohm.Runtime.Adoption.AiWrittenMark.Carries(html[..html.IndexOf("<title>", StringComparison.Ordinal)]));
+    }
+
+    [Fact]
     public async Task An_answer_becomes_an_unsaved_page_with_its_text_escaped_and_its_sources()
     {
         var body = """
