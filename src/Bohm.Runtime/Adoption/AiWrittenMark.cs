@@ -28,16 +28,21 @@ public static partial class AiWrittenMark
     public static ReadOnlyMemory<byte> Into(ReadOnlyMemory<byte> html)
     {
         var text = Encoding.UTF8.GetString(html.Span);
-        if (Carries(text)) return html;
-        var at = Head().Match(text) is { Success: true } head ? head.Index + head.Length
-            : Html().Match(text) is { Success: true } root ? root.Index + root.Length
-            : Doctype().Match(text) is { Success: true } doctype ? doctype.Index + doctype.Length
-            : text.StartsWith('﻿') ? 1 : 0;
+        // Only the document's own start is searched — a «<head>» written inside a script, a style or a comment is text, not the head.
+        var prologue = Content().Match(text) is { Success: true } content ? text[..content.Index] : text;
+        if (Carries(prologue)) return html;
+        var at = Head().Match(prologue) is { Success: true } head ? head.Index + head.Length
+            : Html().Match(prologue) is { Success: true } root ? root.Index + root.Length
+            : Doctype().Match(prologue) is { Success: true } doctype ? doctype.Index + doctype.Length
+            : text.StartsWith('\uFEFF') ? 1 : 0;
         return Encoding.UTF8.GetBytes(text.Insert(at, Elements));
     }
 
-    /// <summary>Whether <paramref name="html"/> names the digital source type of model-made content.</summary>
+    /// <summary>Whether <paramref name="html"/> names the digital source type of model-made content (pass the part before the first script, style, comment or body).</summary>
     public static bool Carries(string html) => Marked().IsMatch(html);
+
+    [GeneratedRegex(@"<(?:script|style|body|template|textarea|title|noscript)\b|<!--", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex Content();
 
     [GeneratedRegex(@"<head(?:\s[^>]*)?>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Head();
@@ -45,7 +50,7 @@ public static partial class AiWrittenMark
     [GeneratedRegex(@"<html(?:\s[^>]*)?>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Html();
 
-    [GeneratedRegex(@"^﻿?\s*<!doctype[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^\uFEFF?\s*<!doctype[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Doctype();
 
     [GeneratedRegex(@"<meta\s[^>]*name\s*=\s*[""']?digital-source-type[""']?[^>]*trainedAlgorithmicMedia", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

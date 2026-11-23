@@ -30,6 +30,19 @@ public sealed class AiWrittenMarkTests : IDisposable
         Assert.Equal(marked, Text(AiWrittenMark.Into(Encoding.UTF8.GetBytes(marked))));   // once only
     }
 
+    [Theory]
+    [InlineData("<!doctype html><title>t</title><script>w.document.write(\"<html><head><title>print</title></head>\")</script>")]
+    [InlineData("<p>x</p><script>const page = '<head></head>';</script>")]
+    [InlineData("<!-- <head> --><style>/* <html> */</style><p>x</p>")]
+    public void A_head_written_inside_a_script_a_style_or_a_comment_is_left_as_it_is(string html)
+    {
+        var marked = Text(AiWrittenMark.Into(Encoding.UTF8.GetBytes(html)));
+
+        Assert.EndsWith(html.Replace("<!doctype html>", "", StringComparison.Ordinal), marked, StringComparison.Ordinal);   // the rest, byte for byte
+        Assert.Equal(1, marked.Split("trainedAlgorithmicMedia").Length - 1);
+        Assert.StartsWith(html.StartsWith("<!doctype", StringComparison.Ordinal) ? "<!doctype html>" + AiWrittenMark.Elements : AiWrittenMark.Elements, marked, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Headless_parts_are_not_mistaken_for_the_head()
     {
