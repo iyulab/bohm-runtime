@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Bohm.Runtime.Adoption;
 
 namespace Bohm.Runtime.Host.Adoption;
 
@@ -54,6 +55,7 @@ internal sealed record ResultPage(string Title, string Text, IReadOnlyList<Resul
     /// The page: the answer as text — escaped, its lines kept, its own opening title left out — under the title, and the sources below.
     /// It carries no script and loads nothing: it is made from what the person already read, and it
     /// reads the same offline and years later.
+    /// Its head carries <see cref="AiWrittenMark"/>: the text is a model's answer.
     /// </summary>
     public byte[] Render()
     {
@@ -61,6 +63,7 @@ internal sealed record ResultPage(string Title, string Text, IReadOnlyList<Resul
         html.Append("<!doctype html>\n<html");
         if (Language is { Length: > 0 } lang) html.Append(" lang=\"").Append(Escape(lang)).Append('"');
         html.Append(">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+        html.Append(AiWrittenMark.Elements).Append('\n');   // the text is a model's answer: the page says so where a machine reads it
         html.Append("<title>").Append(Escape(Title)).Append("</title>\n");
         html.Append(Style);
         html.Append("<main>\n<h1>").Append(Escape(Title)).Append("</h1>\n");
