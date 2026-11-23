@@ -225,7 +225,7 @@ internal sealed class LocalModel(RuntimeHostOptions options) : IAsyncDisposable
             }
 
             LastFailure = null;
-            _client = new ModelFitChatClient(_generator.AsChatClient(), new ModelLimits(settings.ContextLength));
+            _client = new ModelFitChatClient(new LocalOverflowChatClient(_generator.AsChatClient()), new ModelLimits(settings.ContextLength));
             // The model library says what it started the model with — the length every request must fit.
             if (settings.ContextLength is null && _generator is IGeneratorModel { MaxContextLength: > 0 } started)
                 _client.Reported(started.MaxContextLength);
@@ -358,11 +358,22 @@ internal sealed record LocalModelFailure(string Reason, string? File = null, str
     public const string AnswerFailed = "answer-failed";
 
     /// <summary>
-    /// The failure to report for <paramref name="e"/>, raised while the model on this computer was answering: its own
-    /// reason when it has one (not chosen, missing, not started), otherwise that it was asked and did not answer.
+    /// The conversation does not fit the context the model was started with, even after what the runtime cuts down by
+    /// itself (the pages read, the room for the answer) — a long piece of work, not a computer short of memory.
     /// </summary>
-    public static LocalModelFailure Answering(Exception e) =>
-        (e as LocalModelUnavailableException)?.Failure ?? new LocalModelFailure(AnswerFailed, Detail: e is Agent.EmptyAnswerException ? null : e.Message);
+    public const string ContextFull = "context-full";
+
+    /// <summary>
+    /// The failure to report for <paramref name="e"/>, raised while the model on this computer was answering: its own
+    /// reason when it has one (not chosen, missing, not started), that the conversation outgrew its context, otherwise that
+    /// it was asked and did not answer.
+    /// </summary>
+    public static LocalModelFailure Answering(Exception e) => e switch
+    {
+        LocalModelUnavailableException { Failure: { } failure } => failure,
+        IronHive.Abstractions.Exceptions.ContextOverflowException => new LocalModelFailure(ContextFull, Detail: e.Message),
+        _ => new LocalModelFailure(AnswerFailed, Detail: e is Agent.EmptyAnswerException ? null : e.Message),
+    };
 }
 
 /// <summary>The configured local model could not be loaded.</summary>
