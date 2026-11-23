@@ -170,6 +170,18 @@ public sealed class ModelLimitsTests
     }
 
     [Fact]
+    public async Task Thinking_seen_in_an_answer_outweighs_a_provider_that_said_the_model_does_not_think()
+    {
+        var fitted = new ModelFitChatClient(new Thinks(), ModelLimits.Unknown);
+        fitted.Told(new ModelLimits(Reasoning: false));
+        Assert.False(fitted.Limits.Reasoning);
+
+        await fitted.GetResponseAsync(Question, null, TestContext.Current.CancellationToken);
+
+        Assert.True(fitted.Limits.Reasoning);
+    }
+
+    [Fact]
     public async Task An_answer_without_thinking_leaves_it_unknown()
     {
         var fitted = new ModelFitChatClient(new FakeChatModel(), ModelLimits.Unknown);

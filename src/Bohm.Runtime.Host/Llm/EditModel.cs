@@ -173,7 +173,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
         var declared = provider.Find(chosen.Model);
         var kept = Kept(chosen, Identity(provider, key), () => Counted(provider, declared, chosen.Model, key));
         await AskLimitsAsync(kept, provider, declared, chosen.Model, key, cancellationToken).ConfigureAwait(false);
-        return new(kept, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared));
+        return new(kept, $"{provider.Id}/{chosen.Model}", OnThisComputer: false, declared?.Limits ?? ModelLimits.Unknown, Sees: Sees(provider, declared) ?? kept.GetService<ModelFitChatClient>()?.ToldSees);
     }
 
     private IChatClient? _limitsAskedFor;
@@ -194,7 +194,7 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             ProviderApi.OpenAIChat => provider.Origin != ProviderOrigin.BuiltIn && fit.Limits.ContextWindow is null,
             // Anthropic's model information is read with the key as a bearer — a provider that takes it in another header is not asked.
             ProviderApi.AnthropicMessages => provider.Auth.Style is AuthStyle.Bearer or AuthStyle.None
-                && (fit.Limits.ContextWindow is null || fit.Limits.MaxOutputTokens is null),
+                && (fit.Limits.ContextWindow is null || fit.Limits.MaxOutputTokens is null || fit.Limits.Reasoning is null),
             _ => false,
         };
         if (!asks) return;
@@ -210,7 +210,10 @@ internal abstract class ProviderChoice(RuntimeHostOptions options, ICredentialVa
             if (api == ProviderApi.AnthropicMessages)
             {
                 if (await ProviderModelInfo.AskAnthropicAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { } told)
-                    fit.Told(told);
+                {
+                    fit.Told(told.Limits);
+                    if (told.Sees is { } sees) fit.ToldSeeing(sees);
+                }
             }
             else if (await ServerContextWindow.AskAsync(address, key, model, egress, cancellationToken).ConfigureAwait(false) is { ContextWindow: { } window })
             {

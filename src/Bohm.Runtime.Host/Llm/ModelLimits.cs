@@ -82,8 +82,9 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
             var told = _told;
             if (known.ContextWindow is null && (_learnedWindow ?? _reportedWindow ?? told.ContextWindow) is { } window) known = known with { ContextWindow = window };
             if (known.MaxOutputTokens is null && told.MaxOutputTokens is { } most) known = known with { MaxOutputTokens = most };
-            if (known.Reasoning is null && told.Reasoning is { } thinks) known = known with { Reasoning = thinks };
+            // Thinking seen in an answer outweighs what the provider said of the model; what whoever set it up said outweighs both.
             if (known.Reasoning is null && _seenThinking) known = known with { Reasoning = true };
+            if (known.Reasoning is null && told.Reasoning is { } thinks) known = known with { Reasoning = thinks };
             return known;
         }
     }
@@ -105,6 +106,12 @@ internal sealed class ModelFitChatClient(IChatClient inner, ModelLimits limits, 
     {
         if (ModelLimits.TryCreate(told.ContextWindow, told.MaxOutputTokens, told.Reasoning, out var valid)) _told = valid!;
     }
+
+    /// <summary>Whether the model's provider said it takes pictures in, or <see langword="null"/> when it did not say.</summary>
+    public bool? ToldSees { get; private set; }
+
+    /// <summary>Keeps whether the model's provider said it takes pictures in.</summary>
+    public void ToldSeeing(bool sees) => ToldSees = sees;
 
     public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
