@@ -100,6 +100,7 @@ public sealed partial class AdoptionCatalog
         string? generatedBy = null, string? request = null, string? via = null, IReadOnlyList<RememberedKind>? collections = null,
         IReadOnlyList<AppCheck>? checks = null, CancellationToken cancellationToken = default)
     {
+        if (ModelName(generatedBy) is not null) html = AiWrittenMark.Into(html);   // code a model wrote carries the mark; a page brought in is kept as it is
         var now = _clock.GetUtcNow();
         var app = new AdoptedApp(
             Guid.CreateVersion7(now).ToString("n"),
@@ -678,6 +679,8 @@ public sealed partial class AdoptionCatalog
         ArgumentNullException.ThrowIfNull(storage);
         RequireValidId(id);
         var app = await GetAsync(id, cancellationToken).ConfigureAwait(false) ?? throw new KeyNotFoundException($"No adopted application '{id}'.");
+        // A version a model wrote carries the mark; one brought back from the history is kept as it was.
+        if (generatedBy is not null && restoredFrom is null) html = AiWrittenMark.Into(html);
         var source = new AdoptionSource(Convert.ToHexStringLower(SHA256.HashData(html.Span)), originalPath, html.Length, generatedBy);
         if (source.Sha256 == app.Source.Sha256) throw new InvalidOperationException("These bytes are the revision already in use.");
 
