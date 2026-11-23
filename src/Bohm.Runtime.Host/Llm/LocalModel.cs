@@ -351,11 +351,21 @@ internal sealed record LocalModelFailure(string Reason, string? File = null, str
     public const string StartFailed = "start-failed";
 
     /// <summary>
-    /// The model was asked and gave no answer — its server failed while working (llama.cpp's «Compute error», most often
-    /// when the computer runs short of memory) or the answer came back empty. <see cref="LocalModelFailure.Detail"/> is the
-    /// server's own message when there was one.
+    /// The model was asked and gave no answer for a reason none of the others names — its server reported a failure while
+    /// working (llama.cpp's «Compute error», most often when the computer runs short of memory) and kept running.
+    /// <see cref="LocalModelFailure.Detail"/> is the server's own message.
     /// </summary>
     public const string AnswerFailed = "answer-failed";
+
+    /// <summary>
+    /// The program running the model (llama-server) exited while it was answering — a crash, or the system ending it, most
+    /// often for memory. <see cref="LocalModelFailure.Detail"/> carries its exit code and the last line it wrote. The next
+    /// question starts it again.
+    /// </summary>
+    public const string ServerStopped = "server-stopped";
+
+    /// <summary>The model finished its answer without writing anything or asking for a tool — not a computer short of memory.</summary>
+    public const string EmptyAnswer = "empty-answer";
 
     /// <summary>
     /// The conversation does not fit the context the model was started with, even after what the runtime cuts down by
@@ -365,15 +375,36 @@ internal sealed record LocalModelFailure(string Reason, string? File = null, str
 
     /// <summary>
     /// The failure to report for <paramref name="e"/>, raised while the model on this computer was answering: its own
-    /// reason when it has one (not chosen, missing, not started), that the conversation outgrew its context, otherwise that
-    /// it was asked and did not answer.
+    /// reason when it has one (not chosen, missing, not started), that the conversation outgrew its context, that its server
+    /// exited, that it wrote nothing, otherwise that it was asked and did not answer. Read through the exceptions that wrap
+    /// it — a server that exits mid-answer reaches the runtime inside the chat library's own failure.
     /// </summary>
-    public static LocalModelFailure Answering(Exception e) => e switch
+    public static LocalModelFailure Answering(Exception e)
     {
-        LocalModelUnavailableException { Failure: { } failure } => failure,
-        IronHive.Abstractions.Exceptions.ContextOverflowException => new LocalModelFailure(ContextFull, Detail: e.Message),
-        _ => new LocalModelFailure(AnswerFailed, Detail: e is Agent.EmptyAnswerException ? null : e.Message),
-    };
+        for (var at = e; at is not null; at = at.InnerException)
+        {
+            switch (at)
+            {
+                case LocalModelUnavailableException { Failure: { } failure }:
+                    return failure;
+                case IronHive.Abstractions.Exceptions.ContextOverflowException:
+                    return new LocalModelFailure(ContextFull, Detail: at.Message);
+                case LMSupply.Exceptions.InferenceBackendExitedException exited:
+                    return new LocalModelFailure(ServerStopped, Detail: Stopped(exited));
+                case Agent.EmptyAnswerException:
+                    return new LocalModelFailure(EmptyAnswer);
+            }
+        }
+        return new LocalModelFailure(AnswerFailed, Detail: e.Message);
+    }
+
+    /// <summary>The exit code and the last line the server wrote — what says why it stopped.</summary>
+    private static string Stopped(LMSupply.Exceptions.InferenceBackendExitedException exited)
+    {
+        var code = exited.ExitCode is { } c ? $"exit code {c}" : "no exit code";
+        var last = exited.RecentLog?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+        return last is null ? $"llama-server stopped ({code})." : $"llama-server stopped ({code}): {last}";
+    }
 }
 
 /// <summary>The configured local model could not be loaded.</summary>

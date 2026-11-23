@@ -723,7 +723,7 @@ public sealed class WebAgentTests : IDisposable
         HttpAssert.Status(HttpStatusCode.OK, response);
         var failed = Assert.Single(await LinesAsync(response));
         Assert.Equal("failed", failed.GetProperty("status").GetString());
-        Assert.Equal("answer-failed", failed.GetProperty("model").GetProperty("reason").GetString());
+        Assert.Equal("empty-answer", failed.GetProperty("model").GetProperty("reason").GetString());
         Assert.Equal(JsonValueKind.Null, failed.GetProperty("model").GetProperty("detail").ValueKind);
     }
 
