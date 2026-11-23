@@ -160,7 +160,10 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
         Assert.True(ProviderDeclaration.TryParse($$"""
             { "id": "keyed", "baseUrl": "{{_provider.Address}}", "api": "openai-chat", "models": [ { "id": "m" } ] }
             """, ProviderOrigin.Person, out var keyed, out problem), problem);
-        await ProviderStore.WriteAsync(_dataRoot, [none!, keyed!], CancellationToken.None);
+        Assert.True(ProviderDeclaration.TryParse($$"""
+            { "id": "gateway", "baseUrl": "{{_provider.Address}}", "api": "anthropic-messages", "auth": { "style": "none" }, "models": [ { "id": "g" } ] }
+            """, ProviderOrigin.Person, out var gateway, out problem), problem);
+        await ProviderStore.WriteAsync(_dataRoot, [none!, keyed!, gateway!], CancellationToken.None);
         _host = await RunningHost.StartAsync(_dataRoot);
     }
 
@@ -193,6 +196,27 @@ public sealed class ProviderChoiceTests : IAsyncLifetime
         var response = await chosen.Client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
         Assert.Equal(FakeProvider.Reply, response.Text);
         Assert.False(Assert.Single(_provider.Asked).Headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task A_model_an_added_anthropic_format_provider_says_takes_pictures_is_known_to_without_asking()
+    {
+        _provider.Answers["/v1/models/g"] = """
+            {"type":"model","id":"g","display_name":"G","created_at":"2026-09-21T00:00:00Z","max_input_tokens":200000,"max_tokens":64000,
+             "capabilities":{"batch":{"supported":false},"citations":{"supported":false},"code_execution":{"supported":false},
+               "context_management":{"supported":false,"clear_thinking_20251015":{"supported":false},"clear_tool_uses_20250919":{"supported":false},"compact_20260112":{"supported":false}},
+               "effort":{"supported":false,"low":{"supported":false},"medium":{"supported":false},"high":{"supported":false},"max":{"supported":false},"xhigh":{"supported":false}},
+               "image_input":{"supported":true},"pdf_input":{"supported":false},"structured_outputs":{"supported":false},
+               "server_tools":{"supported":false,"code_execution":{"supported":false},"web_search":{"supported":false}},
+               "thinking":{"supported":false,"types":{"adaptive":{"supported":false},"enabled":{"supported":false},"disabled":{"supported":false},"between_tools":{"supported":false}}}}}
+            """;
+        await ChooseAsync("gateway", "g");
+
+        var chosen = await _host.Services.GetRequiredService<AgentModel>().GetAsync(CancellationToken.None);
+
+        Assert.True(chosen!.Sees);
+        Assert.False(ModelLimits.Of(chosen.Client, chosen.Limits).Reasoning);
+        Assert.DoesNotContain(_provider.Asked, r => r.PathAndQuery.EndsWith("/v1/messages", StringComparison.Ordinal));   // no test picture
     }
 
     [Fact]
