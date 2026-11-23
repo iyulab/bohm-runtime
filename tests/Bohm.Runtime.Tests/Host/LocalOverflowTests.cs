@@ -60,10 +60,41 @@ public sealed class LocalOverflowTests
     }
 
     [Fact]
-    public void A_model_that_wrote_nothing_is_still_a_model_that_gave_no_answer()
+    public void A_model_that_wrote_nothing_is_reported_as_that_not_as_a_server_that_failed()
     {
-        Assert.Equal(LocalModelFailure.AnswerFailed, LocalModelFailure.Answering(new Bohm.Runtime.Host.Agent.EmptyAnswerException()).Reason);
-        Assert.Equal(LocalModelFailure.AnswerFailed, LocalModelFailure.Answering(new InvalidOperationException("Compute error.")).Reason);
+        var failure = LocalModelFailure.Answering(new Bohm.Runtime.Host.Agent.EmptyAnswerException());
+
+        Assert.Equal(LocalModelFailure.EmptyAnswer, failure.Reason);
+        Assert.Null(failure.Detail);
+    }
+
+    [Fact]
+    public void A_server_that_reports_a_failure_and_keeps_running_is_a_model_that_gave_no_answer_in_the_servers_words()
+    {
+        var failure = LocalModelFailure.Answering(new InvalidOperationException("Compute error."));
+
+        Assert.Equal(LocalModelFailure.AnswerFailed, failure.Reason);
+        Assert.Equal("Compute error.", failure.Detail);
+    }
+
+    [Fact]
+    public void A_server_that_exits_while_answering_is_reported_with_its_exit_code_and_last_line_through_the_failures_that_wrap_it()
+    {
+        var exited = new InferenceBackendExitedException(-9, "load_tensors: done\nggml_metal: out of memory\n", new HttpRequestException("The response ended prematurely."));
+
+        var failure = LocalModelFailure.Answering(new InvalidOperationException("The chat request failed.", exited));
+
+        Assert.Equal(LocalModelFailure.ServerStopped, failure.Reason);
+        Assert.Equal("llama-server stopped (exit code -9): ggml_metal: out of memory", failure.Detail);
+    }
+
+    [Fact]
+    public void A_server_that_exits_without_a_word_is_still_reported_as_stopped()
+    {
+        var failure = LocalModelFailure.Answering(new InferenceBackendExitedException(null, "", new HttpRequestException("Connection refused.")));
+
+        Assert.Equal(LocalModelFailure.ServerStopped, failure.Reason);
+        Assert.Equal("llama-server stopped (no exit code).", failure.Detail);
     }
 
     /// <summary>A model on this computer that refuses the first request in the model library's type, then answers "ok".</summary>
