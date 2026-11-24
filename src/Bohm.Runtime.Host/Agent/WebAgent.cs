@@ -90,6 +90,9 @@ internal static class WebAgent
         AIFunctionFactory.CreateDeclaration("put_page_in_app",
             "Puts what one open web tab shows into one of the person's apps that takes pages, as one more entry — the apps that take pages, and from which sites, are listed with the open tabs. The browser asks the person first, then reads the tab into the app itself; nothing is put in unless they say yes. Call it once per page, only when they ask to put, keep or add the page they have open in one of those apps.",
             JsonElement.Parse("""{"type":"object","properties":{"tab":{"type":"string"},"app":{"type":"string","description":"The app's name as it is listed."}},"required":["tab","app"]}""")),
+        AIFunctionFactory.CreateDeclaration("add_records_to_app",
+            "Adds records the person asked for to one of their apps that keeps records — the apps, what they keep and the fields are listed with the open tabs. The rows go into the app's own data as they are; the app itself does not change. The browser shows the person what would be added (records already there are skipped) and asks first; the result says what was added.",
+            JsonElement.Parse("""{"type":"object","properties":{"app":{"type":"string","description":"The app's name as it is listed."},"collection":{"type":"string","description":"Which of the app's records, as listed (optional when it keeps one kind)."},"records":{"type":"array","items":{"type":"object"},"description":"One object per record, keyed by the listed field names, with the values as the person gave them or as you read them."}},"required":["app","records"]}""")),
         AIFunctionFactory.CreateDeclaration("make_page",
             "Opens a new tab with a page you write from what you read — a document, notes or a report the person asked to have as a page. The tabs you read for this question are listed on it as its sources; the person can keep it or close it. Call it only when the person asks for a page — never on your own, never for a summary or an answer they asked for in the chat, and never to show what you did on a site: the site's own page shows that, and your answer says it.",
             JsonElement.Parse("""{"type":"object","properties":{"title":{"type":"string","description":"The page's title, short."},"text":{"type":"string","description":"The page's content in Markdown: headings, lists, tables."}},"required":["title","text"]}""")),
@@ -239,6 +242,11 @@ internal static class WebAgent
         When the person is looking at an app made in Bohm and asks to change it (how it looks, its fields, what it does),
         call change_app once with what they asked, in their words, and answer in one short sentence that the suggestion is
         being made in the app's edit panel.
+        When the person asks to add records to one of their apps — entries, rows, items they gave in the chat or that you
+        read on a page, such as "put these three dates in my inspection log" — and that app is listed as keeping records,
+        call add_records_to_app once with the app, which records and one object per record, and answer in one short
+        sentence with what the result says. Adding records never goes through change_app: changing the app's code to
+        hold them is not adding them.
         When the person asks for a new app of their own that does not read the open pages — a list, a log, a tracker or a
         form they keep using, such as "make an app for the guest list" — call make_app once with what they asked, in their words, and answer in one short sentence that
         the app is being made. Never write the app as a page with make_page, and never say you cannot open it.

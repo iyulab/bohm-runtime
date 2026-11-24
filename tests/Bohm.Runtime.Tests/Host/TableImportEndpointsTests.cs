@@ -215,6 +215,39 @@ public sealed class TableImportEndpointsTests : IAsyncLifetime
         using (var app = await _host.ControlClient().GetAsync("/__control/apps/0123456789abcdef0123456789abcdef/imports")) HttpAssert.Status(HttpStatusCode.NotFound, app);
         using (var import = await PostAsync("imports/7/undo", null)) HttpAssert.Status(HttpStatusCode.NotFound, import);
     }
+    [Fact]
+    public async Task Rows_given_as_a_table_instead_of_a_file_go_in_the_same_way_and_can_be_undone()
+    {
+        const string body = """{"table":{"name":"from a chat","rows":[["isbn","title"],["978-3","파이썬"],["978-1","자바 입문"]]},"collection":"books","identity":"isbn"}""";
+        using (var preview = await PostAsync("imports/preview", body))
+        {
+            HttpAssert.Status(HttpStatusCode.OK, preview);
+            var plan = JsonDocument.Parse(await preview.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal((1, 1), (plan.GetProperty("added").GetInt32(), plan.GetProperty("skipped").GetInt32()));   // 978-1 is there already
+        }
+
+        using (var imported = await PostAsync("imports", body))
+        {
+            HttpAssert.Status(HttpStatusCode.Created, imported);
+            var record = JsonDocument.Parse(await imported.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal((1, "from a chat"), (record.GetProperty("added").GetInt32(), record.GetProperty("file").GetString()));
+        }
+
+        Assert.Equal(["자바 입문", "C# 깊이", "파이썬"], JsonNode.Parse(await StoredBooksAsync())!.AsArray().Select(b => b!["title"]!.GetValue<string>()));
+        using (var undone = await PostAsync("imports/1/undo", null)) HttpAssert.Status(HttpStatusCode.OK, undone);
+        Assert.Equal(Books, await StoredBooksAsync());
+    }
+
+    [Theory]
+    [InlineData("""{"collection":"books","table":{"rows":[]}}""", "empty")]
+    [InlineData("""{"collection":"books","table":{"rows":[["title","title"],["a","b"]]}}""", "duplicate-header")]
+    [InlineData("""{"collection":"books","table":{"rows":[["title"]]},"file":{"name":"x.csv","content":"dGl0bGU="}}""", "bad-request")]
+    public async Task A_table_that_cannot_be_used_is_refused_with_why(string body, string problem)
+    {
+        using var refused = await PostAsync("imports/preview", body);
+        HttpAssert.Status(HttpStatusCode.BadRequest, refused);
+        Assert.Equal(problem, JsonDocument.Parse(await refused.Content.ReadAsStringAsync()).RootElement.GetProperty("reason").GetString());
+    }
 
     private static string Body(string? csv, string collection = "books", string? identity = null, string? content = null, int? codePage = null) =>
         JsonSerializer.Serialize(new Dictionary<string, object?>
