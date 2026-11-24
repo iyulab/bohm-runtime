@@ -107,8 +107,18 @@ public sealed record TableFile(IReadOnlyList<string> Headers, IReadOnlyList<IRea
         }
 
         var delimiter = fileName?.EndsWith(".tsv", StringComparison.OrdinalIgnoreCase) == true ? '\t' : DelimiterOf(text);
-        var rows = Parse(text, delimiter);
-        if (rows.Count == 0) throw new TableFileException(TableFileProblem.Empty, "The file has no header row.");
+        return Of(Parse(text, delimiter)) with { CodePage = codePage };
+    }
+
+    /// <summary>
+    /// A table given as its rows rather than as a file — the first row is the header — held to the same rules as a file
+    /// read: a header is needed, two columns may not share a name, at most <see cref="MaxRows"/> rows, a short row is
+    /// filled with empty cells and a long one keeps its extra cells out.
+    /// </summary>
+    public static TableFile Of(IReadOnlyList<IReadOnlyList<string>> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        if (rows.Count == 0) throw new TableFileException(TableFileProblem.Empty, "The table has no header row.");
 
         var headers = rows[0];
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -129,7 +139,7 @@ public sealed record TableFile(IReadOnlyList<string> Headers, IReadOnlyList<IRea
             body.Add(cells);
         }
 
-        return new TableFile(headers, body) { CodePage = codePage };
+        return new TableFile(headers, body);
     }
 
     /// <summary>
