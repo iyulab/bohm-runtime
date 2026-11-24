@@ -16,8 +16,8 @@ namespace Bohm.Runtime.Host.Adoption;
 /// <c>POST …/imports</c> (doing it) and <c>POST …/imports/{n}/undo</c>.
 /// </summary>
 /// <remarks>
-/// The body of a preview or an import is <c>{ file: { name, content }, collection, identity?, sameRecord?, columns? }</c>:
-/// the file's name and its bytes in base64, the storage key its rows go into, the field that tells the same
+/// The body of a preview or an import is <c>{ file: { name, content } | table: { name?, rows }, collection, identity?, sameRecord?, columns? }</c>:
+/// the file's name and its bytes in base64 — or the rows themselves, the first one the header — the storage key its rows go into, the field that tells the same
 /// record apart (none: every row is added), <c>skip</c> (the default) or <c>replace</c> for a row whose record is
 /// already there, and the columns the person moved or left out (<c>{ header: field | null }</c>).
 /// </remarks>
@@ -91,11 +91,9 @@ internal static class TableImportEndpoints
         {
             using var body = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancel).ConfigureAwait(false);
             var root = body.RootElement;
-            var file = root.GetProperty("file");
-            var name = file.GetProperty("name").GetString() ?? "";
-            // Bytes that are not UTF-8 are read in the code page the person chose (`codePage`), else this computer's double-byte one.
-            var legacy = file.TryGetProperty("codePage", out var page) && page.ValueKind == JsonValueKind.Number ? TableFile.StrictLegacy(page.GetInt32()) : LegacyText.OfThisComputer();
-            var table = TableFile.Read(file.GetProperty("content").GetBytesFromBase64(), name, legacy);
+            var (table, name) = root.TryGetProperty("table", out var given)
+                ? (root.TryGetProperty("file", out _) ? throw new InvalidOperationException("Both a file and a table.") : GivenTable(given))
+                : ReadFile(root.GetProperty("file"));
 
             var collection = root.GetProperty("collection").GetString();
             var identity = root.TryGetProperty("identity", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
@@ -138,6 +136,28 @@ internal static class TableImportEndpoints
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await Control.ControlProblems.RefuseAsync(context.Response, problem).ConfigureAwait(false);
         return null;
+    }
+
+    /// <summary>The file's bytes read as a table — <c>{ name, content (base64), codePage? }</c>.</summary>
+    private static (TableFile Table, string Name) ReadFile(JsonElement file)
+    {
+        var name = file.GetProperty("name").GetString() ?? "";
+        // Bytes that are not UTF-8 are read in the code page the person chose (`codePage`), else this computer's double-byte one.
+        var legacy = file.TryGetProperty("codePage", out var page) && page.ValueKind == JsonValueKind.Number ? TableFile.StrictLegacy(page.GetInt32()) : LegacyText.OfThisComputer();
+        return (TableFile.Read(file.GetProperty("content").GetBytesFromBase64(), name, legacy), name);
+    }
+
+    /// <summary>
+    /// Rows given as they are — <c>{ name?, rows: [[header…], [cell…]…] }</c>: what a person asked to put into an application
+    /// from somewhere other than a file (rows read on a page, written in a chat). <c>name</c> is what the import is listed as.
+    /// </summary>
+    private static (TableFile Table, string Name) GivenTable(JsonElement table)
+    {
+        var rows = table.GetProperty("rows").EnumerateArray()
+            .Select(row => (IReadOnlyList<string>)[.. row.EnumerateArray().Select(cell => cell.ValueKind == JsonValueKind.String ? cell.GetString()! : cell.ValueKind is JsonValueKind.Null ? "" : cell.GetRawText())])
+            .ToList();
+        var name = table.TryGetProperty("name", out var given) && given.ValueKind == JsonValueKind.String ? given.GetString()! : "";
+        return (TableFile.Of(rows), name);
     }
 
     private static Task WriteAsync<T>(HttpResponse response, T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> type, CancellationToken cancel)
