@@ -538,11 +538,14 @@ public sealed class ControlPlaneTests : IAsyncLifetime
             HttpAssert.Status(HttpStatusCode.NotFound, page);
         using (var request = new HttpRequestMessage(HttpMethod.Get, "/"))
         {
-            // A tab that reaches it anyway is told why, in the person's language — not the browser's own error.
+            // A tab that reaches it anyway gets a page that names the reason; the browser writes the words
+            // in its own screen language, so the request's language changes nothing here.
             request.Headers.AcceptLanguage.ParseAdd("ko-KR,ko;q=0.9,en;q=0.8");
             using var page = await _host.ClientForApp(id).SendAsync(request);
             HttpAssert.Status(HttpStatusCode.NotFound, page);
-            Assert.Contains("보관돼 있습니다", await page.Content.ReadAsStringAsync());
+            var html = await page.Content.ReadAsStringAsync();
+            Assert.Contains("<meta name=\"bohm-unavailable\" content=\"archived\">", html);
+            Assert.Matches("<h1[^>]*></h1><p></p>", html);
         }
 
         using (var restored = await client.PostAsync($"/__control/apps/{id}/restore", null))
@@ -635,7 +638,7 @@ public sealed class ControlPlaneTests : IAsyncLifetime
         {
             using var page = await _host.ClientForApp(id).GetAsync("/");
             HttpAssert.Status(HttpStatusCode.ServiceUnavailable, page);
-            Assert.Contains("Nothing was deleted", await page.Content.ReadAsStringAsync());
+            Assert.Contains("<meta name=\"bohm-unavailable\" content=\"cannot-open\">", await page.Content.ReadAsStringAsync());
         }
 
         using (var page = await _host.ClientForApp(id).GetAsync("/"))

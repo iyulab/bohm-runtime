@@ -69,6 +69,19 @@ public sealed class TableImportTests
         Assert.Equal(2, replaced[1]!["id"]!.GetValue<int>());
     }
 
+    [Theory]
+    [InlineData("true", true)] [InlineData("FALSE", false)] [InlineData("1", true)] [InlineData("0", false)] [InlineData("O", true)] [InlineData("x", false)]
+    [InlineData("Yes", true)] [InlineData("no", false)] [InlineData("y", true)] [InlineData("N", false)]
+    [InlineData("예", true)] [InlineData("네", true)] [InlineData("아니오", false)] [InlineData("아니요", false)]
+    [InlineData("はい", true)] [InlineData("いいえ", false)] [InlineData("是", true)] [InlineData("否", false)] [InlineData("Ja", true)] [InlineData("nein", false)]
+    public void A_yes_or_no_word_in_any_supported_language_is_read_as_a_boolean(string word, bool expected)
+    {
+        var plan = TableImport.Plan(Declaration(), File($"isbn,read\n978-9,{word}"), Books);
+
+        Assert.Empty(plan.Invalid);
+        Assert.Equal(expected, Assert.Single(plan.Sample)["read"]!.GetValue<bool>());
+    }
+
     [Fact]
     public void A_cell_that_is_not_its_fields_kind_leaves_its_row_out_with_the_row_number_and_why()
     {
