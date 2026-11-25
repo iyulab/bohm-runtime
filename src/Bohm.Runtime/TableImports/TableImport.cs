@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -329,17 +330,32 @@ public static partial class TableImport
             NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out var number)
             ? (number == Math.Floor(number) && Math.Abs(number) < 1e15 ? JsonValue.Create((long)number) : JsonValue.Create(number))
             : null,
-        FieldKind.Boolean => cell.ToLowerInvariant() switch
-        {
-            "true" or "yes" or "y" or "1" or "o" or "예" or "네" => JsonValue.Create(true),
-            "false" or "no" or "n" or "0" or "x" or "아니오" or "아니요" => JsonValue.Create(false),
-            _ => null,
-        },
+        FieldKind.Boolean => Truths.TryGetValue(cell.Trim().ToLowerInvariant(), out var truth) ? JsonValue.Create(truth) : null,
         FieldKind.Date => DateTime.TryParseExact(cell.Replace('/', '-').Replace('.', '-'), ["yyyy-M-d", "yyyy-MM-dd"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
             ? JsonValue.Create(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
             : null,
         _ => JsonValue.Create(cell),
     };
+
+    /// <summary>
+    /// The words a yes/no column is written with, in any language a table file may come in — the file's
+    /// language, not the screen's, decides which a person typed. One table for all of them.
+    /// </summary>
+    private static readonly FrozenDictionary<string, bool> Truths = new Dictionary<string, bool>
+    {
+        // Marks
+        ["true"] = true, ["false"] = false, ["1"] = true, ["0"] = false, ["o"] = true, ["x"] = false,
+        // English
+        ["yes"] = true, ["no"] = false, ["y"] = true, ["n"] = false,
+        // Korean
+        ["예"] = true, ["네"] = true, ["아니오"] = false, ["아니요"] = false,
+        // Japanese
+        ["はい"] = true, ["いいえ"] = false,
+        // Chinese
+        ["是"] = true, ["否"] = false,
+        // German
+        ["ja"] = true, ["nein"] = false,
+    }.ToFrozenDictionary(StringComparer.Ordinal);
 
     [GeneratedRegex(@"^\d{4}-\d{2}-\d{2}$")]
     private static partial Regex IsoDate();
