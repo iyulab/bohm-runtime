@@ -35,10 +35,11 @@
     <ProjectReference Include="..\Bohm.Runtime\Bohm.Runtime.csproj" />
   </ItemGroup>
 
-  <!-- A JavaScript parser (no engine): an application's inline scripts are read before it is accepted, so a syntax
-       error goes back to the model that wrote it instead of reaching the person. -->
+  <!-- Static checks of a page's source (no browser, nothing run): scripts that do not parse, names and ids used but absent,
+       reads before a value is set, files from another host. The host carries it for the authoring layer it loads, which
+       ships no dependencies of its own; its findings go back to the model that wrote the page instead of reaching the person. -->
   <ItemGroup>
-    <PackageReference Include="Acornima" Version="1.9.1" />
+    <PackageReference Include="PageAssay" Version="0.2.0" />
   </ItemGroup>
 
   <!-- Each application on its own origin: security profile, injection, the storage channel, previews, ports. -->
