@@ -24,6 +24,9 @@ internal static class AppFacts
         - For AI, it calls the provider's API as written (OpenAI, Anthropic or Gemini) and never holds
           a real key: the runtime supplies it. Never put a key in the source.
         - Every label, message and button is in the person's language.
+        - A button it adds does something visible when pressed: before a new version is applied it is pressed
+          on a copy of the data, and one that changes nothing on the screen, in storage or over the network is
+          reported to the person. Wire each handler to its own button, and save and redraw what it changes.
 
         What is here to use, and what works differently here:
         - AI calls can be answered when this computer has no internet connection — the AI may run on this
